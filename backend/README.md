@@ -2,6 +2,37 @@
 
 FastAPI backend service for the AI Agent and RAG platform.
 
+## Embeddings (Voyage AI)
+
+### Responsibility & Scope
+
+The **Embedding Layer** is responsible exclusively for converting text (queries, document chunks) into high-dimensional vector representations.
+
+```
+Text Input (Single or Batch)  ──►  Embedding Abstraction  ──►  Voyage Implementation  ──►  Voyage API  ──►  Vector Representation
+```
+
+> [!NOTE]
+> The embedding layer does not perform document extraction, chunking, or vector storage. Storing vectors and retrieval logic belong to downstream vector store modules (Qdrant).
+
+### Provider Abstraction & Model Configuration
+
+- **Provider Abstraction (`BaseEmbeddingProvider`)**: Isolates the rest of the application from Voyage-specific SDK calls so the provider can be easily changed or extended in the future without rewriting RAG components.
+- **Asynchronous Execution**: Uses the official `voyageai.AsyncClient` for non-blocking I/O.
+- **Batch Processing**: Supports efficient batch embedding (`embed_batch`) to process multiple chunks per API call while strictly preserving 1-to-1 input-to-output ordering.
+- **Configuration-Driven Model**: The model name is driven by centralized settings (`EMBEDDING_MODEL`), defaulting to `voyage-3-large`.
+
+### Embedding Configuration
+
+Configure the embedding provider in `backend/.env`:
+
+| Variable | Description | Example |
+| :--- | :--- | :--- |
+| `VOYAGE_API_KEY` | Voyage AI API key | `pa-xyz123...` |
+| `EMBEDDING_MODEL` | Embedding model identifier (Default: `voyage-3-large`) | `voyage-3-large` |
+
+---
+
 ## Relational Database (Supabase PostgreSQL & SQLAlchemy)
 
 ### Responsibility & Scope
