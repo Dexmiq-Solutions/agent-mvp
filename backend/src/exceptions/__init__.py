@@ -27,6 +27,18 @@ from exceptions.storage import (
     StorageError,
     StorageUploadError,
 )
+from exceptions.vector import (
+    CollectionConfigurationError,
+    CollectionNotFoundError,
+    VectorDeletionError,
+    VectorInputValidationError,
+    VectorSearchError,
+    VectorStoreAuthenticationError,
+    VectorStoreConfigurationError,
+    VectorStoreConnectionError,
+    VectorStoreError,
+    VectorUpsertError,
+)
 
 __all__ = [
     # Storage Exceptions
@@ -53,4 +65,15 @@ __all__ = [
     "EmbeddingRateLimitError",
     "EmbeddingInputValidationError",
     "EmbeddingRequestError",
+    # Vector Store Exceptions
+    "VectorStoreError",
+    "VectorStoreConfigurationError",
+    "VectorStoreConnectionError",
+    "VectorStoreAuthenticationError",
+    "CollectionNotFoundError",
+    "CollectionConfigurationError",
+    "VectorUpsertError",
+    "VectorSearchError",
+    "VectorDeletionError",
+    "VectorInputValidationError",
 ]

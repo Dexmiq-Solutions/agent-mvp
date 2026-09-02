@@ -66,6 +66,9 @@ class Settings(BaseSettings):
     # Qdrant Vector Store
     QDRANT_URL: str | None = None
     QDRANT_API_KEY: str | None = None
+    QDRANT_COLLECTION_NAME: str = "document_chunks"
+    QDRANT_TIMEOUT: int = 30
+    QDRANT_VECTOR_SIZE: int = 1024
 
     # Embeddings (Voyage)
     VOYAGE_API_KEY: str | None = None

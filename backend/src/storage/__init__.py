@@ -6,10 +6,28 @@ from storage.object import (
     SupabaseObjectStorage,
     get_object_storage,
 )
+from storage.vector import (
+    BaseVectorStore,
+    QdrantVectorStore,
+    VectorPayload,
+    VectorRecord,
+    VectorSearchResult,
+    get_vector_store,
+    reset_vector_store,
+)
 
 __all__ = [
+    # Object Storage
     "BaseObjectStorage",
     "SupabaseObjectStorage",
     "StorageObjectMetadata",
     "get_object_storage",
+    # Vector Storage
+    "BaseVectorStore",
+    "QdrantVectorStore",
+    "VectorPayload",
+    "VectorRecord",
+    "VectorSearchResult",
+    "get_vector_store",
+    "reset_vector_store",
 ]
