@@ -20,6 +20,8 @@ def test_default_settings():
     assert settings.SUPABASE_URL is None
     assert settings.SUPABASE_KEY is None
     assert settings.SUPABASE_SERVICE_ROLE_KEY is None
+    assert settings.SUPABASE_STORAGE_BUCKET == "documents"
+    assert settings.supabase_storage_key is None
     assert settings.DATABASE_URL is None
     assert settings.QDRANT_URL is None
     assert settings.QDRANT_API_KEY is None
@@ -39,6 +41,18 @@ def test_custom_environment_settings(monkeypatch):
     assert settings.ENVIRONMENT == "production"
     assert settings.LOG_LEVEL == "DEBUG"
     assert settings.PORT == 9000
+
+
+def test_supabase_storage_key_resolution(monkeypatch):
+    """Verify supabase_storage_key prefers service role key over client key."""
+    monkeypatch.setenv("SUPABASE_KEY", "anon_key")
+    settings = Settings()
+    assert settings.supabase_storage_key == "anon_key"
+
+    monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", "service_role_secret")
+    settings = Settings()
+    assert settings.supabase_storage_key == "service_role_secret"
+
 
 
 def test_invalid_log_level():

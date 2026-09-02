@@ -14,9 +14,7 @@ class Settings(BaseSettings):
         case_sensitive=False,
     )
 
-    # --------------------------------------------------------------------------
     # Application Configuration
-    # --------------------------------------------------------------------------
     APP_NAME: str = "Agent MVP"
     APP_VERSION: str = "0.1.0"
     ENVIRONMENT: Literal["development", "staging", "production", "test"] = "development"
@@ -25,20 +23,29 @@ class Settings(BaseSettings):
     HOST: str = "0.0.0.0"
     PORT: int = 8000
 
-    # --------------------------------------------------------------------------
-    # Future Integration Placeholders (Optional in Phase 1)
-    # --------------------------------------------------------------------------
+    # Integration Placeholders (Optional in Phase 1)
+
     # Supabase (PostgreSQL & Storage)
     SUPABASE_URL: str | None = None
     SUPABASE_KEY: str | None = None
     SUPABASE_SERVICE_ROLE_KEY: str | None = None
+    SUPABASE_STORAGE_BUCKET: str = "documents"
     DATABASE_URL: str | None = None
+
+    @property
+    def supabase_storage_key(self) -> str | None:
+        """Return the preferred key for Supabase Storage operations.
+        
+        Prefers the service role secret key for backend server operations, falling back to SUPABASE_KEY.
+        """
+        return self.SUPABASE_SERVICE_ROLE_KEY or self.SUPABASE_KEY
+
 
     # Qdrant Vector Store
     QDRANT_URL: str | None = None
     QDRANT_API_KEY: str | None = None
 
-    # Embeddings (Voyage AI)
+    # Embeddings (Voyage)
     VOYAGE_API_KEY: str | None = None
     EMBEDDING_MODEL: str = "voyage-3-large"
 
