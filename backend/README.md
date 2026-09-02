@@ -2,6 +2,56 @@
 
 FastAPI backend service for the AI Agent and RAG platform.
 
+## Relational Database (Supabase PostgreSQL & SQLAlchemy)
+
+### Responsibility & Scope
+
+**Supabase PostgreSQL** serves as the primary relational database for structured application data. 
+
+- **SQLAlchemy 2.0 (`AsyncSession`, `AsyncEngine`)**: Used for ORM modeling, declarative base definition, and asynchronous database access with the `asyncpg` driver.
+- **Alembic**: Used for explicit and controlled database schema migrations.
+
+```
+Application  ──►  Database Layer (AsyncSession)  ──►  SQLAlchemy  ──►  asyncpg Driver  ──►  Supabase PostgreSQL
+```
+
+### Database Configuration
+
+Configure the database connection in `backend/.env`:
+
+| Variable | Description | Example |
+| :--- | :--- | :--- |
+| `DATABASE_URL` | Async PostgreSQL connection string | `postgresql+asyncpg://postgres:[PASSWORD]@db.[PROJECT-REF].supabase.co:5432/postgres` |
+| `DB_POOL_SIZE` | Database connection pool size (Default: `5`) | `5` |
+| `DB_MAX_OVERFLOW` | Maximum overflow connections (Default: `10`) | `10` |
+| `DB_POOL_TIMEOUT` | Connection pool timeout in seconds (Default: `30`) | `30` |
+| `DB_ECHO` | SQLAlchemy SQL query echo logging (Default: `false`) | `false` |
+
+> [!TIP]
+> The configuration layer automatically normalizes standard `postgresql://` and `postgres://` connection strings to `postgresql+asyncpg://`.
+
+### Schema Migrations with Alembic
+
+Database migrations are managed using Alembic and dynamically load the database connection from the application settings without hardcoded secrets.
+
+#### Migration Workflow
+
+1. **Generate a new migration after modifying models**:
+   ```bash
+   uv run alembic revision --autogenerate -m "create table description"
+   ```
+2. **Review generated migration** in `backend/alembic/versions/`.
+3. **Apply migrations to the database**:
+   ```bash
+   uv run alembic upgrade head
+   ```
+4. **Roll back the last migration** (if needed):
+   ```bash
+   uv run alembic downgrade -1
+   ```
+
+---
+
 ## Object Storage (Supabase Storage)
 
 ### Responsibility & Scope

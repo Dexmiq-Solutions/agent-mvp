@@ -32,6 +32,12 @@ class Settings(BaseSettings):
     SUPABASE_STORAGE_BUCKET: str = "documents"
     DATABASE_URL: str | None = None
 
+    # Database Connection Pool Settings
+    DB_POOL_SIZE: int = 5
+    DB_MAX_OVERFLOW: int = 10
+    DB_POOL_TIMEOUT: int = 30
+    DB_ECHO: bool = False
+
     @property
     def supabase_storage_key(self) -> str | None:
         """Return the preferred key for Supabase Storage operations.
@@ -39,6 +45,22 @@ class Settings(BaseSettings):
         Prefers the service role secret key for backend server operations, falling back to SUPABASE_KEY.
         """
         return self.SUPABASE_SERVICE_ROLE_KEY or self.SUPABASE_KEY
+
+    @property
+    def async_database_url(self) -> str | None:
+        """Return the database URL formatted for asynchronous SQLAlchemy access with asyncpg.
+        
+        Normalizes standard 'postgresql://' or 'postgres://' connection schemes to 'postgresql+asyncpg://'.
+        """
+        if not self.DATABASE_URL:
+            return None
+        url = self.DATABASE_URL.strip()
+        if url.startswith("postgres://"):
+            return "postgresql+asyncpg://" + url[len("postgres://"):]
+        if url.startswith("postgresql://"):
+            return "postgresql+asyncpg://" + url[len("postgresql://"):]
+        return url
+
 
 
     # Qdrant Vector Store
