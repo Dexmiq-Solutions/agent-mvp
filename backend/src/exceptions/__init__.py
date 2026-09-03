@@ -22,6 +22,13 @@ from exceptions.embedding import (
     EmbeddingRateLimitError,
     EmbeddingRequestError,
 )
+from exceptions.ingestion import (
+    DocumentRetrievalError,
+    IngestionConfigurationError,
+    IngestionError,
+    InvalidIngestionInputError,
+    UnsupportedDocumentTypeError,
+)
 from exceptions.storage import (
     BucketNotFoundError,
     ObjectNotFoundError,
@@ -54,6 +61,12 @@ __all__ = [
     "SourceDiscoveryError",
     "UnsupportedDocumentError",
     "InvalidSourceReferenceError",
+    # Ingestion Exceptions
+    "IngestionError",
+    "IngestionConfigurationError",
+    "InvalidIngestionInputError",
+    "UnsupportedDocumentTypeError",
+    "DocumentRetrievalError",
     # Storage Exceptions
     "StorageError",
     "StorageConfigurationError",

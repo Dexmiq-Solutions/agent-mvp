@@ -211,6 +211,55 @@ The layer depends strictly on `BaseObjectStorage`, remaining completely decouple
 
 ---
 
+## Document Indexing Pipeline: Ingestion
+
+### Responsibility & Scope
+
+**Ingestion** is the second stage of the document indexing pipeline responsible exclusively for answering:
+> *"How do we bring the acquired document into the application pipeline as a standardized internal representation?"*
+
+```
+Data Sources  ──►  Acquisition  ──►  [ Ingestion ]  ──►  Parsing & Extraction  ──►  ...  ──►  Storage
+                                           │
+                     BaseObjectStorage.download(path)
+                                           ▼
+                                    IngestedDocument
+```
+
+- **Scope**: Accepts an acquired document reference (`SourceDocument`, `DocumentSourceReference`, or storage path), validates tenant isolation and supported format, asynchronously retrieves the original raw file bytes from object storage, preserves source metadata, and emits a standardized `IngestedDocument`.
+- **What Ingestion Does NOT Do**: It does not parse file structures (PDF/DOCX), extract text, clean or normalize text, chunk documents, generate embeddings, or write to vector/relational databases. Those responsibilities strictly belong to downstream pipeline stages.
+- **Privacy & Security**: Ingestion never logs or dumps raw file bytes, document contents, or API credentials. `IngestedDocument.__repr__` explicitly masks raw byte payloads.
+
+### Supported Document Types
+
+Ingestion strictly supports four document formats:
+
+| Format | DocumentType | Supported Extensions | Canonical MIME Type |
+| :--- | :--- | :--- | :--- |
+| **PDF** | `pdf` | `.pdf` | `application/pdf` |
+| **Word** | `docx` | `.docx` | `application/vnd.openxmlformats-officedocument.wordprocessingml.document` |
+| **Plain Text** | `txt` | `.txt` | `text/plain` |
+| **Markdown** | `markdown` | `.md`, `.markdown` | `text/markdown` |
+
+> [!NOTE]
+> Format detection uses a deterministic strategy: explicit content type / MIME check first (normalizing MIME parameters and resolving `text/plain` markdown files by extension), falling back to file extension lookup. Any unsupported document format or MIME type raises `UnsupportedDocumentTypeError`.
+
+### Standardized Ingested Representation
+
+Successfully ingested documents are returned as `IngestedDocument`:
+- `document_id`: Unique document identifier (preserves `source_id` or `{bucket}/{path}`).
+- `project_id`: Enforces strict tenant isolation.
+- `source_storage_path`: Full path in object storage.
+- `original_filename`: Clean file name.
+- `detected_document_type`: Validated `DocumentType`.
+- `content_type`: Canonical MIME type.
+- `raw_bytes`: Original file payload in memory for downstream parsing.
+- `source_metadata`: Preserved storage coordinates, ETag, timestamps, and custom attributes.
+- `document_version_id`: Version or ETag reference if available.
+- `size_bytes`: Raw payload size in bytes.
+
+---
+
 ## Development
 
 ### Prerequisites
