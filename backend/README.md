@@ -162,6 +162,55 @@ Configure the following environment variables in `backend/.env`:
 
 ---
 
+## Document Indexing Pipeline: Acquisition
+
+### Responsibility & Scope
+
+**Acquisition** is the initial stage of the document indexing pipeline responsible exclusively for answering:
+> *"What source documents are available for a given project?"*
+
+```
+Data Sources  ──►  Change Detection  ──►  [Acquisition]  ──►  Ingestion  ──►  Parsing  ──►  ...  ──►  Storage
+                                                 │
+                                 StorageObjectMetadata (O(n))
+                                                 ▼
+                                     Structured Source References
+```
+
+- **Scope**: Discovers existing source documents in Supabase Storage, validates their formats, extracts metadata, and yields structured domain references (`SourceDocument`, `SourceReference`) for downstream ingestion.
+- **Zero Downloads**: Operates strictly via metadata listing (`BaseObjectStorage.list_objects`). It **never** downloads file contents during discovery.
+- **What Acquisition Does NOT Do**: It does not download full file bytes, parse or extract text, clean or normalize text, chunk documents, compute embeddings, or write to Qdrant/PostgreSQL.
+
+### Supported Document Formats
+
+The Acquisition layer enforces a centralized single source of truth for supported formats (`DocumentType`):
+
+| Format | DocumentType | Supported Extensions | Canonical MIME Type |
+| :--- | :--- | :--- | :--- |
+| **PDF** | `pdf` | `.pdf` | `application/pdf` |
+| **Word** | `docx` | `.docx` | `application/vnd.openxmlformats-officedocument.wordprocessingml.document` |
+| **Plain Text** | `txt` | `.txt` | `text/plain` |
+| **Markdown** | `markdown` | `.md`, `.markdown` | `text/markdown` |
+
+> [!NOTE]
+> Unsupported formats (e.g. `.csv`, `.png`, `.zip`) and directory-like placeholders (e.g. `.emptyFolderPlaceholder`, trailing slashes) are filtered out during batch acquisition and recorded in `AcquisitionResult.skipped_paths`. Requesting an unsupported file via `acquire_document` raises `UnsupportedDocumentError`.
+
+### Project-Level Tenant Isolation
+
+All acquisition operations strictly require and validate a `project_id`:
+- **Storage Path Convention**: Documents reside under `{project_id}/{relative_path}` (e.g., `proj-123/contracts/nda.pdf`).
+- **Enforced Boundaries**: Object discovery queries are scoped to the project prefix, and candidate paths are checked against the project prefix to prevent cross-tenant leakage.
+
+### Architecture & Storage Integration
+
+```
+Acquisition Layer (StorageAcquisitionService)  ──►  BaseObjectStorage Abstraction  ──►  Supabase Storage
+```
+
+The layer depends strictly on `BaseObjectStorage`, remaining completely decoupled from vendor-specific SDKs.
+
+---
+
 ## Development
 
 ### Prerequisites

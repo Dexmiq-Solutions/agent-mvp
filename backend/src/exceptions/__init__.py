@@ -1,5 +1,12 @@
 """Application domain exceptions."""
 
+from exceptions.acquisition import (
+    AcquisitionConfigurationError,
+    AcquisitionError,
+    InvalidSourceReferenceError,
+    SourceDiscoveryError,
+    UnsupportedDocumentError,
+)
 from exceptions.database import (
     DatabaseConfigurationError,
     DatabaseConnectionError,
@@ -41,6 +48,12 @@ from exceptions.vector import (
 )
 
 __all__ = [
+    # Acquisition Exceptions
+    "AcquisitionError",
+    "AcquisitionConfigurationError",
+    "SourceDiscoveryError",
+    "UnsupportedDocumentError",
+    "InvalidSourceReferenceError",
     # Storage Exceptions
     "StorageError",
     "StorageConfigurationError",
