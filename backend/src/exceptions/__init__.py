@@ -29,6 +29,12 @@ from exceptions.ingestion import (
     InvalidIngestionInputError,
     UnsupportedDocumentTypeError,
 )
+from exceptions.parsing import (
+    DocumentExtractionError,
+    InvalidParsingInputError,
+    ParsingError,
+    UnsupportedDocumentTypeError as ParsingUnsupportedDocumentTypeError,
+)
 from exceptions.storage import (
     BucketNotFoundError,
     ObjectNotFoundError,
@@ -102,4 +108,9 @@ __all__ = [
     "VectorSearchError",
     "VectorDeletionError",
     "VectorInputValidationError",
+    # Parsing Exceptions
+    "ParsingError",
+    "ParsingUnsupportedDocumentTypeError",
+    "DocumentExtractionError",
+    "InvalidParsingInputError",
 ]

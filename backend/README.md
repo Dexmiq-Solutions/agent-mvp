@@ -260,6 +260,67 @@ Successfully ingested documents are returned as `IngestedDocument`:
 
 ---
 
+## Document Indexing Pipeline: Parsing & Extraction
+
+### Responsibility & Scope
+
+**Parsing & Extraction** is the third stage of the document indexing pipeline responsible exclusively for answering:
+> *"What meaningful content and structure exist inside this document?"*
+
+```
+Data Sources ──► Acquisition ──► Ingestion ──► [ Parsing & Extraction ] ──► Cleaning & Normalization ──► ... ──► Storage
+                                                      │
+                                          ParserRegistry.resolve()
+                                                      ▼
+                                       TXT / Markdown / DOCX Parser
+                                                      ▼
+                                                ParsedDocument
+                                        (Ordered Elements + Hierarchy)
+```
+
+- **Scope**: Accepts a standardized `IngestedDocument` from Ingestion, resolves the appropriate format-specific parser via `ParserRegistry`, extracts meaningful textual content and native structural hierarchy, preserves document ordering and parent-child section relationships, and emits a structured `ParsedDocument`.
+- **What Parsing Does NOT Do**: It does not clean or normalize text, remove duplicates, chunk content, generate embeddings, enrich metadata beyond structural hierarchy, or write to databases/vector stores. Those responsibilities strictly belong to downstream pipeline stages.
+- **Privacy & Security**: Log entries never include raw document text, large extracted paragraphs, or secrets. `ParsedDocument.__repr__` explicitly masks extracted textual content.
+
+### Supported Document Formats
+
+The Parsing & Extraction layer supports three core formats:
+
+| Format | DocumentType | Parser Implementation | Structural Capabilities |
+| :--- | :--- | :--- | :--- |
+| **Plain Text** | `txt` | `TXTParser` | Extracts ordered text blocks/paragraphs separated by blank lines; predictable, non-speculative structure. |
+| **Markdown** | `markdown` | `MarkdownParser` | Structure-aware single-pass parser extracting ATX headings (H1–H6), paragraphs, code fences (ignoring `#` in code), and tables. Preserves nested heading hierarchies. |
+| **Word** | `docx` | `DOCXParser` | Uses `python-docx` to extract native Word headings (Heading 1–9, Title), paragraphs, and tables in true document sequence. |
+
+> [!NOTE]
+> PDF parsing is not implemented in this phase. Requesting an unsupported format (e.g. PDF or unmapped extensions) raises domain-level `UnsupportedDocumentTypeError`. PDF support can be registered in `ParserRegistry` in the future without modifying any existing parsers.
+
+### Structured Parsed Representation
+
+Extracted documents are returned as `ParsedDocument`:
+- `document_id`: Source document identifier.
+- `project_id`: Multi-tenant project boundary.
+- `document_type`: Canonical `DocumentType`.
+- `elements`: Ordered list of `ParsedElement` items, where each element contains:
+  - `element_id`: Deterministic element ID (e.g. `elem-0`, `elem-1`).
+  - `element_type`: `ElementType.HEADING`, `PARAGRAPH`, `TEXT_BLOCK`, `CODE_BLOCK`, or `TABLE`.
+  - `content`: Extracted raw text.
+  - `order`: 0-indexed document sequence.
+  - `heading_level`: Integer level (1–6) for headings; `None` for non-headings.
+  - `parent_id`: `element_id` of the immediate enclosing heading; `None` for root level.
+  - `section_path`: Hierarchy breadcrumb tuple (e.g. `("Authentication", "Token Expiration")`).
+  - `metadata`: Style names, code block languages, or element-specific attributes.
+- `source_metadata`: Metadata preserved from ingestion.
+- `parser_metadata`: Extraction metrics (element counts, parser class, timings).
+
+### Architecture & Service Execution
+
+- **Common Abstraction (`BaseParser`)**: Standard contract implemented by `TXTParser`, `MarkdownParser`, and `DOCXParser`.
+- **Centralized Resolution (`ParserRegistry`)**: Single source of truth for resolving parsers by `DocumentType`, filename, or extension.
+- **Async Execution Boundary (`DocumentParsingService`)**: Parsing is inherently CPU-bound. `DocumentParsingService.parse()` employs controlled thread offloading (`asyncio.to_thread`) to guarantee non-blocking execution in asynchronous workflows, while also providing synchronous execution via `parse_sync()`.
+
+---
+
 ## Development
 
 ### Prerequisites
