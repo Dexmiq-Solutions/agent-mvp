@@ -29,6 +29,12 @@ from exceptions.ingestion import (
     InvalidIngestionInputError,
     UnsupportedDocumentTypeError,
 )
+from exceptions.cleaning import (
+    CleaningConfigurationError,
+    CleaningError,
+    CleaningProcessingError,
+    InvalidCleaningInputError,
+)
 from exceptions.parsing import (
     DocumentExtractionError,
     InvalidParsingInputError,
@@ -113,4 +119,9 @@ __all__ = [
     "ParsingUnsupportedDocumentTypeError",
     "DocumentExtractionError",
     "InvalidParsingInputError",
+    # Cleaning Exceptions
+    "CleaningError",
+    "InvalidCleaningInputError",
+    "CleaningProcessingError",
+    "CleaningConfigurationError",
 ]

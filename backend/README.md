@@ -321,6 +321,49 @@ Extracted documents are returned as `ParsedDocument`:
 
 ---
 
+## Document Indexing Pipeline: Cleaning
+
+### Responsibility & Scope
+
+**Cleaning** is the fourth stage of the document indexing pipeline, positioned directly between **Parsing & Extraction** and future **Normalization/Chunking**:
+> *"How do we reliably identify and eliminate extraction artifacts and noise while strictly preserving meaningful project knowledge?"*
+
+```
+Data Sources ──► Acquisition ──► Ingestion ──► Parsing ──► [ Cleaning ] ──► Normalization ──► Chunking ──► ... ──► Storage
+                                                                │
+                                                    DocumentCleaningService
+                                                                ▼
+                                                Structure-Aware Hybrid Cleaning
+                                              (Deterministic Rules + Heuristics)
+                                                                ▼
+                                                         CleanedDocument
+                                                    (Report & Repaired Tree)
+```
+
+- **Scope**: Accepts a structured `ParsedDocument`, constructs an O(n) structural context (`DocumentStructureContext`), applies deterministic rules for high-confidence noise, applies structure-aware heuristics for pattern-based artifacts, and returns an idempotent `CleanedDocument` with an audit `CleaningReport`.
+- **Conservative Decision Policy**: When uncertain or ambiguous, content is strictly preserved. False removal of meaningful requirements is treated as more harmful than retaining harmless noise.
+- **What Cleaning Does NOT Do**: It does not call an LLM, compute embeddings, normalize whitespace/text casing (reserved for Normalization), chunk documents (reserved for Chunking), or persist records to databases.
+- **Privacy & Security**: Cleaning reports and string representations never log or leak raw extracted document text or credentials.
+
+### Structure-Aware Hybrid Architecture
+
+1. **Deterministic Cleaning Layer (`rules.py`)**:
+   - `EmptyContentRule`: Removes empty strings, whitespace-only elements, and invisible zero-width unicode characters (`\u200b`, `\u200c`, `\u200d`, `\ufeff`).
+   - `InvalidControlCharsRule`: Removes elements consisting exclusively of invalid control characters (null bytes `\x00`, form feeds) without printable text.
+   - `MalformedStructuralArtifactRule`: Removes empty code fences (```` ``` ````), empty heading markers (`###`), and empty table delimiter rows.
+   - `ExplicitPageNumberRule`: Removes standalone page numbers (`Page 1 of 10`, `- 1 -`, isolated integers on page/document boundaries).
+
+2. **Structure-Aware Heuristic Layer (`heuristics.py`)**:
+   - `RepetitiveHeaderFooterHeuristic`: Multi-signal evaluation of running headers and footers across pages/sections, with structural positioning and length checks, while shielding normative requirement clauses.
+   - `NavigationBoilerplateHeuristic`: Identifies repeated breadcrumbs (`Home > Docs > Setup`) and standard navigation fragments (`Back to top`).
+   - `ExtractionDuplicationHeuristic`: Identifies immediate consecutive duplicate element extractions resulting from parser glitches.
+
+3. **Hierarchy Integrity & Idempotency**:
+   - If an empty structural element (e.g. empty heading marker) is removed, child elements have their `parent_id` safely re-linked to the enclosing parent, and `section_path` breadcrumbs are preserved.
+   - Cleaning is fully idempotent: `clean(clean(document)) == clean(document)`.
+
+---
+
 ## Development
 
 ### Prerequisites
