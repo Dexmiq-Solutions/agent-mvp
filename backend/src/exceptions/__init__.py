@@ -35,6 +35,12 @@ from exceptions.cleaning import (
     CleaningProcessingError,
     InvalidCleaningInputError,
 )
+from exceptions.normalization import (
+    InvalidNormalizationInputError,
+    NormalizationConfigurationError,
+    NormalizationError,
+    NormalizationProcessingError,
+)
 from exceptions.parsing import (
     DocumentExtractionError,
     InvalidParsingInputError,
@@ -124,4 +130,9 @@ __all__ = [
     "InvalidCleaningInputError",
     "CleaningProcessingError",
     "CleaningConfigurationError",
+    # Normalization Exceptions
+    "NormalizationError",
+    "InvalidNormalizationInputError",
+    "NormalizationProcessingError",
+    "NormalizationConfigurationError",
 ]

@@ -362,6 +362,58 @@ Data Sources ──► Acquisition ──► Ingestion ──► Parsing ──�
    - If an empty structural element (e.g. empty heading marker) is removed, child elements have their `parent_id` safely re-linked to the enclosing parent, and `section_path` breadcrumbs are preserved.
    - Cleaning is fully idempotent: `clean(clean(document)) == clean(document)`.
 
+
+---
+
+## Document Indexing Pipeline: Normalization
+
+### Responsibility & Scope
+
+**Normalization** is the fifth stage of the document indexing pipeline, positioned directly between **Cleaning** and future **Structure-Aware Chunking**:
+> *"How should valid content remaining after Cleaning be represented consistently without changing what the document means?"*
+
+```
+Data Sources ──► Acquisition ──► Ingestion ──► Parsing ──► Cleaning ──► [ Normalization ] ──► Chunking ──► ... ──► Storage
+                                                                               │
+                                                                   DocumentNormalizationService
+                                                                               ▼
+                                                              Structure-Aware Deterministic
+                                                             (Element-Specific Transformations)
+                                                                               ▼
+                                                                     NormalizedDocument
+                                                                    (Report & Preserved Tree)
+```
+
+- **Fundamental Principle**: *"Normalize representation, not meaning."*
+- **Scope**: Accepts a structured `CleanedDocument` (or `ParsedDocument`), operates strictly on the existing intermediate representation, standardizes representation-level inconsistencies (line endings, Unicode NFC, safe control characters, meaningless blank lines, and insignificant whitespace), and emits an idempotent `NormalizedDocument`.
+- **Preservation Contract**:
+  - **Meaning**: Zero semantic modifications; normative requirements are never rewritten or paraphrased.
+  - **Hierarchy**: Section trees (`parent_id`, `section_path`) and sequence (`order`, `element_id`) are 100% preserved.
+  - **Intentional Formatting**: Code indentation (spaces/tabs), table columns/pipes, and list markers are strictly preserved.
+- **Strict Boundaries**:
+  - **What Normalization Does NOT Do**: It does not drop or filter elements (Cleaning boundary), chunk or split elements into tokens (Chunking boundary), compute embeddings, or execute LLM/network calls.
+- **Privacy & Security**: Reports and string representations never expose or leak raw document contents or sensitive payloads.
+
+### Structure-Aware Normalization Strategies
+
+| Structural Element | ElementType | Normalization Strategy |
+| :--- | :--- | :--- |
+| **Heading** | `HEADING` | Enforces single-line representation (replaces internal newlines/tabs with spaces), collapses consecutive horizontal whitespace, strips leading/trailing spaces, and synchronizes `section_path` breadcrumbs. |
+| **Paragraph / Text Block** | `PARAGRAPH`, `TEXT_BLOCK` | Normalizes line-by-line, collapses internal multiple spaces (`[ \t]{2,}` -> `" "`), standardizes excessive runaway blank lines (`\n{3,}` -> `\n\n`), and trims overall edges. |
+| **Code / Preformatted** | `CODE_BLOCK` | **Strictly preserves intentional leading indentation** (4 spaces, 2 spaces, tabs) and code structure. Standardizes line endings (`\n`), strips trailing whitespace from lines, and applies Unicode NFC. |
+| **Table** | `TABLE` | Preserves row sequence and pipe delimiters (`|`). Standardizes cell whitespace padding (`| col1 | col2 |`) while leaving delimiter rows (`:---:`) and column alignments intact. |
+| **List Item** | `LIST_ITEM` | Preserves list marker (`- `, `* `, `1. `) and hierarchy indentation level while standardizing body text whitespace. |
+
+### Deterministic Representation Standards
+
+1. **Line Ending Normalization**: All `\r\n` (CRLF) and `\r` (CR) line endings are deterministically converted to `\n` (LF).
+2. **Unicode Normalization (NFC)**: Applies standard W3C-recommended Unicode canonical composition (`unicodedata.normalize("NFC")`), resolving composite accents (`e` + `\u0301` vs `é`) to identical bitwise representations without transliteration or character loss.
+3. **Safe Control Character Removal**: Strips null bytes (`\x00`), ASCII control characters (`\x01`–`\x08`, `\x0b`, `\x0c`, `\x0e`–`\x1f`, `\x7f`), and invisible zero-width characters (`\u200b`, `\ufeff`) while strictly preserving tabs (`\t`) and newlines (`\n`).
+4. **Idempotency**: Normalization is 100% idempotent:
+   ```python
+   normalize(normalize(document)) == normalize(document)
+   ```
+
 ---
 
 ## Development
