@@ -416,6 +416,76 @@ Data Sources ──► Acquisition ──► Ingestion ──► Parsing ──�
 
 ---
 
+## Document Indexing Pipeline: Chunking
+
+### Responsibility & Scope
+
+**Chunking** is the sixth stage of the document indexing pipeline, positioned directly between **Normalization** and future **Metadata Enrichment & Embedding Generation**:
+> *"How do we partition normalized structured content into meaningful, independently retrievable chunks while preserving document structure, hierarchy, context, and provenance?"*
+
+```
+Data Sources ──► Acquisition ──► Ingestion ──► Parsing ──► Cleaning ──► Normalization ──► [ Chunking ] ──► Metadata Enrichment ──► Embeddings ──► Storage
+                                                                                               │
+                                                                                   DocumentChunkingService
+                                                                                               ▼
+                                                                             Structure-Aware Chunking
+                                                                           + Recursive Splitting Fallback
+                                                                                               ▼
+                                                                                     ChunkedDocument
+                                                                                  (Ordered Chunks & Report)
+```
+
+- **Scope**: Consumes a `NormalizedDocument`, constructs an $O(N)$ section tree, groups direct elements within meaningful structural boundaries up to `max_chunk_size`, and recursively splits oversized units using natural boundaries while preserving full provenance and structural context.
+- **Strict Input Contract**: The Chunking service API explicitly accepts `NormalizedDocument`. Passing any other document type (e.g., `ParsedDocument`, `CleanedDocument`) immediately raises `InvalidChunkingInputError`.
+- **Preservation Contract**:
+  - **Content**: Original text is preserved verbatim with zero rewriting, paraphrasing, summarization, or re-normalization.
+  - **Hierarchy**: Preserves `section_path`, `heading`, `heading_level`, `parent_element_id`, and `parent_chunk_id` for parent-child retrieval readiness.
+  - **Ordering & Provenance**: Sequential `index` (0-indexed) and `source_element_ids` ensure 100% auditable traceability back to original document elements.
+- **Strict Boundaries**:
+  - **What Chunking Does NOT Do**: It does not clean noise (Cleaning boundary), normalize representations (Normalization boundary), enrich metadata, generate embeddings (Embedding boundary), or call external vector databases / LLMs.
+- **Privacy & Security**: Reports and string representations never log or expose raw document chunk text.
+
+### Structure-Aware Chunking Strategy
+
+1. **Section Hierarchy & Boundary Preservation**:
+   - Analyzes heading levels (H1–H6) to construct a nested section tree in a single $O(N)$ pass.
+   - Preserves meaningful section and subsection boundaries: subsections are evaluated as distinct retrieval units rather than being blanket-merged into a parent section just because their combined size fits under `max_chunk_size`.
+   - Direct content elements within a section/subsection (including its heading) are packed cohesively up to `max_chunk_size`.
+
+2. **Progressive Recursive Splitting**:
+   - Fallback mechanism triggered only when an atomic unit or structural element exceeds `max_chunk_size`.
+   - Splitting progressively steps down through natural boundaries:
+     $$\text{Structural Boundary} \longrightarrow \text{Paragraph } (\text{\\n\\n}) \longrightarrow \text{Line } (\text{\\n}) \longrightarrow \text{Sentence } (\text{regex punctuation}) \longrightarrow \text{Clause } (\text{;,}) \longrightarrow \text{Word } (\text{space}) \longrightarrow \text{Character slices}$$
+   - **Guaranteed Termination**: Hard character window slicing advances by $\max(1, \text{max\_size} - \text{overlap})$, mathematically preventing infinite recursion even for arbitrary unbroken strings.
+
+3. **Soft `min_chunk_size` Preference**:
+   - `min_chunk_size` is a soft preference applied primarily during recursive splitting to merge tiny trailing fragments with the preceding chunk when safe.
+   - Standalone short requirements or distinct headings are never forcibly merged across structural boundaries.
+
+4. **Minimal Deliberate Overlap**:
+   - Overlap defaults to `0` and is applied strictly at recursive split boundaries where context might otherwise be lost. Blanket overlap between distinct structural units is never applied.
+
+5. **Extensible Sizing Abstraction (`BaseChunkSizer`)**:
+   - `CharacterChunkSizer`: Fast, deterministic string length measurement (default).
+   - `WordChunkSizer`: Whitespace word count measurement.
+   - Ready for model-specific tokenizer integration without modifying the chunking service.
+
+6. **Fallback for Weakly Structured Documents**:
+   - Documents without headings naturally attach elements to the root node, grouping consecutive paragraphs up to `max_chunk_size` while tracking `fallback_chunks_count` in the audit report.
+
+### Chunking Configuration
+
+Configure chunking parameters in `backend/.env` or via `ChunkingConfig`:
+
+| Variable / Parameter | Default | Description |
+| :--- | :--- | :--- |
+| `CHUNK_MAX_SIZE` / `max_chunk_size` | `1000` | Maximum chunk size constraint (characters or words) |
+| `CHUNK_MIN_SIZE` / `min_chunk_size` | `50` | Soft minimum chunk size preference for recursive splitting |
+| `CHUNK_OVERLAP` / `chunk_overlap` | `0` | Minimal overlap applied exclusively at recursive split boundaries |
+| `preserve_hierarchy` | `True` | Preserves hierarchical section paths and parent heading context |
+
+---
+
 ## Development
 
 ### Prerequisites

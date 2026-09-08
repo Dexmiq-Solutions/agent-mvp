@@ -41,6 +41,12 @@ from exceptions.normalization import (
     NormalizationError,
     NormalizationProcessingError,
 )
+from exceptions.chunking import (
+    ChunkingConfigurationError,
+    ChunkingError,
+    ChunkingProcessingError,
+    InvalidChunkingInputError,
+)
 from exceptions.parsing import (
     DocumentExtractionError,
     InvalidParsingInputError,
@@ -135,4 +141,9 @@ __all__ = [
     "InvalidNormalizationInputError",
     "NormalizationProcessingError",
     "NormalizationConfigurationError",
+    # Chunking Exceptions
+    "ChunkingError",
+    "InvalidChunkingInputError",
+    "ChunkingProcessingError",
+    "ChunkingConfigurationError",
 ]

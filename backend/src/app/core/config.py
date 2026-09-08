@@ -78,6 +78,11 @@ class Settings(BaseSettings):
     OPENAI_API_KEY: str | None = None
     LLM_MODEL: str = "gpt-4o"
 
+    # Chunking Configuration
+    CHUNK_MAX_SIZE: int = 1000
+    CHUNK_MIN_SIZE: int = 50
+    CHUNK_OVERLAP: int = 0
+
     @field_validator("LOG_LEVEL", mode="before")
     @classmethod
     def validate_log_level(cls, v: str) -> str:
