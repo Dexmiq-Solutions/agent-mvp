@@ -486,6 +486,102 @@ Configure chunking parameters in `backend/.env` or via `ChunkingConfig`:
 
 ---
 
+## Document Indexing Pipeline: Metadata Enrichment
+
+### Responsibility & Scope
+
+**Metadata Enrichment** is the seventh stage of the document indexing pipeline, positioned directly between **Chunking** and future **Embedding Generation & Storage**:
+> *"How do we preserve inherited document provenance and hierarchy while deriving deterministic structural and retrieval characteristics to power precise, project-isolated vector search and attribution?"*
+
+```
+Data Sources ──► Acquisition ──► Ingestion ──► Parsing ──► Cleaning ──► Normalization ──► Chunking ──► [ Metadata Enrichment ] ──► Embeddings ──► Storage
+                                                                                                              │
+                                                                                               DocumentMetadataEnrichmentService
+                                                                                                              ▼
+                                                                                             Structure-Aware Hybrid Enrichment
+                                                                                              (Provenance + Structure + Characteristics)
+                                                                                                              ▼
+                                                                                                       EnrichedDocument
+                                                                                                    (Enriched Chunks & Report)
+```
+
+- **Scope**: Consumes a `ChunkedDocument`, constructs an $O(1)$ document context (`DocumentEnrichmentContext`), preserves complete source provenance, calculates hierarchical breadcrumbs and relative document position, derives deterministic chunk metrics, strictly validates project-level tenant boundaries, and returns an idempotent `EnrichedDocument` carrying `EnrichedChunk` elements and an audit `MetadataEnrichmentReport`.
+- **Fundamental Principle**: *"Describe and enrich metadata; never mutate the knowledge itself."*
+- **Preservation Contract**:
+  - **Content**: Chunk content is preserved strictly verbatim (`chunk.content` is unaltered). The stage performs zero text rewriting, summarization, paraphrasing, or token normalization.
+  - **Hierarchy**: Section paths (`("Requirements", "Functional Requirements", "Authentication")`), heading levels, parent references, and relative document positions are 100% preserved.
+  - **Project Isolation**: Every chunk strictly retains `project_id`. Mismatched tenant identifiers immediately fail fast.
+- **Strict Boundaries**:
+  - **What Metadata Enrichment Does NOT Do**: It does not call an LLM (baseline is 100% deterministic), generate vector embeddings (Embedding boundary), write to PostgreSQL/Qdrant (Storage boundary), perform similarity search (Retrieval boundary), or execute contextual chunk rewriting (reserved for optional downstream Contextual Enrichment).
+- **Privacy & Security**: Reports and string representations never log raw chunk contents, sensitive business data, or credentials.
+
+### The 5 Metadata Categories
+
+1. **Identity and Provenance**:
+   - `project_id`: Multi-tenant project boundary (mandatory isolation key).
+   - `document_id`: Unique source document identifier.
+   - `chunk_id`: Deterministic chunk identifier (e.g., `brd-001_chunk_0`).
+   - `document_version_id`: Version or ETag reference preserved from ingestion.
+   - `source_element_ids`: List of original element IDs forming the chunk.
+   - `document_type`: Canonical document format (`markdown`, `docx`, `txt`, `pdf`).
+   - `source_storage_path` & `original_filename`: Source coordinates in Supabase Storage.
+
+2. **Structural Metadata**:
+   - `section_path`: Hierarchy breadcrumb tuple (e.g., `("Requirements", "Security")`).
+   - `heading`: Immediate enclosing heading text.
+   - `heading_level`: Integer heading depth (1–6).
+   - `heading_path_str`: Canonical breadcrumb string (e.g., `"Requirements > Security"`).
+   - `hierarchy_depth`: Depth of heading nesting (0 for root elements).
+   - `chunk_index`: 0-indexed position within the document.
+   - `total_chunks`: Total number of chunks in the document.
+   - `relative_position`: Float $0.0 \le \text{pos} \le 1.0$ indicating relative location in the document.
+
+3. **Source / Document Metadata**:
+   - Source MIME type, file format, and arbitrary custom metadata passed from acquisition and ingestion without inventing missing values.
+
+4. **Chunk Characteristics (Deterministic Derived Metadata)**:
+   - `character_count`: Raw string length.
+   - `word_count`: Whitespace-delimited word count.
+   - `line_count`: Line count for prompt sizing and display budgeting.
+   - `content_type`: Structural classification (`prose`, `code`, `table`, `list`, `heading`).
+   - `has_code`: Boolean indicating presence of code blocks or fences.
+   - `has_table`: Boolean indicating presence of tabular structures.
+   - `has_list`: Boolean indicating bulleted or numbered list items.
+   - `is_header_chunk`: Boolean indicating chunk consists exclusively of heading elements.
+   - `language`: Code language tag (e.g., `"json"`, `"python"`) if detected in code blocks.
+
+5. **Retrieval-Oriented Metadata**:
+   - Provides direct helper methods to prepare downstream payloads without redundant transformations:
+     - `chunk.to_vector_payload()`: Structured dictionary formatted for Qdrant payload with scalar/list values and project filtering.
+     - `chunk.to_relational_record()`: Structured dictionary ready for PostgreSQL storage.
+
+### Structure-Aware Hybrid Architecture & Extensibility
+
+- **Baseline Implementation (Implemented Now)**:
+  - 100% deterministic, local CPU processing ($O(N)$ single pass).
+  - Chain of deterministic rules:
+    1. `ProvenanceEnricherRule`: Standardizes provenance, identity, and source storage attributes.
+    2. `StructuralEnricherRule`: Computes hierarchy depth, heading paths, and relative chunk positions.
+    3. `CharacteristicsEnricherRule`: Derives character/word/line counts, content types, and syntax flags.
+- **Hybrid Extensibility (Architecturally Possible Later)**:
+  - Provides a lightweight `BaseMetadataEnricher` interface.
+  - Future heuristic enrichers (e.g., regex entity extractors) or model-based enrichers can be registered via `MetadataEnrichmentConfig(custom_enrichers=[...])` without modifying the core pipeline service.
+  - **Default path remains completely free of LLM calls**.
+
+### Metadata Enrichment Configuration
+
+Configure enrichment parameters via `MetadataEnrichmentConfig`:
+
+| Parameter | Default | Description |
+| :--- | :--- | :--- |
+| `heading_separator` | `" > "` | Delimiter string used to format `heading_path_str` breadcrumbs |
+| `enable_provenance` | `True` | Enables identity and source provenance preservation |
+| `enable_structural` | `True` | Enables section hierarchy, depth, and relative position calculations |
+| `enable_characteristics` | `True` | Enables deterministic character/word counts and content-type classification |
+| `custom_enrichers` | `()` | Tuple of `BaseMetadataEnricher` plugins for future heuristic/model extensions |
+
+---
+
 ## Development
 
 ### Prerequisites

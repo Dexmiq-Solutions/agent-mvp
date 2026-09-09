@@ -47,6 +47,12 @@ from exceptions.chunking import (
     ChunkingProcessingError,
     InvalidChunkingInputError,
 )
+from exceptions.metadata_enrichment import (
+    InvalidMetadataEnrichmentInputError,
+    MetadataEnrichmentConfigurationError,
+    MetadataEnrichmentError,
+    MetadataEnrichmentProcessingError,
+)
 from exceptions.parsing import (
     DocumentExtractionError,
     InvalidParsingInputError,
@@ -146,4 +152,9 @@ __all__ = [
     "InvalidChunkingInputError",
     "ChunkingProcessingError",
     "ChunkingConfigurationError",
+    # Metadata Enrichment Exceptions
+    "MetadataEnrichmentError",
+    "InvalidMetadataEnrichmentInputError",
+    "MetadataEnrichmentProcessingError",
+    "MetadataEnrichmentConfigurationError",
 ]
