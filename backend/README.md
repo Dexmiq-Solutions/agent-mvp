@@ -580,6 +580,85 @@ Configure enrichment parameters via `MetadataEnrichmentConfig`:
 | `enable_characteristics` | `True` | Enables deterministic character/word counts and content-type classification |
 | `custom_enrichers` | `()` | Tuple of `BaseMetadataEnricher` plugins for future heuristic/model extensions |
 
+
+---
+
+## Document Indexing Pipeline: Contextual Enrichment
+
+### Responsibility & Scope
+
+**Contextual Enrichment** is the eighth stage of the document indexing pipeline, positioned directly between **Metadata Enrichment** and future **Embedding Generation & Storage**:
+> *"How do we reduce the loss of situational meaning that occurs when a document is split into isolated chunks before generating vector embeddings?"*
+
+```
+Data Sources ──► Acquisition ──► Ingestion ──► Parsing ──► Cleaning ──► Normalization ──► Chunking ──► Metadata Enrichment ──► [ Contextual Enrichment ] ──► Embeddings ──► Storage
+                                                                                                                                │
+                                                                                                                DocumentContextualEnrichmentService
+                                                                                                                                ▼
+                                                                                                                 Document-Level Context Attachment
+                                                                                                                  (Deterministic or Model-Driven)
+                                                                                                                                ▼
+                                                                                                                  ContextuallyEnrichedDocument
+                                                                                                               (Contextual Chunks & Audit Report)
+```
+
+- **Scope**: Consumes an `EnrichedDocument`, determines whether contextual enrichment is enabled at document/indexing-run scope, constructs an O(1) `DocumentContext`, associates surrounding document context with each chunk's embedding representation, strictly validates project-level tenant boundaries, and returns a `ContextuallyEnrichedDocument` carrying `ContextuallyEnrichedChunk` elements and a `ContextualEnrichmentReport`.
+- **Fundamental Principle**: *"Enrich the embedding representation; never alter or destroy the source chunk."*
+- **Preservation Contract**:
+  - **Content**: Chunk content is preserved strictly verbatim (`chunk.content` is unmodified). The stage performs zero text rewriting or paraphrasing of the source text.
+  - **Context Representation**: Context is attached separately in `chunk.context_text`. The composite representation passed to embedding generation is accessed via `chunk.contextual_content` (or `chunk.to_embedding_text()`).
+  - **Hierarchy & Provenance**: All metadata, section paths, heading levels, parent references, and relative document positions inherited from Chunking and Metadata Enrichment are 100% preserved.
+  - **Project Isolation**: Every chunk strictly retains `project_id`. Mismatched tenant identifiers fail fast immediately.
+- **Strict Boundaries**:
+  - **What Contextual Enrichment Does NOT Do**: It does not re-chunk or split content (Chunking boundary), generate vector embeddings (Embedding boundary), write to PostgreSQL/Qdrant (Storage boundary), perform similarity search (Retrieval boundary), or make per-chunk selective enrichment decisions (reserved for future optimization).
+- **Privacy & Security**: Reports and string representations never log raw chunk contents, sensitive business data, or credentials.
+
+### Relationship with Metadata Enrichment
+
+| Stage | Responsibility | Primary Output | Scope |
+| :--- | :--- | :--- | :--- |
+| **Metadata Enrichment** | Describes the chunk with structured attributes (provenance, hierarchy depth, character count, content type). | `EnrichedChunk` with `ChunkMetadata` | Chunk & Document structure |
+| **Contextual Enrichment** | Adds situational document/section context to the text representation passed to vector embedding models. | `ContextuallyEnrichedChunk` with `contextual_content` for embeddings | Document-level indexing run |
+
+### Document-Level Scope vs. Chunk-Level Decisions
+
+- **Document-Level Scope (Selected Architecture)**:
+  - The decision to enrich is made once at the document/indexing-run level via configuration (`CONTEXTUAL_ENRICHMENT_ENABLED`).
+  - When disabled (`false`), contextual enrichment is skipped entirely for all chunks in the document (zero model latency, zero external API calls).
+  - When enabled (`true`), all applicable chunks in the document are processed consistently.
+  - Why document-level was selected: Guarantees deterministic, predictable pipeline behavior, avoids premature complexity, minimizes indexing latency overhead, and prevents inconsistent chunk representations within a single document.
+- **Future Possibility: Selective Chunk-Level Enrichment**:
+  - Fine-grained per-chunk selective intelligence (e.g. ambiguity scoring, context-sufficiency classification) is deliberately out of scope for the initial implementation and remains an architectural possibility for future optimization.
+
+### Supported Context Sources & Providers
+
+Contextual enrichment synthesizes situational information from:
+1. Document title and original filename (`original_filename`, `title`).
+2. Structural section hierarchy (`section_path`, `heading_path_str`).
+3. Immediate heading context (`heading`, `heading_level`).
+4. Document outline and overview (`headings_hierarchy`, `document_summary`).
+
+#### Provider Abstraction (`BaseContextProvider`)
+
+- **Structured Provider (`StructuredContextProvider`)**:
+  - Deterministic, 100% local CPU processing (zero cost, zero external API calls).
+  - Synthesizes clean contextual prefixes (e.g. `Document: auth_spec.md | Section: Requirements > Authentication`).
+  - Gracefully handles minimal or unstructured documents without inventing non-existent context.
+- **LLM Provider (`LLMContextProvider`)**:
+  - Asynchronous model-driven context generation backed by `BaseLLMClient`.
+  - Concurrently queries an external model within bounded limits (`max_concurrency` via `asyncio.Semaphore`).
+  - Isolates external model errors, translating them to `ContextualEnrichmentProviderError`.
+
+### Contextual Enrichment Configuration
+
+Contextual enrichment is controlled via environment variables loaded into `Settings`:
+
+| Environment Variable | Default | Description |
+| :--- | :--- | :--- |
+| `CONTEXTUAL_ENRICHMENT_ENABLED` | `false` | Master switch enabling or skipping the contextual enrichment stage |
+| `CONTEXTUAL_ENRICHMENT_STRATEGY` | `"structured"` | Enrichment strategy to execute (`"structured"` or `"llm"`) |
+| `CONTEXTUAL_ENRICHMENT_MAX_CONCURRENCY` | `5` | Maximum concurrent chunk requests for model-driven enrichment |
+
 ---
 
 ## Development

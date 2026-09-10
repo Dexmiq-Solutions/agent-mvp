@@ -53,6 +53,13 @@ from exceptions.metadata_enrichment import (
     MetadataEnrichmentError,
     MetadataEnrichmentProcessingError,
 )
+from exceptions.contextual_enrichment import (
+    ContextualEnrichmentConfigurationError,
+    ContextualEnrichmentError,
+    ContextualEnrichmentProcessingError,
+    ContextualEnrichmentProviderError,
+    InvalidContextualEnrichmentInputError,
+)
 from exceptions.parsing import (
     DocumentExtractionError,
     InvalidParsingInputError,
@@ -157,4 +164,10 @@ __all__ = [
     "InvalidMetadataEnrichmentInputError",
     "MetadataEnrichmentProcessingError",
     "MetadataEnrichmentConfigurationError",
+    # Contextual Enrichment Exceptions
+    "ContextualEnrichmentError",
+    "InvalidContextualEnrichmentInputError",
+    "ContextualEnrichmentConfigurationError",
+    "ContextualEnrichmentProcessingError",
+    "ContextualEnrichmentProviderError",
 ]

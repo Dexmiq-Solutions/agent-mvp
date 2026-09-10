@@ -28,6 +28,11 @@ def test_default_settings():
     assert settings.VOYAGE_API_KEY is None
     assert settings.OPENAI_API_KEY is None
 
+    # Contextual Enrichment default
+    assert settings.CONTEXTUAL_ENRICHMENT_ENABLED is False
+    assert settings.CONTEXTUAL_ENRICHMENT_STRATEGY == "structured"
+    assert settings.CONTEXTUAL_ENRICHMENT_MAX_CONCURRENCY == 5
+
 
 def test_custom_environment_settings(monkeypatch):
     """Verify settings load overrides from environment variables."""
@@ -35,12 +40,18 @@ def test_custom_environment_settings(monkeypatch):
     monkeypatch.setenv("ENVIRONMENT", "production")
     monkeypatch.setenv("LOG_LEVEL", "debug")
     monkeypatch.setenv("PORT", "9000")
+    monkeypatch.setenv("CONTEXTUAL_ENRICHMENT_ENABLED", "true")
+    monkeypatch.setenv("CONTEXTUAL_ENRICHMENT_STRATEGY", "llm")
+    monkeypatch.setenv("CONTEXTUAL_ENRICHMENT_MAX_CONCURRENCY", "8")
 
     settings = Settings()
     assert settings.APP_NAME == "Custom Agent"
     assert settings.ENVIRONMENT == "production"
     assert settings.LOG_LEVEL == "DEBUG"
     assert settings.PORT == 9000
+    assert settings.CONTEXTUAL_ENRICHMENT_ENABLED is True
+    assert settings.CONTEXTUAL_ENRICHMENT_STRATEGY == "llm"
+    assert settings.CONTEXTUAL_ENRICHMENT_MAX_CONCURRENCY == 8
 
 
 def test_supabase_storage_key_resolution(monkeypatch):

@@ -83,6 +83,11 @@ class Settings(BaseSettings):
     CHUNK_MIN_SIZE: int = 50
     CHUNK_OVERLAP: int = 0
 
+    # Contextual Enrichment Configuration
+    CONTEXTUAL_ENRICHMENT_ENABLED: bool = False
+    CONTEXTUAL_ENRICHMENT_STRATEGY: str = "structured"
+    CONTEXTUAL_ENRICHMENT_MAX_CONCURRENCY: int = 5
+
     @field_validator("LOG_LEVEL", mode="before")
     @classmethod
     def validate_log_level(cls, v: str) -> str:
