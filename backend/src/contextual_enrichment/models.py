@@ -15,20 +15,15 @@ class ContextualEnrichmentConfig:
 
     enabled: bool = False
     strategy: str = "structured"
-    max_concurrency: int = 5
     provider: BaseContextProvider | None = None
 
     def __post_init__(self) -> None:
         """Validate configuration parameters upon instantiation."""
-        valid_strategies = {"structured", "llm", "disabled", "custom"}
+        valid_strategies = {"structured", "disabled", "custom"}
         if self.strategy not in valid_strategies and self.provider is None:
             raise ContextualEnrichmentConfigurationError(
                 f"Invalid contextual enrichment strategy '{self.strategy}'. "
                 f"Must be one of: {', '.join(sorted(valid_strategies))} or provide a custom provider."
-            )
-        if self.max_concurrency < 1:
-            raise ContextualEnrichmentConfigurationError(
-                f"max_concurrency must be an integer >= 1, got {self.max_concurrency}."
             )
 
     @classmethod
@@ -39,7 +34,6 @@ class ContextualEnrichmentConfig:
         return cls(
             enabled=settings.CONTEXTUAL_ENRICHMENT_ENABLED,
             strategy=settings.CONTEXTUAL_ENRICHMENT_STRATEGY,
-            max_concurrency=settings.CONTEXTUAL_ENRICHMENT_MAX_CONCURRENCY,
         )
 
     @classmethod
@@ -75,33 +69,6 @@ class ContextuallyEnrichedChunk(EnrichedChunk):
     def to_embedding_text(self) -> str:
         """Return the text representation to be embedded."""
         return self.contextual_content
-
-    def to_vector_payload(self) -> dict[str, Any]:
-        """Serialize into vector database payload dictionary.
-
-        Preserves original chunk text as 'content', attaches context metadata,
-        and retains all tenant isolation attributes.
-        """
-        base = super().to_vector_payload()
-        base["content"] = self.content  # Verbatim original content for retrieval display
-        base["context_text"] = self.context_text
-        base["is_contextually_enriched"] = self.is_contextually_enriched
-        if self.context_strategy:
-            base["context_strategy"] = self.context_strategy
-        return base
-
-    def to_relational_record(self) -> dict[str, Any]:
-        """Serialize into PostgreSQL relational record dictionary."""
-        base = super().to_relational_record()
-        base["context_text"] = self.context_text
-        base["is_contextually_enriched"] = self.is_contextually_enriched
-        if "metadata" in base and isinstance(base["metadata"], dict):
-            base["metadata"]["contextual"] = {
-                "context_text": self.context_text,
-                "is_contextually_enriched": self.is_contextually_enriched,
-                "context_strategy": self.context_strategy,
-            }
-        return base
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize contextually enriched chunk to a dictionary."""

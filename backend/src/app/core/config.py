@@ -86,7 +86,6 @@ class Settings(BaseSettings):
     # Contextual Enrichment Configuration
     CONTEXTUAL_ENRICHMENT_ENABLED: bool = False
     CONTEXTUAL_ENRICHMENT_STRATEGY: str = "structured"
-    CONTEXTUAL_ENRICHMENT_MAX_CONCURRENCY: int = 5
 
     @field_validator("LOG_LEVEL", mode="before")
     @classmethod

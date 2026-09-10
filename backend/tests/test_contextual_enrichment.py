@@ -14,7 +14,6 @@ from contextual_enrichment import (
     ContextuallyEnrichedDocument,
     DocumentContext,
     DocumentContextualEnrichmentService,
-    LLMContextProvider,
     StructuredContextProvider,
     get_contextual_enrichment_service,
     reset_contextual_enrichment_service,
@@ -26,7 +25,6 @@ from exceptions.contextual_enrichment import (
     ContextualEnrichmentProviderError,
     InvalidContextualEnrichmentInputError,
 )
-from llm.base import BaseLLMClient, LLMProviderError
 from metadata_enrichment.models import (
     ChunkMetadata,
     EnrichedChunk,
@@ -140,35 +138,6 @@ def make_enriched_doc(
     )
 
 
-class MockLLMClient(BaseLLMClient):
-    """Mock LLM client for test isolation without external network calls."""
-
-    def __init__(
-        self,
-        response_text: str = "This chunk describes token expiration rules.",
-        fail_error: Exception | None = None,
-        model_name: str = "mock-gpt-4o",
-    ) -> None:
-        self._response_text = response_text
-        self._fail_error = fail_error
-        self._model_name = model_name
-        self.call_count = 0
-        self.last_prompt: str | None = None
-        self.last_system_prompt: str | None = None
-
-    @property
-    def model_name(self) -> str:
-        return self._model_name
-
-    async def complete(self, prompt: str, system_prompt: str | None = None) -> str:
-        self.call_count += 1
-        self.last_prompt = prompt
-        self.last_system_prompt = system_prompt
-        if self._fail_error:
-            raise self._fail_error
-        return self._response_text
-
-
 # ==============================================================================
 # 1. Configuration & Default Behavior Tests
 # ==============================================================================
@@ -179,37 +148,23 @@ def test_default_config_is_disabled():
     config = ContextualEnrichmentConfig()
     assert config.enabled is False
     assert config.strategy == "structured"
-    assert config.max_concurrency == 5
 
 
 def test_config_from_settings(monkeypatch):
     """Verify config derives from application Settings / environment."""
     monkeypatch.setenv("CONTEXTUAL_ENRICHMENT_ENABLED", "true")
     monkeypatch.setenv("CONTEXTUAL_ENRICHMENT_STRATEGY", "structured")
-    monkeypatch.setenv("CONTEXTUAL_ENRICHMENT_MAX_CONCURRENCY", "10")
 
     settings = Settings()
     config = ContextualEnrichmentConfig.from_settings(settings)
     assert config.enabled is True
     assert config.strategy == "structured"
-    assert config.max_concurrency == 10
 
 
 def test_invalid_config_raises():
-    """Verify invalid strategy or concurrency raises ContextualEnrichmentConfigurationError."""
+    """Verify invalid strategy raises ContextualEnrichmentConfigurationError."""
     with pytest.raises(ContextualEnrichmentConfigurationError):
         ContextualEnrichmentConfig(strategy="invalid_strat")
-
-    with pytest.raises(ContextualEnrichmentConfigurationError):
-        ContextualEnrichmentConfig(max_concurrency=0)
-
-
-def test_llm_strategy_without_provider_raises():
-    """Verify configuring strategy='llm' without passing provider raises configuration error."""
-    config = ContextualEnrichmentConfig(enabled=True, strategy="llm", provider=None)
-    with pytest.raises(ContextualEnrichmentConfigurationError) as exc_info:
-        DocumentContextualEnrichmentService(config=config)
-    assert "LLM strategy requires an explicit LLM provider" in str(exc_info.value)
 
 
 # ==============================================================================
@@ -339,9 +294,14 @@ async def test_provenance_and_hierarchy_preservation():
 # ==============================================================================
 
 
+# ==============================================================================
+# 4. Output Representations (Dictionary Serialization & Embedding Representation)
+# ==============================================================================
+
+
 @pytest.mark.asyncio
-async def test_to_vector_payload_includes_original_and_context():
-    """Verify vector payload includes original content and contextual metadata."""
+async def test_to_dict_and_embedding_text_representation():
+    """Verify to_dict() and to_embedding_text() expose contextual representations without modifying source content."""
     chunk = make_enriched_chunk("c-1", "Original chunk content")
     doc = make_enriched_doc([chunk])
 
@@ -349,30 +309,27 @@ async def test_to_vector_payload_includes_original_and_context():
     service = DocumentContextualEnrichmentService(config=config)
 
     result = await service.enrich(doc)
-    payload = result.chunks[0].to_vector_payload()
+    enriched_chunk = result.chunks[0]
 
-    assert payload["content"] == "Original chunk content"
-    assert payload["is_contextually_enriched"] is True
-    assert "Document: auth_spec.md" in payload["context_text"]
-    assert payload["project_id"] == "proj-alpha"
-    assert payload["document_id"] == "doc-1"
+    # Content preserved verbatim
+    assert enriched_chunk.content == "Original chunk content"
+    assert enriched_chunk.is_contextually_enriched is True
+    assert "Document: auth_spec.md" in enriched_chunk.context_text
 
+    # Embedding representation combines context and verbatim content
+    assert enriched_chunk.to_embedding_text() == enriched_chunk.contextual_content
+    assert "Document: auth_spec.md" in enriched_chunk.to_embedding_text()
+    assert "Original chunk content" in enriched_chunk.to_embedding_text()
 
-@pytest.mark.asyncio
-async def test_to_relational_record_includes_context_metadata():
-    """Verify relational record retains context text and audit flags."""
-    chunk = make_enriched_chunk("c-1", "Original chunk content")
-    doc = make_enriched_doc([chunk])
-
-    config = ContextualEnrichmentConfig(enabled=True, strategy="structured")
-    service = DocumentContextualEnrichmentService(config=config)
-
-    result = await service.enrich(doc)
-    record = result.chunks[0].to_relational_record()
-
-    assert record["context_text"] is not None
-    assert record["is_contextually_enriched"] is True
-    assert "contextual" in record["metadata"]
+    # Dictionary serialization contains clean domain attributes
+    data = enriched_chunk.to_dict()
+    assert data["content"] == "Original chunk content"
+    assert data["is_contextually_enriched"] is True
+    assert data["context_text"] == enriched_chunk.context_text
+    assert data["context_strategy"] == "structured"
+    assert data["contextual_content"] == enriched_chunk.contextual_content
+    assert data["project_id"] == "proj-alpha"
+    assert data["document_id"] == "doc-1"
 
 
 # ==============================================================================
@@ -461,73 +418,48 @@ async def test_missing_context_does_not_invent():
 
 
 # ==============================================================================
-# 7. LLM Provider Integration Tests
+# 7. Provider Abstraction & Custom Provider Extension Tests
 # ==============================================================================
 
 
-@pytest.mark.asyncio
-async def test_llm_provider_enrichment():
-    """Verify LLM provider formats prompt, invokes client, and attaches context."""
-    mock_client = MockLLMClient(response_text="This chunk describes user session timeouts.")
-    llm_provider = LLMContextProvider(llm_client=mock_client)
+class CustomMockContextProvider(BaseContextProvider):
+    """Custom context provider to verify BaseContextProvider extension point."""
 
+    @property
+    def provider_name(self) -> str:
+        return "custom_mock"
+
+    async def generate_context(
+        self,
+        chunk: EnrichedChunk,
+        context: DocumentContext,
+    ) -> str | None:
+        return f"Custom Context for {chunk.chunk_id}"
+
+
+@pytest.mark.asyncio
+async def test_custom_provider_extension():
+    """Verify that BaseContextProvider can be implemented and injected seamlessly."""
+    custom_provider = CustomMockContextProvider()
     config = ContextualEnrichmentConfig(
         enabled=True,
         strategy="custom",
-        provider=llm_provider,
+        provider=custom_provider,
     )
     service = DocumentContextualEnrichmentService(config=config)
 
-    chunk = make_enriched_chunk("c-1", "Sessions expire after 15 minutes of inactivity.")
+    chunk = make_enriched_chunk("c-custom", "Custom chunk content")
     doc = make_enriched_doc([chunk])
 
     result = await service.enrich(doc)
-
-    assert mock_client.call_count == 1
-    assert "Sessions expire after 15 minutes" in mock_client.last_prompt
-    assert "auth_spec.md" in mock_client.last_prompt
-
     c = result.chunks[0]
+
     assert c.is_contextually_enriched is True
-    assert c.context_text == "This chunk describes user session timeouts."
-    assert "This chunk describes user session timeouts.\n\nSessions expire" in c.contextual_content
-
-
-@pytest.mark.asyncio
-async def test_llm_provider_handles_empty_response():
-    """Verify LLM returning NONE or whitespace results in None context."""
-    mock_client = MockLLMClient(response_text="NONE")
-    llm_provider = LLMContextProvider(llm_client=mock_client)
-
-    config = ContextualEnrichmentConfig(enabled=True, provider=llm_provider)
-    service = DocumentContextualEnrichmentService(config=config)
-
-    chunk = make_enriched_chunk("c-1", "Self contained statement.")
-    doc = make_enriched_doc([chunk])
-
-    result = await service.enrich(doc)
-    c = result.chunks[0]
-
-    assert c.is_contextually_enriched is False
-    assert c.context_text is None
-    assert c.contextual_content == "Self contained statement."
-
-
-@pytest.mark.asyncio
-async def test_llm_provider_failure_translates_to_domain_exception():
-    """Verify LLM provider error raises ContextualEnrichmentProviderError."""
-    mock_client = MockLLMClient(fail_error=LLMProviderError("Rate limit exceeded"))
-    llm_provider = LLMContextProvider(llm_client=mock_client)
-
-    config = ContextualEnrichmentConfig(enabled=True, provider=llm_provider)
-    service = DocumentContextualEnrichmentService(config=config)
-
-    chunk = make_enriched_chunk("c-1", "Content")
-    doc = make_enriched_doc([chunk])
-
-    with pytest.raises(ContextualEnrichmentProviderError) as exc_info:
-        await service.enrich(doc)
-    assert "Rate limit exceeded" in str(exc_info.value)
+    assert c.context_text == "Custom Context for c-custom"
+    assert c.contextual_content == "Custom Context for c-custom\n\nCustom chunk content"
+    assert c.to_embedding_text() == c.contextual_content
+    assert result.contextual_enrichment_report.strategy_used == "custom_mock"
+    assert result.contextual_enrichment_report.enriched_chunks_count == 1
 
 
 # ==============================================================================

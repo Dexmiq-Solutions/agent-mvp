@@ -31,7 +31,6 @@ def test_default_settings():
     # Contextual Enrichment default
     assert settings.CONTEXTUAL_ENRICHMENT_ENABLED is False
     assert settings.CONTEXTUAL_ENRICHMENT_STRATEGY == "structured"
-    assert settings.CONTEXTUAL_ENRICHMENT_MAX_CONCURRENCY == 5
 
 
 def test_custom_environment_settings(monkeypatch):
@@ -41,8 +40,7 @@ def test_custom_environment_settings(monkeypatch):
     monkeypatch.setenv("LOG_LEVEL", "debug")
     monkeypatch.setenv("PORT", "9000")
     monkeypatch.setenv("CONTEXTUAL_ENRICHMENT_ENABLED", "true")
-    monkeypatch.setenv("CONTEXTUAL_ENRICHMENT_STRATEGY", "llm")
-    monkeypatch.setenv("CONTEXTUAL_ENRICHMENT_MAX_CONCURRENCY", "8")
+    monkeypatch.setenv("CONTEXTUAL_ENRICHMENT_STRATEGY", "custom")
 
     settings = Settings()
     assert settings.APP_NAME == "Custom Agent"
@@ -50,8 +48,7 @@ def test_custom_environment_settings(monkeypatch):
     assert settings.LOG_LEVEL == "DEBUG"
     assert settings.PORT == 9000
     assert settings.CONTEXTUAL_ENRICHMENT_ENABLED is True
-    assert settings.CONTEXTUAL_ENRICHMENT_STRATEGY == "llm"
-    assert settings.CONTEXTUAL_ENRICHMENT_MAX_CONCURRENCY == 8
+    assert settings.CONTEXTUAL_ENRICHMENT_STRATEGY == "custom"
 
 
 def test_supabase_storage_key_resolution(monkeypatch):

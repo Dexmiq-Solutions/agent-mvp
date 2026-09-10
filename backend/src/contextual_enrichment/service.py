@@ -40,14 +40,6 @@ class DocumentContextualEnrichmentService:
 
         if self._config.provider is not None:
             self._provider = self._config.provider
-        elif self._config.strategy == "structured":
-            self._provider = StructuredContextProvider()
-        elif self._config.strategy == "disabled":
-            self._provider = StructuredContextProvider()
-        elif self._config.strategy == "llm":
-            raise ContextualEnrichmentConfigurationError(
-                "LLM strategy requires an explicit LLM provider instance passed to ContextualEnrichmentConfig(provider=...)."
-            )
         else:
             self._provider = StructuredContextProvider()
 

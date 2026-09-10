@@ -640,14 +640,11 @@ Contextual enrichment synthesizes situational information from:
 
 #### Provider Abstraction (`BaseContextProvider`)
 
+- **Provider Abstraction**: Defines the generic interface for generating chunk-level context from document structure, leaving the architecture open for future providers without coupling the pipeline to external model APIs.
 - **Structured Provider (`StructuredContextProvider`)**:
-  - Deterministic, 100% local CPU processing (zero cost, zero external API calls).
-  - Synthesizes clean contextual prefixes (e.g. `Document: auth_spec.md | Section: Requirements > Authentication`).
+  - Baseline selected strategy: deterministic, 100% local CPU processing (zero cost, zero external API calls, sub-millisecond latency).
+  - Synthesizes clean contextual breadcrumbs (e.g. `Document: auth_spec.md | Section: Requirements > Authentication`).
   - Gracefully handles minimal or unstructured documents without inventing non-existent context.
-- **LLM Provider (`LLMContextProvider`)**:
-  - Asynchronous model-driven context generation backed by `BaseLLMClient`.
-  - Concurrently queries an external model within bounded limits (`max_concurrency` via `asyncio.Semaphore`).
-  - Isolates external model errors, translating them to `ContextualEnrichmentProviderError`.
 
 ### Contextual Enrichment Configuration
 
@@ -656,8 +653,11 @@ Contextual enrichment is controlled via environment variables loaded into `Setti
 | Environment Variable | Default | Description |
 | :--- | :--- | :--- |
 | `CONTEXTUAL_ENRICHMENT_ENABLED` | `false` | Master switch enabling or skipping the contextual enrichment stage |
-| `CONTEXTUAL_ENRICHMENT_STRATEGY` | `"structured"` | Enrichment strategy to execute (`"structured"` or `"llm"`) |
-| `CONTEXTUAL_ENRICHMENT_MAX_CONCURRENCY` | `5` | Maximum concurrent chunk requests for model-driven enrichment |
+| `CONTEXTUAL_ENRICHMENT_STRATEGY` | `"structured"` | Enrichment strategy to execute (`"structured"`, `"disabled"`, or custom provider) |
+
+> [!NOTE]
+> **Pipeline Boundary Contract**:
+> Contextual Enrichment is strictly responsible for synthesizing situational context and exposing the composite representation for embedding models via `chunk.to_embedding_text()` and `chunk.contextual_content`. It preserves original `chunk.content` verbatim and does not define or duplicate downstream vector storage (Qdrant) payloads or relational (PostgreSQL) records.
 
 ---
 

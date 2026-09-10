@@ -7,7 +7,6 @@ from contextual_enrichment.models import (
     ContextuallyEnrichedChunk,
     ContextuallyEnrichedDocument,
 )
-from contextual_enrichment.providers.llm import LLMContextProvider
 from contextual_enrichment.providers.structured import StructuredContextProvider
 from contextual_enrichment.service import (
     DocumentContextualEnrichmentService,
@@ -26,7 +25,6 @@ __all__ = [
     "ContextuallyEnrichedDocument",
     # Providers
     "StructuredContextProvider",
-    "LLMContextProvider",
     # Service & Factories
     "DocumentContextualEnrichmentService",
     "get_contextual_enrichment_service",
