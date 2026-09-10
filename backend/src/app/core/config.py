@@ -63,12 +63,17 @@ class Settings(BaseSettings):
 
 
 
-    # Qdrant Vector Store
+    # Qdrant Vector Store & Indexing
     QDRANT_URL: str | None = None
     QDRANT_API_KEY: str | None = None
     QDRANT_COLLECTION_NAME: str = "document_chunks"
     QDRANT_TIMEOUT: int = 30
     QDRANT_VECTOR_SIZE: int = 1024
+    QDRANT_BATCH_SIZE: int = 64
+    QDRANT_DISTANCE: str = "Cosine"
+    QDRANT_MAX_RETRIES: int = 3
+    QDRANT_RETRY_DELAY: float = 0.5
+    QDRANT_RETRY_BACKOFF: float = 2.0
 
     # Embeddings (Voyage)
     VOYAGE_API_KEY: str | None = None

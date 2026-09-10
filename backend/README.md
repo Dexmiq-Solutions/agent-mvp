@@ -661,6 +661,98 @@ Contextual enrichment is controlled via environment variables loaded into `Setti
 
 ---
 
+## Document Indexing Pipeline: Indexing / Storage (Qdrant)
+
+### Responsibility & Scope
+
+**Indexing / Storage** is the tenth stage of the document indexing pipeline, positioned directly between **Embedding Generation** and the future **Retrieval Stage**:
+> *"How do we take successfully generated embedding vectors and document chunks and make them persistently, idempotently, and efficiently searchable in Qdrant while strictly enforcing project isolation?"*
+
+```
+Data Sources ──► Ingestion ──► Parsing ──► Cleaning ──► Normalization ──► Chunking ──► Metadata ──► Contextual ──► Embeddings ──► [ Indexing / Storage ] ──► Qdrant
+                                                                                                                                           │
+                                                                                                                              DocumentIndexingService
+                                                                                                                                           ▼
+                                                                                                                             Validate Records & Identity
+                                                                                                                             (Project Isolation & Dim Check)
+                                                                                                                                           ▼
+                                                                                                                              Deterministic Point IDs
+                                                                                                                                (RFC 4122 v5 UUIDs)
+                                                                                                                                           ▼
+                                                                                                                                 Bounded Batched Upserts
+                                                                                                                               (Retries & Partial Failure)
+                                                                                                                                           ▼
+                                                                                                                                  Qdrant Vector Points
+```
+
+### Embedding vs. Indexing: Critical Architectural Boundary
+
+| Concern | Embedding Generation | Indexing / Storage | Qdrant Vector Database |
+| :--- | :--- | :--- | :--- |
+| **Input** | Clean text representation (`to_embedding_text()`) | Vector + Chunk Identity + Retrieval Metadata | Qdrant Points (`id`, `vector`, `payload`) |
+| **Responsibility** | High-dimensional vector conversion via Voyage AI | Validation, stable point ID, batched idempotent upsert | Vector storage, HNSW indexing, similarity search |
+| **Boundary** | Does not interact with Qdrant or manage points | Does not generate vectors, does not run search algorithms | Does not parse, chunk, or generate embeddings |
+
+### PostgreSQL vs. Qdrant Responsibilities
+
+- **PostgreSQL (Supabase)**: Remains the single source of truth for full structured entity data, user management, projects, documents, document versions, complete chunk records, relationships, and processing state.
+- **Qdrant**: Stores the retrieval-oriented representation only:
+  - Vector embedding (`list[float]`).
+  - Stable relational coordinates (`project_id`, `document_id`, `chunk_id`, `document_version_id`).
+  - Key filtering attributes (`section_path`, `heading`, `content_type`, `character_count`, etc.).
+  - Embedding configuration provenance (`embedding_model`, `embedding_provider`, `embedding_dimension`).
+  - **Does NOT** duplicate full relational tables or raw source files.
+- **Supabase Storage**: Stores the original uploaded binary/source documents.
+
+### Key Architectural Features
+
+1. **Deterministic Stable Point Identity**:
+   - Point IDs are generated using deterministic Version 5 UUIDs (`uuid.uuid5`) derived from `(project_id, document_id, document_version_id, chunk_id)` within a dedicated namespace.
+   - Ensures strict compliance with Qdrant's UUID point ID format.
+   - Repeated indexing runs produce identical point IDs, guaranteeing **idempotent upserts** without duplicate points.
+   - Different document versions map to distinct point IDs.
+
+2. **Project-Level Tenant Isolation**:
+   - Every point payload carries `project_id`.
+   - Batch inputs are strictly validated: mixed project IDs in a single batch trigger an immediate `InvalidIndexingInputError`.
+   - Future similarity searches and filter deletions require `project_id` matching, preventing cross-tenant leakage.
+
+3. **Bounded Batched Upserts**:
+   - Points are partitioned into configurable batches (`QDRANT_BATCH_SIZE`, default: `64`).
+   - Minimizes network round-trips and memory overhead.
+
+4. **Transient Failure Handling & Retries**:
+   - Bounded retries with exponential backoff (`QDRANT_MAX_RETRIES`, default: `3`) handle transient network drops.
+   - Permanent errors (authentication, validation, dimension mismatches) fail fast without retrying.
+
+5. **Detailed Partial Failure Reporting**:
+   - Multi-batch jobs track succeeded and failed batches explicitly in `IndexingReport`.
+   - In strict mode (`strict=True`, default), partial failures raise `IndexingPartialFailureError(report)` preserving failed chunk IDs for safe selective retry.
+
+6. **Document Lifecycle Management**:
+   - `delete_document(project_id, document_id)`: Removes all vectors for a document.
+   - `delete_document_version(project_id, document_id, version_id)`: Scopes removal to a specific version.
+   - `delete_chunks(project_id, point_ids)`: Removes specific point IDs.
+
+### Configuration Reference
+
+Configure vector indexing parameters in `backend/.env` or via `IndexingConfig`:
+
+| Variable | Default | Description |
+| :--- | :--- | :--- |
+| `QDRANT_URL` | `None` | Base URL of Qdrant cluster / cloud instance |
+| `QDRANT_API_KEY` | `None` | Qdrant API key (optional for local instance) |
+| `QDRANT_COLLECTION_NAME` | `"document_chunks"` | Target shared collection name |
+| `QDRANT_TIMEOUT` | `30` | Request timeout in seconds |
+| `QDRANT_VECTOR_SIZE` | `1024` | Vector dimensionality (1024 for `voyage-3-large`) |
+| `QDRANT_BATCH_SIZE` | `64` | Maximum number of vector points per upsert batch |
+| `QDRANT_DISTANCE` | `"Cosine"` | Distance metric (`Cosine`, `Euclid`, `Dot`) |
+| `QDRANT_MAX_RETRIES` | `3` | Maximum retry attempts for transient failures |
+| `QDRANT_RETRY_DELAY` | `0.5` | Initial backoff delay in seconds |
+| `QDRANT_RETRY_BACKOFF` | `2.0` | Exponential backoff multiplier |
+
+---
+
 ## Development
 
 ### Prerequisites

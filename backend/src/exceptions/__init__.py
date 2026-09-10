@@ -60,6 +60,14 @@ from exceptions.contextual_enrichment import (
     ContextualEnrichmentProviderError,
     InvalidContextualEnrichmentInputError,
 )
+from exceptions.indexing import (
+    IndexingConfigurationError,
+    IndexingConnectionError,
+    IndexingError,
+    InvalidIndexingInputError,
+    IndexingOperationError,
+    IndexingPartialFailureError,
+)
 from exceptions.parsing import (
     DocumentExtractionError,
     InvalidParsingInputError,
@@ -170,4 +178,11 @@ __all__ = [
     "ContextualEnrichmentConfigurationError",
     "ContextualEnrichmentProcessingError",
     "ContextualEnrichmentProviderError",
+    # Indexing Exceptions
+    "IndexingError",
+    "InvalidIndexingInputError",
+    "IndexingConfigurationError",
+    "IndexingConnectionError",
+    "IndexingOperationError",
+    "IndexingPartialFailureError",
 ]
