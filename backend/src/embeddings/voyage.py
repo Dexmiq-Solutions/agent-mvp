@@ -115,6 +115,14 @@ class VoyageEmbeddingProvider(BaseEmbeddingProvider):
         batch_result = await self.embed_batch([valid_text], input_type=input_type)
         return batch_result.embeddings[0]
 
+    async def embed_query(self, query: str) -> list[float]:
+        """Generate an embedding vector for a single retrieval query."""
+        return await self.embed_text(query, input_type="query")
+
+    async def embed_queries(self, queries: list[str]) -> EmbeddingBatchResult:
+        """Generate embedding vectors for a batch of retrieval queries preserving order."""
+        return await self.embed_batch(queries, input_type="query")
+
     async def embed_batch(
         self,
         texts: list[str],

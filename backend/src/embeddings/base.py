@@ -57,3 +57,33 @@ class BaseEmbeddingProvider(ABC):
             EmbeddingInputValidationError: If input list is empty or contains invalid items.
             EmbeddingError: If embedding generation fails.
         """
+
+    async def embed_query(self, query: str) -> list[float]:
+        """Generate an embedding vector for a single retrieval query.
+        
+        Args:
+            query: Input query text string to embed.
+            
+        Returns:
+            list[float]: Embedding vector representing the retrieval query.
+            
+        Raises:
+            EmbeddingInputValidationError: If input query is empty or invalid.
+            EmbeddingError: If embedding generation fails.
+        """
+        return await self.embed_text(query, input_type="query")
+
+    async def embed_queries(self, queries: list[str]) -> EmbeddingBatchResult:
+        """Generate embedding vectors for a batch of retrieval queries preserving order.
+        
+        Args:
+            queries: List of input query text strings to embed.
+            
+        Returns:
+            EmbeddingBatchResult: Result containing embedding vectors in 1-to-1 order.
+            
+        Raises:
+            EmbeddingInputValidationError: If queries list is empty or contains invalid items.
+            EmbeddingError: If embedding generation fails.
+        """
+        return await self.embed_batch(queries, input_type="query")

@@ -7,6 +7,7 @@ User Query -> Query Preprocessing -> Query Transformation -> Retrieval Query Set
 from exceptions.retrieval import (
     EmptyQueryError,
     InvalidQueryError,
+    QueryEmbeddingError,
     QueryLengthExceededError,
     QueryPreprocessingError,
     QueryTransformationError,
@@ -21,7 +22,15 @@ from retrieval.config import (
     QueryPreprocessingConfig,
     QueryTransformationConfig,
 )
+from retrieval.embedding import (
+    QueryEmbeddingService,
+    embed_query_set,
+    get_query_embedding_service,
+    reset_query_embedding_service,
+)
 from retrieval.models import (
+    EmbeddedQuery,
+    EmbeddedQuerySet,
     PolicyDecision,
     ProcessedQuery,
     RetrievalQuerySet,
@@ -53,6 +62,8 @@ __all__ = [
     "ProcessedQuery",
     "PolicyDecision",
     "RetrievalQuerySet",
+    "EmbeddedQuery",
+    "EmbeddedQuerySet",
     # Configuration
     "QueryPreprocessingConfig",
     "QueryTransformationConfig",
@@ -75,6 +86,11 @@ __all__ = [
     "OpenAICompatibleLLMClient",
     "TransformationOutputValidator",
     "ValidationResult",
+    # Query Embedding Subsystem & Helpers
+    "QueryEmbeddingService",
+    "get_query_embedding_service",
+    "reset_query_embedding_service",
+    "embed_query_set",
     # Domain Exceptions
     "RetrievalError",
     "QueryPreprocessingError",
@@ -87,5 +103,6 @@ __all__ = [
     "TransformationTimeoutError",
     "TransformationUnavailableError",
     "TransformationFallbackLimitExceededError",
+    "QueryEmbeddingError",
 ]
 

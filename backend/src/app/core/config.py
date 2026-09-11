@@ -77,7 +77,11 @@ class Settings(BaseSettings):
 
     # Embeddings (Voyage)
     VOYAGE_API_KEY: str | None = None
-    EMBEDDING_MODEL: str = "voyage-3-large"
+    EMBEDDING_MODEL: str = "voyage-4"
+
+    # Redis Cache (Shared embedding result cache)
+    REDIS_URL: str | None = None
+    EMBEDDING_CACHE_ENABLED: bool = True
 
     # LLM Provider
     OPENAI_API_KEY: str | None = None

@@ -21,6 +21,7 @@ from exceptions.embedding import (
     EmbeddingInputValidationError,
     EmbeddingRateLimitError,
     EmbeddingRequestError,
+    EmbeddingResponseValidationError,
 )
 from exceptions.ingestion import (
     DocumentRetrievalError,
@@ -101,6 +102,7 @@ from exceptions.vector import (
 from exceptions.retrieval import (
     EmptyQueryError,
     InvalidQueryError,
+    QueryEmbeddingError,
     QueryLengthExceededError,
     QueryPreprocessingError,
     QueryTransformationError,
@@ -149,6 +151,7 @@ __all__ = [
     "EmbeddingRateLimitError",
     "EmbeddingInputValidationError",
     "EmbeddingRequestError",
+    "EmbeddingResponseValidationError",
     # Vector Store Exceptions
     "VectorStoreError",
     "VectorStoreConfigurationError",
@@ -210,5 +213,6 @@ __all__ = [
     "TransformationTimeoutError",
     "TransformationUnavailableError",
     "TransformationFallbackLimitExceededError",
+    "QueryEmbeddingError",
 ]
 

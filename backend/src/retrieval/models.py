@@ -114,3 +114,21 @@ class RetrievalQuerySet:
             f"strategy_used={self.strategy_used!r})"
         )
 
+
+@dataclass(frozen=True)
+class EmbeddedQuery:
+    """Vector embedding and identity for a single retrieval query representation."""
+
+    query: str
+    vector: list[float]
+    query_type: str = "original"
+    model: str = ""
+
+
+@dataclass(frozen=True)
+class EmbeddedQuerySet:
+    """Minimal representation connecting a retrieval query set to embedding vectors."""
+
+    original: EmbeddedQuery
+    transformed: EmbeddedQuery | None = None
+

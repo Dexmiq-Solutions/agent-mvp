@@ -61,7 +61,7 @@ Text Input (Single or Batch)  ──►  Embedding Abstraction  ──►  Voyag
 - **Provider Abstraction (`BaseEmbeddingProvider`)**: Isolates the rest of the application from Voyage-specific SDK calls so the provider can be easily changed or extended in the future without rewriting RAG components.
 - **Asynchronous Execution**: Uses the official `voyageai.AsyncClient` for non-blocking I/O.
 - **Batch Processing**: Supports efficient batch embedding (`embed_batch`) to process multiple chunks per API call while strictly preserving 1-to-1 input-to-output ordering.
-- **Configuration-Driven Model**: The model name is driven by centralized settings (`EMBEDDING_MODEL`), defaulting to `voyage-3-large`.
+- **Configuration-Driven Model**: The model name is driven by centralized settings (`EMBEDDING_MODEL`), defaulting to `voyage-4`.
 
 ### Embedding Configuration
 
@@ -70,7 +70,8 @@ Configure the embedding provider in `backend/.env`:
 | Variable | Description | Example |
 | :--- | :--- | :--- |
 | `VOYAGE_API_KEY` | Voyage AI API key | `pa-xyz123...` |
-| `EMBEDDING_MODEL` | Embedding model identifier (Default: `voyage-3-large`) | `voyage-3-large` |
+| `EMBEDDING_MODEL` | Embedding model identifier (Default: `voyage-4`) | `voyage-4` |
+| `REDIS_URL` | Redis URL for shared embedding-result cache (optional) | `redis://localhost:6379/0` |
 
 ---
 
@@ -798,6 +799,60 @@ Configure query preprocessing parameters in `backend/.env` or via `QueryPreproce
 | :--- | :--- | :--- |
 | `MAX_QUERY_LENGTH` / `max_query_length` | `2000` | Maximum allowed character length before validation failure |
 | `unicode_form` | `"NFC"` | Standard W3C Unicode normalization form |
+
+---
+
+## Retrieval Pipeline: Query Embedding
+
+### Responsibility & Scope
+
+**Query Embedding** is the third stage of the **Retrieval Pipeline**, positioned directly between **Query Transformation** and downstream **Vector Search**:
+> *"How do we convert retrieval-ready queries into compatible dense vectors for vector search while preserving query mapping and avoiding redundant provider calls?"*
+
+```
+RetrievalQuerySet [original_query, transformed_query (optional)]
+                             │
+                  QueryEmbeddingService
+                             │
+            ┌────────────────┴────────────────┐
+            ▼                                 ▼
+   Redis Cache Lookup               Voyage AI (embed_queries)
+   (Deterministic Key)             (Batch uncached representations)
+            │                                 │
+            └────────────────┬────────────────┘
+                             ▼
+                      EmbeddedQuerySet
+            (original: EmbeddedQuery, transformed: EmbeddedQuery)
+                             ▼
+                  Downstream Vector Search (Qdrant)
+```
+
+- **Scope**: Consumes `RetrievalQuerySet`, looks up query embeddings in the shared Redis cache, batches uncached queries in a single provider call using `BaseEmbeddingProvider.embed_queries(...)`, validates the returned vectors, updates the cache, and produces an immutable `EmbeddedQuerySet`.
+- **Preservation Contract**:
+  - **Query-to-Vector Mapping**: Strictly guarantees that `original_query` maps to `EmbeddedQuerySet.original` and `transformed_query` (if present) maps to `EmbeddedQuerySet.transformed`. The original query is never discarded.
+  - **No Transformation / Re-Normalization**: Does not perform preprocessing, keyword extraction, rewriting, decomposition, or LLM calls.
+  - **No Vector Search / Persistence**: Does not query Qdrant, persist points, or filter tenants.
+- **Cache Resilience**:
+  - Uses shared `RedisEmbeddingCache` with deterministic keys (`embedding:voyage:voyage-4:query:...`).
+  - Graceful degradation: if Redis is unavailable or throws errors, operations log warnings and continue smoothly without failing retrieval.
+- **Transient Failure Retries**:
+  - Bounded exponential-backoff retries for transient errors (`EmbeddingRateLimitError`, `EmbeddingConnectionError`). Permanent errors fail fast.
+
+### Domain Contract: `EmbeddedQuery` & `EmbeddedQuerySet`
+
+```python
+@dataclass(frozen=True)
+class EmbeddedQuery:
+    query: str
+    vector: list[float]
+    query_type: str = "original"  # "original" | "transformed"
+    model: str = ""
+
+@dataclass(frozen=True)
+class EmbeddedQuerySet:
+    original: EmbeddedQuery
+    transformed: EmbeddedQuery | None = None
+```
 
 ---
 

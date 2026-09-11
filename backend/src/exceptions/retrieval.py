@@ -59,3 +59,7 @@ class TransformationUnavailableError(TransformationProviderError):
 
 class TransformationFallbackLimitExceededError(QueryTransformationError):
     """Raised when retrieval fallback attempts exceed the configured maximum bound."""
+
+
+class QueryEmbeddingError(RetrievalError):
+    """Base exception for query embedding stage failures."""

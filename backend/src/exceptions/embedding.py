@@ -32,3 +32,7 @@ class EmbeddingInputValidationError(EmbeddingError):
 
 class EmbeddingRequestError(EmbeddingError):
     """Raised when an embedding request fails or returns an error from the provider."""
+
+
+class EmbeddingResponseValidationError(EmbeddingError):
+    """Raised when the embedding provider returns an invalid, malformed, or mismatched response."""

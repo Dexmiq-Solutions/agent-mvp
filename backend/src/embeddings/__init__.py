@@ -4,8 +4,15 @@ from typing import Optional
 
 from app.core.config import Settings
 from embeddings.base import BaseEmbeddingProvider
+from embeddings.cache import (
+    RedisEmbeddingCache,
+    generate_embedding_cache_key,
+    get_redis_embedding_cache,
+    reset_redis_embedding_cache,
+)
 from embeddings.client import get_async_voyage_client, reset_async_voyage_client
 from embeddings.models import EmbeddingBatchResult, EmbeddingResult
+from embeddings.validation import validate_embedding_batch, validate_embedding_vector
 from embeddings.voyage import VoyageEmbeddingProvider
 from exceptions.embedding import (
     EmbeddingAuthenticationError,
@@ -15,6 +22,7 @@ from exceptions.embedding import (
     EmbeddingInputValidationError,
     EmbeddingRateLimitError,
     EmbeddingRequestError,
+    EmbeddingResponseValidationError,
 )
 
 _default_embedding_provider: Optional[BaseEmbeddingProvider] = None
@@ -57,6 +65,14 @@ __all__ = [
     "VoyageEmbeddingProvider",
     "EmbeddingResult",
     "EmbeddingBatchResult",
+    # Cache
+    "RedisEmbeddingCache",
+    "generate_embedding_cache_key",
+    "get_redis_embedding_cache",
+    "reset_redis_embedding_cache",
+    # Validation
+    "validate_embedding_vector",
+    "validate_embedding_batch",
     # Provider Factories
     "get_embedding_provider",
     "reset_embedding_provider",
@@ -70,4 +86,5 @@ __all__ = [
     "EmbeddingRateLimitError",
     "EmbeddingInputValidationError",
     "EmbeddingRequestError",
+    "EmbeddingResponseValidationError",
 ]
