@@ -448,3 +448,123 @@ class QdrantVectorStore(BaseVectorStore):
             raise VectorSearchError(
                 f"Unexpected error executing vector search: {exc}", original_error=exc
             ) from exc
+
+    async def search_batch(
+        self,
+        query_vectors: list[list[float]],
+        project_id: str,
+        limit: int = 10,
+        filter_metadata: Optional[dict[str, Any]] = None,
+        score_threshold: Optional[float] = None,
+        with_vectors: bool = False,
+    ) -> list[list[VectorSearchResult]]:
+        """Perform batch similarity search for multiple query vectors with project isolation."""
+        if not isinstance(query_vectors, (list, tuple)) or len(query_vectors) == 0:
+            raise VectorInputValidationError("query_vectors must be a non-empty list of query vectors.")
+        for idx, qv in enumerate(query_vectors):
+            if not isinstance(qv, (list, tuple)) or len(qv) == 0:
+                raise VectorInputValidationError(f"Query vector at index {idx} must be a non-empty list of floats.")
+        if limit <= 0:
+            raise VectorInputValidationError(f"limit must be a positive integer, got {limit}.")
+
+        # If only one query vector, delegate directly to search to avoid batch overhead
+        if len(query_vectors) == 1:
+            single = await self.search(
+                query_vector=query_vectors[0],
+                project_id=project_id,
+                limit=limit,
+                filter_metadata=filter_metadata,
+                score_threshold=score_threshold,
+                with_vectors=with_vectors,
+            )
+            return [single]
+
+        query_filter = self._build_filter(
+            project_id=project_id,
+            filter_metadata=filter_metadata,
+        )
+        client = self._get_client()
+
+        if hasattr(client, "query_batch_points"):
+            requests = [
+                models.QueryRequest(
+                    query=qv,
+                    filter=query_filter,
+                    limit=limit,
+                    with_payload=True,
+                    with_vector=with_vectors,
+                    score_threshold=score_threshold,
+                )
+                for qv in query_vectors
+            ]
+
+            try:
+                logger.debug(
+                    "Executing native batch vector search in '%s' for project '%s' (%d queries, limit: %d)",
+                    self._collection_name,
+                    project_id,
+                    len(query_vectors),
+                    limit,
+                )
+                batch_responses = await client.query_batch_points(
+                    collection_name=self._collection_name,
+                    requests=requests,
+                )
+
+                all_results: list[list[VectorSearchResult]] = []
+                for resp in batch_responses:
+                    query_results: list[VectorSearchResult] = []
+                    for pt in resp.points:
+                        payload = VectorPayload.from_dict(pt.payload or {})
+                        if payload.project_id != project_id:
+                            logger.warning(
+                                "Encountered mismatched project_id '%s' in batch search result for project '%s'",
+                                payload.project_id,
+                                project_id,
+                            )
+                            continue
+
+                        raw_vector: Optional[list[float]] = None
+                        if with_vectors and pt.vector is not None:
+                            if isinstance(pt.vector, list):
+                                raw_vector = pt.vector
+
+                        query_results.append(
+                            VectorSearchResult(
+                                id=pt.id,
+                                score=float(pt.score),
+                                payload=payload,
+                                vector=raw_vector,
+                            )
+                        )
+                    all_results.append(query_results)
+
+                return all_results
+            except qdrant_exceptions.UnexpectedResponse as exc:
+                if exc.status_code in (401, 403):
+                    raise VectorStoreAuthenticationError(
+                        "Authentication failed with Qdrant.", original_error=exc
+                    ) from exc
+                if exc.status_code == 404:
+                    raise CollectionNotFoundError(
+                        f"Collection '{self._collection_name}' not found.", original_error=exc
+                    ) from exc
+                raise VectorSearchError(
+                    f"Failed to execute batch vector search in collection '{self._collection_name}': {exc}",
+                    original_error=exc,
+                ) from exc
+            except Exception as exc:
+                if isinstance(exc, (VectorStoreError, VectorInputValidationError)):
+                    raise
+                raise VectorSearchError(
+                    f"Unexpected error executing batch vector search: {exc}", original_error=exc
+                ) from exc
+
+        return await super().search_batch(
+            query_vectors=query_vectors,
+            project_id=project_id,
+            limit=limit,
+            filter_metadata=filter_metadata,
+            score_threshold=score_threshold,
+            with_vectors=with_vectors,
+        )

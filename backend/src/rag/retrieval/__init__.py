@@ -31,14 +31,21 @@ from retrieval import (
     TransformationUnavailableError,
     TransformationValidationError,
     ValidationResult,
+    VectorRetrievalError,
+    VectorSearchCandidate,
+    VectorSearchConfig,
+    VectorSearchService,
     embed_query_set,
     get_query_embedding_service,
     get_query_preprocessor,
     get_query_transformation_service,
+    get_vector_search_service,
     preprocess_query,
     reset_query_embedding_service,
     reset_query_preprocessor,
     reset_query_transformation_service,
+    reset_vector_search_service,
+    search_vectors,
     transform_query,
 )
 
@@ -49,9 +56,11 @@ __all__ = [
     "RetrievalQuerySet",
     "EmbeddedQuery",
     "EmbeddedQuerySet",
+    "VectorSearchCandidate",
     # Configuration
     "QueryPreprocessingConfig",
     "QueryTransformationConfig",
+    "VectorSearchConfig",
     # Preprocessing
     "QueryPreprocessor",
     "QueryPreprocessingService",
@@ -76,6 +85,11 @@ __all__ = [
     "get_query_embedding_service",
     "reset_query_embedding_service",
     "embed_query_set",
+    # Vector Search Subsystem & Helpers
+    "VectorSearchService",
+    "get_vector_search_service",
+    "reset_vector_search_service",
+    "search_vectors",
     # Domain Exceptions
     "RetrievalError",
     "QueryPreprocessingError",
@@ -89,5 +103,6 @@ __all__ = [
     "TransformationUnavailableError",
     "TransformationFallbackLimitExceededError",
     "QueryEmbeddingError",
+    "VectorRetrievalError",
 ]
 

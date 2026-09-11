@@ -28,6 +28,7 @@ Vector + Metadata  ──►  Vector Store Abstraction  ──►  Qdrant Implem
 - **Project-Level Isolation**: All search queries and filter deletions strictly enforce `project_id` matching to prevent cross-tenant data leakage.
 - **Idempotent Collection Management**: `ensure_collection_exists()` safely validates dimensionality and distance metrics without destructive overwriting.
 - **Batch Upserts & Deletions**: Supports bulk vector operations (`upsert`, `delete`, `delete_by_filter`).
+- **Batch Similarity Search**: Supports single and multi-vector batch similarity search (`search`, `search_batch`) executing native batch queries with tenant-level filtering.
 
 ### Vector Storage Configuration
 
@@ -666,7 +667,7 @@ Contextual enrichment is controlled via environment variables loaded into `Setti
 
 ### Responsibility & Scope
 
-**Indexing / Storage** is the tenth stage of the document indexing pipeline, positioned directly between **Embedding Generation** and the future **Retrieval Stage**:
+**Indexing / Storage** is the tenth stage of the document indexing pipeline, positioned directly between **Embedding Generation** and the downstream **Retrieval Pipeline**:
 > *"How do we take successfully generated embedding vectors and document chunks and make them persistently, idempotently, and efficiently searchable in Qdrant while strictly enforcing project isolation?"*
 
 ```
@@ -716,7 +717,7 @@ Data Sources ──► Ingestion ──► Parsing ──► Cleaning ──► 
 2. **Project-Level Tenant Isolation**:
    - Every point payload carries `project_id`.
    - Batch inputs are strictly validated: mixed project IDs in a single batch trigger an immediate `InvalidIndexingInputError`.
-   - Future similarity searches and filter deletions require `project_id` matching, preventing cross-tenant leakage.
+   - Similarity searches and filter deletions require `project_id` matching, strictly preventing cross-tenant leakage.
 
 3. **Bounded Batched Upserts**:
    - Points are partitioned into configurable batches (`QDRANT_BATCH_SIZE`, default: `64`).
@@ -762,7 +763,7 @@ Configure vector indexing parameters in `backend/.env` or via `IndexingConfig`:
 > *"How do we prepare the user's query for downstream retrieval without changing what the user is asking?"*
 
 ```
-Raw User Query  ──►  [ Query Preprocessing ]  ──►  Optional Query Transformation  ──►  Query Embedding  ──►  Retrieval
+Raw User Query  ──►  [ Query Preprocessing ]  ──►  Optional Query Transformation  ──►  Query Embedding  ──►  Vector Search  ──►  Downstream Fusion
                              │
                   QueryPreprocessor / Service
                              ▼
@@ -852,7 +853,110 @@ class EmbeddedQuery:
 class EmbeddedQuerySet:
     original: EmbeddedQuery
     transformed: EmbeddedQuery | None = None
+
+    @property
+    def queries(self) -> tuple[EmbeddedQuery, ...]: ...
 ```
+
+---
+
+## Retrieval Pipeline: Vector Search (Qdrant)
+
+### Responsibility & Scope
+
+**Vector Search** is the fourth stage of the **Retrieval Pipeline**, positioned directly between **Query Embedding** and downstream **Fusion / Merging**:
+> *"How do we perform project-isolated dense similarity search against Qdrant for multiple query representations and return ranked candidates while preserving query provenance for downstream fusion?"*
+
+```
+EmbeddedQuerySet [original, transformed (optional)]
+                             │
+                    VectorSearchService
+                             │
+                             ▼
+             Query Representation Provenance Extraction
+             (queries: tuple[EmbeddedQuery, ...])
+                             │
+                             ▼
+             Single / Native Batch Similarity Search
+              (BaseVectorStore / QdrantVectorStore)
+              [project_id == active_tenant, top_k, threshold]
+                             │
+                             ▼
+              Defensive Result Validation & Filtering
+             (Identities, Finite Scores, Tenant Isolation)
+                             │
+                             ▼
+                list[VectorSearchCandidate]
+             (chunk_id, doc_id, project_id, score, query_type)
+                             │
+                             ▼
+               Downstream Fusion / Merge Stage
+```
+
+- **Scope**: Consumes an `EmbeddedQuerySet` produced by Query Embedding, extracts all active query representations (`original`, `transformed`), executes project-scoped dense similarity search against Qdrant via `BaseVectorStore.search_batch`, validates returned candidate points, enforces mandatory `project_id` matching at both database and defensive validation levels, attaches explicit `query_type` provenance, and returns an ordered list of `VectorSearchCandidate` records.
+- **Fundamental Principle**: *"Retrieve dense candidates within tenant boundaries; preserve query representation provenance for downstream fusion; never fetch content, fuse, or rerank."*
+- **Preservation & Boundary Contract**:
+  - **Query Representation Provenance**: Candidates explicitly retain the `query_type` (`"original"`, `"transformed"`) that generated them. Candidates from multiple representations are preserved additively without deduplication or score fusion (reserved for downstream Fusion).
+  - **Project Isolation Invariant**: Every search operation requires a valid, non-empty `project_id`. The search request applies `project_id` filtering directly inside Qdrant (`FieldCondition(key="project_id", match=MatchValue(value=project_id))`). Defensive post-validation additionally drops any leaked points with structured warning logs.
+  - **No PostgreSQL Chunk Fetching**: PostgreSQL remains the canonical chunk store. Vector Search returns candidate coordinates (`chunk_id`, `document_id`, `project_id`, `document_version_id`) and retrieval `score`. Full chunk content is fetched at the later Fetch Chunks stage.
+  - **Strict Boundaries (What Vector Search Does NOT Do)**:
+    - No query preprocessing or transformation (Transformation boundary).
+    - No embedding generation (Embedding boundary).
+    - No keyword / sparse search (Keyword Search boundary).
+    - No fusion, RRF, or cross-branch deduplication (Fusion boundary).
+    - No reranking or cross-encoder scoring (Reranking boundary).
+    - No relevance evaluation or fallback triggering (Relevance boundary).
+    - No PostgreSQL chunk fetching (Storage boundary).
+    - No prompt or context assembly (Generation boundary).
+- **Performance & Batch Execution**:
+  - For single query representations: delegates directly to `search()` to eliminate batch overhead.
+  - For multiple query representations: executes in a single network round-trip using the installed Qdrant client's native batch API (`client.query_batch_points(collection_name, requests=[models.QueryRequest(...)])`).
+  - Reuses singleton `AsyncQdrantClient` and `BaseVectorStore` instances across the application lifecycle.
+  - Non-blocking asynchronous external I/O throughout.
+- **Observability & Error Behavior**:
+  - **Empty Results**: An empty candidate set (`[]`) from Qdrant is treated as a valid, normal search result and returned without error.
+  - **Infrastructure Failures**: Network failures, timeouts, missing collections, or Qdrant outages raise `VectorRetrievalError` wrapping the underlying `VectorStoreError` with `original_error=exc`. Failures are never silently converted into empty results.
+  - **Discarded Malformed Candidates**: Points missing required identifiers (`chunk_id`, `document_id`), carrying non-finite scores, or failing project isolation are dropped and logged with structured warnings, ensuring telemetry clearly distinguishes between zero matches and discarded malformed records.
+
+### Domain Model: `VectorSearchCandidate`
+
+The service outputs a list of frozen `VectorSearchCandidate` dataclasses:
+
+```python
+@dataclass(frozen=True)
+class VectorSearchCandidate:
+    """Represents a scored chunk candidate retrieved via vector similarity search."""
+
+    chunk_id: str
+    document_id: str
+    project_id: str
+    score: float
+    query_type: str = "original"
+    document_version_id: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize search candidate to a standard dictionary."""
+        return {
+            "chunk_id": self.chunk_id,
+            "document_id": self.document_id,
+            "project_id": self.project_id,
+            "score": self.score,
+            "query_type": self.query_type,
+            "document_version_id": self.document_version_id,
+        }
+```
+
+### Configuration Reference
+
+Vector search configuration is single-sourced from application `Settings` into `VectorSearchConfig`:
+
+| Variable / Parameter | Default | Description |
+| :--- | :--- | :--- |
+| `VECTOR_SEARCH_TOP_K` / `top_k` | `10` | Maximum number of candidate chunks to retrieve per query representation (must be positive) |
+| `VECTOR_SEARCH_SCORE_THRESHOLD` / `score_threshold` | `None` | Optional minimum similarity score threshold forwarded to vector store |
+
+> [!NOTE]
+> **Collection Resolution**: Physical collection resolution remains encapsulated entirely inside `storage.vector`. `VectorSearchConfig` does not configure collection names or assume physical collection layout, preserving collection topology as a storage-layer decision.
 
 ---
 
@@ -876,5 +980,9 @@ uv run uvicorn app.main:app --reload
 
 ### Running Tests
 ```bash
+# Run full test suite
 uv run pytest
+
+# Run vector search and storage tests
+uv run pytest tests/test_vector_search.py tests/test_vector_qdrant.py
 ```

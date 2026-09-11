@@ -63,3 +63,7 @@ class TransformationFallbackLimitExceededError(QueryTransformationError):
 
 class QueryEmbeddingError(RetrievalError):
     """Base exception for query embedding stage failures."""
+
+
+class VectorRetrievalError(RetrievalError):
+    """Base exception for vector similarity search retrieval failures."""

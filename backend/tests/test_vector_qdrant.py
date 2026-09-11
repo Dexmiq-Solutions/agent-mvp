@@ -65,6 +65,7 @@ def mock_qdrant_client():
     client.upsert = AsyncMock()
     client.delete = AsyncMock()
     client.query_points = AsyncMock()
+    client.query_batch_points = AsyncMock()
     client.close = AsyncMock()
     return client
 
@@ -472,3 +473,141 @@ def test_get_vector_store_factory(mock_qdrant_settings):
     )
     assert custom_store.collection_name == "custom_collection"
     assert custom_store is not store1
+
+
+# ==============================================================================
+# 10. Batch Similarity Search Tests
+# ==============================================================================
+
+
+@pytest.mark.anyio
+async def test_search_batch_single_query_delegates_to_search(mock_qdrant_settings, mock_qdrant_client):
+    """Verify search_batch with 1 query vector delegates directly to search() without batch overhead."""
+    mock_point = MagicMock()
+    mock_point.id = "p_single"
+    mock_point.score = 0.95
+    mock_point.payload = {"project_id": "proj_1", "document_id": "doc_1", "chunk_id": "c_1"}
+    mock_point.vector = None
+
+    mock_response = MagicMock()
+    mock_response.points = [mock_point]
+    mock_qdrant_client.query_points.return_value = mock_response
+
+    store = QdrantVectorStore(client=mock_qdrant_client, settings=mock_qdrant_settings)
+    results = await store.search_batch(
+        query_vectors=[[0.1, 0.2]],
+        project_id="proj_1",
+        limit=5,
+    )
+
+    assert len(results) == 1
+    assert len(results[0]) == 1
+    assert results[0][0].id == "p_single"
+    assert results[0][0].score == 0.95
+    assert results[0][0].payload.chunk_id == "c_1"
+
+    mock_qdrant_client.query_points.assert_awaited_once()
+    mock_qdrant_client.query_batch_points.assert_not_awaited()
+
+
+@pytest.mark.anyio
+async def test_search_batch_multiple_queries_native_batch(mock_qdrant_settings, mock_qdrant_client):
+    """Verify search_batch with multiple vectors executes a single query_batch_points call."""
+    mock_pt1 = MagicMock()
+    mock_pt1.id = "pt_1"
+    mock_pt1.score = 0.88
+    mock_pt1.payload = {"project_id": "proj_alpha", "document_id": "doc_1", "chunk_id": "c_1"}
+    mock_pt1.vector = None
+
+    mock_pt2 = MagicMock()
+    mock_pt2.id = "pt_2"
+    mock_pt2.score = 0.92
+    mock_pt2.payload = {"project_id": "proj_alpha", "document_id": "doc_2", "chunk_id": "c_2"}
+    mock_pt2.vector = None
+
+    resp1 = MagicMock()
+    resp1.points = [mock_pt1]
+    resp2 = MagicMock()
+    resp2.points = [mock_pt2]
+    mock_qdrant_client.query_batch_points.return_value = [resp1, resp2]
+
+    store = QdrantVectorStore(client=mock_qdrant_client, settings=mock_qdrant_settings)
+    results = await store.search_batch(
+        query_vectors=[[0.1, 0.2], [0.3, 0.4]],
+        project_id="proj_alpha",
+        limit=10,
+        score_threshold=0.7,
+    )
+
+    assert len(results) == 2
+    assert len(results[0]) == 1
+    assert results[0][0].id == "pt_1"
+    assert results[0][0].score == 0.88
+    assert results[1][0].id == "pt_2"
+    assert results[1][0].score == 0.92
+
+    mock_qdrant_client.query_batch_points.assert_awaited_once()
+    call_kwargs = mock_qdrant_client.query_batch_points.await_args.kwargs
+    assert call_kwargs["collection_name"] == "test_chunks"
+    requests = call_kwargs["requests"]
+    assert len(requests) == 2
+    assert requests[0].query == [0.1, 0.2]
+    assert requests[0].limit == 10
+    assert requests[0].score_threshold == 0.7
+    assert requests[1].query == [0.3, 0.4]
+
+    # Verify project isolation filter inside both requests
+    for req in requests:
+        assert req.filter is not None
+        assert any(
+            cond.key == "project_id" and cond.match.value == "proj_alpha"
+            for cond in req.filter.must
+        )
+
+
+@pytest.mark.anyio
+async def test_search_batch_drops_mismatched_project_defensively(mock_qdrant_settings, mock_qdrant_client):
+    """Verify search_batch defensively discards any returned point with a mismatched project_id."""
+    leaked_pt = MagicMock()
+    leaked_pt.id = "leaked_point"
+    leaked_pt.score = 0.99
+    leaked_pt.payload = {"project_id": "foreign_project", "document_id": "doc_x", "chunk_id": "c_x"}
+    leaked_pt.vector = None
+
+    valid_pt = MagicMock()
+    valid_pt.id = "valid_point"
+    valid_pt.score = 0.85
+    valid_pt.payload = {"project_id": "target_project", "document_id": "doc_y", "chunk_id": "c_y"}
+    valid_pt.vector = None
+
+    resp1 = MagicMock()
+    resp1.points = [leaked_pt, valid_pt]
+    mock_qdrant_client.query_batch_points.return_value = [resp1]
+
+    store = QdrantVectorStore(client=mock_qdrant_client, settings=mock_qdrant_settings)
+    results = await store.search_batch(
+        query_vectors=[[0.1, 0.2], [0.3, 0.4]],
+        project_id="target_project",
+    )
+
+    # Only the valid point should remain; leaked point discarded
+    assert len(results[0]) == 1
+    assert results[0][0].id == "valid_point"
+
+
+@pytest.mark.anyio
+async def test_search_batch_input_validation(mock_qdrant_settings, mock_qdrant_client):
+    """Verify search_batch validates inputs strictly."""
+    store = QdrantVectorStore(client=mock_qdrant_client, settings=mock_qdrant_settings)
+
+    with pytest.raises(VectorInputValidationError):
+        await store.search_batch(query_vectors=[], project_id="p1")
+
+    with pytest.raises(VectorInputValidationError):
+        await store.search_batch(query_vectors=[[]], project_id="p1")
+
+    with pytest.raises(VectorInputValidationError):
+        await store.search_batch(query_vectors=[[0.1]], project_id="")
+
+    with pytest.raises(VectorInputValidationError):
+        await store.search_batch(query_vectors=[[0.1]], project_id="p1", limit=0)

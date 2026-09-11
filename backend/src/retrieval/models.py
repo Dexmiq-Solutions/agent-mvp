@@ -132,3 +132,41 @@ class EmbeddedQuerySet:
     original: EmbeddedQuery
     transformed: EmbeddedQuery | None = None
 
+    @property
+    def queries(self) -> tuple[EmbeddedQuery, ...]:
+        """Return all embedded query representations in priority order.
+
+        Always guarantees original is at index 0. If transformed is present,
+        returns (original, transformed).
+        """
+        if self.transformed is not None:
+            return (self.original, self.transformed)
+        return (self.original,)
+
+
+@dataclass(frozen=True)
+class VectorSearchCandidate:
+    """Represents a scored chunk candidate retrieved via vector similarity search.
+
+    Preserves relational coordinates, similarity score from the vector index,
+    and query representation provenance for downstream fusion and reranking.
+    """
+
+    chunk_id: str
+    document_id: str
+    project_id: str
+    score: float
+    query_type: str = "original"
+    document_version_id: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize search candidate to a standard dictionary."""
+        return {
+            "chunk_id": self.chunk_id,
+            "document_id": self.document_id,
+            "project_id": self.project_id,
+            "score": self.score,
+            "query_type": self.query_type,
+            "document_version_id": self.document_version_id,
+        }
+

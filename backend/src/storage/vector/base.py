@@ -119,3 +119,46 @@ class BaseVectorStore(ABC):
             VectorInputValidationError: If query_vector is empty or project_id is missing.
             VectorSearchError: If search query fails.
         """
+
+    async def search_batch(
+        self,
+        query_vectors: list[list[float]],
+        project_id: str,
+        limit: int = 10,
+        filter_metadata: Optional[dict[str, Any]] = None,
+        score_threshold: Optional[float] = None,
+        with_vectors: bool = False,
+    ) -> list[list[VectorSearchResult]]:
+        """Perform batch vector similarity search for multiple query vectors with project isolation.
+
+        Default fallback implementation executes search() sequentially if the underlying
+        vector store does not provide a native batch search operation.
+
+        Args:
+            query_vectors: List of query embedding vectors to search.
+            project_id: Mandatory project ID to strictly enforce tenant isolation.
+            limit: Maximum number of top-k results to return per query vector.
+            filter_metadata: Optional additional metadata key-value filters.
+            score_threshold: Optional minimum similarity score threshold.
+            with_vectors: Whether to include raw vectors in search results.
+
+        Returns:
+            list[list[VectorSearchResult]]: List of ranked search result lists corresponding
+                1-to-1 with input query vectors.
+
+        Raises:
+            VectorInputValidationError: If query_vectors is empty, contains empty vectors, or project_id is invalid.
+            VectorSearchError: If search query fails.
+        """
+        results: list[list[VectorSearchResult]] = []
+        for qv in query_vectors:
+            res = await self.search(
+                query_vector=qv,
+                project_id=project_id,
+                limit=limit,
+                filter_metadata=filter_metadata,
+                score_threshold=score_threshold,
+                with_vectors=with_vectors,
+            )
+            results.append(res)
+        return results

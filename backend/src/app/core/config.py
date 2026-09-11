@@ -105,6 +105,8 @@ class Settings(BaseSettings):
     QUERY_TRANSFORMATION_MAX_RETRIES: int = 1
     QUERY_TRANSFORMATION_MAX_FALLBACK_ATTEMPTS: int = 1
     QUERY_TRANSFORMATION_BASE_URL: str | None = None
+    VECTOR_SEARCH_TOP_K: int = 10
+    VECTOR_SEARCH_SCORE_THRESHOLD: float | None = None
 
     @field_validator("LOG_LEVEL", mode="before")
     @classmethod

@@ -64,3 +64,37 @@ class QueryTransformationConfig:
             base_url=resolved.QUERY_TRANSFORMATION_BASE_URL,
         )
 
+
+@dataclass(frozen=True)
+class VectorSearchConfig:
+    """Configuration settings for dense vector similarity search.
+
+    Attributes:
+        top_k: Number of highest-scoring candidates to retrieve per query representation.
+        score_threshold: Optional minimum similarity score threshold.
+    """
+
+    top_k: int = 10
+    score_threshold: Optional[float] = None
+
+    def __post_init__(self) -> None:
+        """Validate vector search configuration parameters."""
+        if self.top_k <= 0:
+            raise ValueError(f"top_k must be a positive integer, got {self.top_k}.")
+        if self.score_threshold is not None:
+            if not isinstance(self.score_threshold, (int, float)) or not (
+                self.score_threshold == self.score_threshold and abs(self.score_threshold) != float("inf")
+            ):
+                raise ValueError(
+                    f"score_threshold must be a finite float or None, got {self.score_threshold}."
+                )
+
+    @classmethod
+    def from_settings(cls, settings: Optional[Settings] = None) -> "VectorSearchConfig":
+        """Construct configuration from application Settings (Single Source of Truth)."""
+        resolved = settings or get_settings()
+        return cls(
+            top_k=getattr(resolved, "VECTOR_SEARCH_TOP_K", 10),
+            score_threshold=getattr(resolved, "VECTOR_SEARCH_SCORE_THRESHOLD", None),
+        )
+
