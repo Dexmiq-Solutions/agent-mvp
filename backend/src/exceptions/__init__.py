@@ -98,6 +98,13 @@ from exceptions.vector import (
     VectorStoreError,
     VectorUpsertError,
 )
+from exceptions.retrieval import (
+    EmptyQueryError,
+    InvalidQueryError,
+    QueryLengthExceededError,
+    QueryPreprocessingError,
+    RetrievalError,
+)
 
 __all__ = [
     # Acquisition Exceptions
@@ -185,4 +192,10 @@ __all__ = [
     "IndexingConnectionError",
     "IndexingOperationError",
     "IndexingPartialFailureError",
+    # Retrieval Exceptions
+    "RetrievalError",
+    "QueryPreprocessingError",
+    "InvalidQueryError",
+    "EmptyQueryError",
+    "QueryLengthExceededError",
 ]

@@ -753,7 +753,56 @@ Configure vector indexing parameters in `backend/.env` or via `IndexingConfig`:
 
 ---
 
+## Retrieval Pipeline: Query Preprocessing
+
+### Responsibility & Scope
+
+**Query Preprocessing** is the foundational, first stage of the **Retrieval Pipeline**, positioned directly at the entry point between the raw user-facing query and downstream retrieval stages:
+> *"How do we prepare the user's query for downstream retrieval without changing what the user is asking?"*
+
+```
+Raw User Query  ──►  [ Query Preprocessing ]  ──►  Optional Query Transformation  ──►  Query Embedding  ──►  Retrieval
+                             │
+                  QueryPreprocessor / Service
+                             ▼
+                 Deterministic Normalization
+                  (Validate + NFC + Whitespace)
+                             ▼
+                      ProcessedQuery
+              (original_query, processed_query)
+```
+
+- **Scope**: Accepts a raw user query string, validates structure and length, trims insignificant surrounding whitespace, applies safe W3C Unicode canonical composition (`unicodedata.normalize("NFC")`), collapses clearly insignificant repeated whitespace into single spaces, and returns an immutable `ProcessedQuery`.
+- **Preservation Contract**:
+  - **Meaning**: Zero semantic modifications; queries are never rewritten, expanded, or decomposed.
+  - **Casing**: Canonical processed query strictly preserves character casing (e.g., `OpenAI API`, `Qdrant`, `BRD`).
+  - **Punctuation & Identifiers**: Technical terms, error codes, and symbols (`ERR-404`, `C++`, `API-v2`, `BRD-102`, `ERR_401`, `voyage-4`, `???`) are 100% preserved.
+  - **No Spell Correction**: Potential misspellings (e.g., `clent`) are preserved verbatim to avoid mangling domain-specific terms or acronyms.
+- **Strict Boundaries**:
+  - **What Query Preprocessing Does NOT Do**: It does not call an LLM or external service, compute embeddings, rewrite queries (reserved for Query Transformation), decompose queries, or query vector databases.
+- **Performance & Latency**: Pure synchronous, sub-millisecond CPU string manipulation ($O(n)$ time complexity, minimal allocations).
+
+### Domain Model: `ProcessedQuery`
+
+The preprocessor outputs a frozen dataclass `ProcessedQuery`:
+- `original_query`: Exact raw query preserved for logging, tracing, debugging, and query transformation comparisons.
+- `processed_query`: Conservatively normalized query passed to downstream retrieval stages.
+- `is_changed`: Boolean helper indicating whether normalization modified the original representation.
+- `to_dict()`: Standard dictionary serialization.
+
+### Configuration Reference
+
+Configure query preprocessing parameters in `backend/.env` or via `QueryPreprocessingConfig`:
+
+| Variable / Parameter | Default | Description |
+| :--- | :--- | :--- |
+| `MAX_QUERY_LENGTH` / `max_query_length` | `2000` | Maximum allowed character length before validation failure |
+| `unicode_form` | `"NFC"` | Standard W3C Unicode normalization form |
+
+---
+
 ## Development
+
 
 ### Prerequisites
 - Python >= 3.12

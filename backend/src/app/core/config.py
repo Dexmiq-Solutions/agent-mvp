@@ -92,6 +92,9 @@ class Settings(BaseSettings):
     CONTEXTUAL_ENRICHMENT_ENABLED: bool = False
     CONTEXTUAL_ENRICHMENT_STRATEGY: str = "structured"
 
+    # Retrieval & Query Configuration
+    MAX_QUERY_LENGTH: int = 2000
+
     @field_validator("LOG_LEVEL", mode="before")
     @classmethod
     def validate_log_level(cls, v: str) -> str:
