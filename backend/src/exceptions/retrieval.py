@@ -35,3 +35,27 @@ class QueryLengthExceededError(InvalidQueryError):
         super().__init__(message, original_error=original_error)
         self.length = length
         self.max_length = max_length
+
+
+class QueryTransformationError(RetrievalError):
+    """Base exception for query transformation stage failures."""
+
+
+class TransformationValidationError(QueryTransformationError):
+    """Raised when query transformation output fails validation."""
+
+
+class TransformationProviderError(QueryTransformationError):
+    """Raised when an external LLM provider encounters an error during query transformation."""
+
+
+class TransformationTimeoutError(TransformationProviderError):
+    """Raised when the LLM provider call times out."""
+
+
+class TransformationUnavailableError(TransformationProviderError):
+    """Raised when the LLM provider service is unreachable or connection fails."""
+
+
+class TransformationFallbackLimitExceededError(QueryTransformationError):
+    """Raised when retrieval fallback attempts exceed the configured maximum bound."""

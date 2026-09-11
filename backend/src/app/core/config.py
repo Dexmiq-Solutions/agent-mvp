@@ -94,6 +94,13 @@ class Settings(BaseSettings):
 
     # Retrieval & Query Configuration
     MAX_QUERY_LENGTH: int = 2000
+    QUERY_TRANSFORMATION_ENABLED: bool = True
+    QUERY_TRANSFORMATION_STRATEGY: str = "llm_rewrite"
+    QUERY_TRANSFORMATION_MODEL: str | None = None
+    QUERY_TRANSFORMATION_TIMEOUT: float = 5.0
+    QUERY_TRANSFORMATION_MAX_RETRIES: int = 1
+    QUERY_TRANSFORMATION_MAX_FALLBACK_ATTEMPTS: int = 1
+    QUERY_TRANSFORMATION_BASE_URL: str | None = None
 
     @field_validator("LOG_LEVEL", mode="before")
     @classmethod

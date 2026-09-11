@@ -103,7 +103,13 @@ from exceptions.retrieval import (
     InvalidQueryError,
     QueryLengthExceededError,
     QueryPreprocessingError,
+    QueryTransformationError,
     RetrievalError,
+    TransformationFallbackLimitExceededError,
+    TransformationProviderError,
+    TransformationTimeoutError,
+    TransformationUnavailableError,
+    TransformationValidationError,
 )
 
 __all__ = [
@@ -198,4 +204,11 @@ __all__ = [
     "InvalidQueryError",
     "EmptyQueryError",
     "QueryLengthExceededError",
+    "QueryTransformationError",
+    "TransformationValidationError",
+    "TransformationProviderError",
+    "TransformationTimeoutError",
+    "TransformationUnavailableError",
+    "TransformationFallbackLimitExceededError",
 ]
+
