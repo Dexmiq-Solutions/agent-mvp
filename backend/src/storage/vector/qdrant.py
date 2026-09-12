@@ -21,7 +21,7 @@ from exceptions.vector import (
 )
 from storage.vector.base import BaseVectorStore
 from storage.vector.client import get_async_qdrant_client
-from storage.vector.models import VectorPayload, VectorRecord, VectorSearchResult
+from storage.vector.models import SparseVector, VectorPayload, VectorRecord, VectorSearchResult
 
 logger = get_logger(__name__)
 
@@ -53,6 +53,9 @@ class QdrantVectorStore(BaseVectorStore):
                 "Qdrant collection name must be configured via QDRANT_COLLECTION_NAME."
             )
         self._client = client
+        self._sparse_vector_name = (
+            getattr(self._settings, "SPARSE_VECTOR_NAME", "sparse") or "sparse"
+        )
 
     @property
     def collection_name(self) -> str:
@@ -184,6 +187,15 @@ class QdrantVectorStore(BaseVectorStore):
                             f"{existing_size}, but requested size is {target_size}. "
                             f"Aborting without destructive overwrite."
                         )
+                # Verify sparse vector configuration when sparse indexing is enabled
+                if getattr(self._settings, "SPARSE_INDEXING_ENABLED", False):
+                    sparse_config = getattr(collection_info.config.params, "sparse_vectors", None)
+                    if not isinstance(sparse_config, dict) or self._sparse_vector_name not in sparse_config:
+                        raise CollectionConfigurationError(
+                            f"Collection '{self._collection_name}' already exists but is missing required "
+                            f"sparse vector '{self._sparse_vector_name}'. The collection must be re-created "
+                            f"or re-indexed with sparse vector support enabled."
+                        )
                 logger.debug(
                     "Collection '%s' already exists and is compatible", self._collection_name
                 )
@@ -191,14 +203,25 @@ class QdrantVectorStore(BaseVectorStore):
 
             distance_enum = getattr(models.Distance, distance.upper(), models.Distance.COSINE)
             logger.info(
-                "Creating Qdrant collection '%s' (vector_size: %d, distance: %s)",
+                "Creating Qdrant collection '%s' (vector_size: %d, distance: %s, sparse_vector: %s)",
                 self._collection_name,
                 target_size,
                 distance,
+                self._sparse_vector_name,
+            )
+            sparse_modifier = getattr(models, "Modifier", None)
+            modifier_val = getattr(sparse_modifier, "IDF", None) if sparse_modifier else None
+            sparse_params = (
+                models.SparseVectorParams(modifier=modifier_val)
+                if modifier_val is not None
+                else models.SparseVectorParams()
             )
             await client.create_collection(
                 collection_name=self._collection_name,
                 vectors_config=models.VectorParams(size=target_size, distance=distance_enum),
+                sparse_vectors_config={
+                    self._sparse_vector_name: sparse_params
+                },
             )
             return True
         except CollectionConfigurationError:
@@ -229,14 +252,26 @@ class QdrantVectorStore(BaseVectorStore):
         valid_records = self._validate_records(records)
         client = self._get_client()
 
-        points: list[models.PointStruct] = [
-            models.PointStruct(
-                id=rec.id,
-                vector=rec.vector,
-                payload=rec.payload.to_dict(),
+        points: list[models.PointStruct] = []
+        for rec in valid_records:
+            if rec.sparse_vector is not None and not rec.sparse_vector.is_empty:
+                point_vector: Any = {
+                    "": rec.vector,
+                    self._sparse_vector_name: models.SparseVector(
+                        indices=list(rec.sparse_vector.indices),
+                        values=list(rec.sparse_vector.values),
+                    ),
+                }
+            else:
+                point_vector = rec.vector
+
+            points.append(
+                models.PointStruct(
+                    id=rec.id,
+                    vector=point_vector,
+                    payload=rec.payload.to_dict(),
+                )
             )
-            for rec in valid_records
-        ]
 
         try:
             logger.debug(
@@ -567,4 +602,222 @@ class QdrantVectorStore(BaseVectorStore):
             filter_metadata=filter_metadata,
             score_threshold=score_threshold,
             with_vectors=with_vectors,
+        )
+
+    async def search_sparse(
+        self,
+        query_sparse_vector: SparseVector,
+        project_id: str,
+        limit: int = 10,
+        filter_metadata: Optional[dict[str, Any]] = None,
+        score_threshold: Optional[float] = None,
+        vector_name: Optional[str] = None,
+    ) -> list[VectorSearchResult]:
+        """Perform sparse similarity search with mandatory project isolation."""
+        if not isinstance(query_sparse_vector, SparseVector) and not (
+            hasattr(query_sparse_vector, "indices") and hasattr(query_sparse_vector, "values")
+        ):
+            raise VectorInputValidationError("query_sparse_vector must be a SparseVector instance.")
+        if len(query_sparse_vector.indices) == 0:
+            return []
+        if limit <= 0:
+            raise VectorInputValidationError(f"limit must be a positive integer, got {limit}.")
+
+        target_vector_name = vector_name or self._sparse_vector_name
+        query_filter = self._build_filter(
+            project_id=project_id,
+            filter_metadata=filter_metadata,
+        )
+        client = self._get_client()
+
+        sparse_qdrant_vec = models.SparseVector(
+            indices=list(query_sparse_vector.indices),
+            values=list(query_sparse_vector.values),
+        )
+
+        try:
+            logger.debug(
+                "Executing sparse search in '%s' for project '%s' (limit: %d, using: '%s')",
+                self._collection_name,
+                project_id,
+                limit,
+                target_vector_name,
+            )
+            response = await client.query_points(
+                collection_name=self._collection_name,
+                query=sparse_qdrant_vec,
+                using=target_vector_name,
+                query_filter=query_filter,
+                limit=limit,
+                with_payload=True,
+                score_threshold=score_threshold,
+            )
+
+            results: list[VectorSearchResult] = []
+            for pt in response.points:
+                payload = VectorPayload.from_dict(pt.payload or {})
+                if payload.project_id != project_id:
+                    logger.warning(
+                        "Encountered mismatched project_id '%s' in sparse search result for project '%s'",
+                        payload.project_id,
+                        project_id,
+                    )
+                    continue
+
+                results.append(
+                    VectorSearchResult(
+                        id=pt.id,
+                        score=float(pt.score),
+                        payload=payload,
+                    )
+                )
+
+            logger.debug("Found %d matching sparse vector points", len(results))
+            return results
+        except qdrant_exceptions.UnexpectedResponse as exc:
+            if exc.status_code in (401, 403):
+                raise VectorStoreAuthenticationError(
+                    "Authentication failed with Qdrant.", original_error=exc
+                ) from exc
+            if exc.status_code == 404:
+                raise CollectionNotFoundError(
+                    f"Collection '{self._collection_name}' not found.", original_error=exc
+                ) from exc
+            raise VectorSearchError(
+                f"Failed to execute sparse search in collection '{self._collection_name}': {exc}",
+                original_error=exc,
+            ) from exc
+        except Exception as exc:
+            if isinstance(exc, (VectorStoreError, VectorInputValidationError)):
+                raise
+            raise VectorSearchError(
+                f"Unexpected error executing sparse search: {exc}", original_error=exc
+            ) from exc
+
+    async def search_sparse_batch(
+        self,
+        query_sparse_vectors: list[SparseVector],
+        project_id: str,
+        limit: int = 10,
+        filter_metadata: Optional[dict[str, Any]] = None,
+        score_threshold: Optional[float] = None,
+        vector_name: Optional[str] = None,
+    ) -> list[list[VectorSearchResult]]:
+        """Perform batch sparse similarity search for multiple query sparse vectors with project isolation."""
+        if not isinstance(query_sparse_vectors, (list, tuple)) or len(query_sparse_vectors) == 0:
+            raise VectorInputValidationError("query_sparse_vectors must be a non-empty list of SparseVectors.")
+        for idx, sv in enumerate(query_sparse_vectors):
+            if not isinstance(sv, SparseVector) and not (
+                hasattr(sv, "indices") and hasattr(sv, "values")
+            ):
+                raise VectorInputValidationError(
+                    f"Sparse query vector at index {idx} must be a SparseVector instance."
+                )
+        if limit <= 0:
+            raise VectorInputValidationError(f"limit must be a positive integer, got {limit}.")
+
+        # If only one query vector, delegate directly to search_sparse to avoid batch overhead
+        if len(query_sparse_vectors) == 1:
+            single = await self.search_sparse(
+                query_sparse_vector=query_sparse_vectors[0],
+                project_id=project_id,
+                limit=limit,
+                filter_metadata=filter_metadata,
+                score_threshold=score_threshold,
+                vector_name=vector_name,
+            )
+            return [single]
+
+        # Check for empty sparse vectors
+        empty_mask = [len(sv.indices) == 0 for sv in query_sparse_vectors]
+        if all(empty_mask):
+            return [[] for _ in query_sparse_vectors]
+
+        target_vector_name = vector_name or self._sparse_vector_name
+        query_filter = self._build_filter(
+            project_id=project_id,
+            filter_metadata=filter_metadata,
+        )
+        client = self._get_client()
+
+        if hasattr(client, "query_batch_points"):
+            non_empty_indices = [i for i, is_empty in enumerate(empty_mask) if not is_empty]
+            requests = [
+                models.QueryRequest(
+                    query=models.SparseVector(
+                        indices=list(query_sparse_vectors[i].indices),
+                        values=list(query_sparse_vectors[i].values),
+                    ),
+                    using=target_vector_name,
+                    filter=query_filter,
+                    limit=limit,
+                    with_payload=True,
+                    score_threshold=score_threshold,
+                )
+                for i in non_empty_indices
+            ]
+
+            try:
+                logger.debug(
+                    "Executing native batch sparse search in '%s' for project '%s' (%d queries, limit: %d)",
+                    self._collection_name,
+                    project_id,
+                    len(requests),
+                    limit,
+                )
+                batch_responses = await client.query_batch_points(
+                    collection_name=self._collection_name,
+                    requests=requests,
+                )
+
+                all_results: list[list[VectorSearchResult]] = [[] for _ in query_sparse_vectors]
+                for idx, resp in zip(non_empty_indices, batch_responses):
+                    query_results: list[VectorSearchResult] = []
+                    for pt in resp.points:
+                        payload = VectorPayload.from_dict(pt.payload or {})
+                        if payload.project_id != project_id:
+                            logger.warning(
+                                "Encountered mismatched project_id '%s' in batch sparse search result for project '%s'",
+                                payload.project_id,
+                                project_id,
+                            )
+                            continue
+
+                        query_results.append(
+                            VectorSearchResult(
+                                id=pt.id,
+                                score=float(pt.score),
+                                payload=payload,
+                            )
+                        )
+                    all_results[idx] = query_results
+
+                return all_results
+            except qdrant_exceptions.UnexpectedResponse as exc:
+                if exc.status_code in (401, 403):
+                    raise VectorStoreAuthenticationError(
+                        "Authentication failed with Qdrant.", original_error=exc
+                    ) from exc
+                if exc.status_code == 404:
+                    raise CollectionNotFoundError(
+                        f"Collection '{self._collection_name}' not found.", original_error=exc
+                    ) from exc
+                raise VectorSearchError(
+                    f"Failed to execute batch sparse search in collection '{self._collection_name}': {exc}",
+                    original_error=exc,
+                ) from exc
+            except Exception as exc:
+                if isinstance(exc, (VectorStoreError, VectorInputValidationError)):
+                    raise
+                raise VectorSearchError(
+                    f"Unexpected error executing batch sparse search: {exc}", original_error=exc
+                ) from exc
+
+        return await super().search_sparse_batch(
+            query_sparse_vectors=query_sparse_vectors,
+            project_id=project_id,
+            limit=limit,
+            filter_metadata=filter_metadata,
+            score_threshold=score_threshold,
+            vector_name=target_vector_name,
         )

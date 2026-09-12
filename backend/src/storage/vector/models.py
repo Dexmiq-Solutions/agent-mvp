@@ -54,6 +54,63 @@ class VectorPayload:
         )
 
 
+import math
+
+
+@dataclass(frozen=True)
+class SparseVector:
+    """Sparse vector representation with sorted dimension indices and positive weights.
+
+    Attributes:
+        indices: Sorted sequence of non-negative integer dimension indices.
+        values: Corresponding sequence of non-negative finite float weights.
+    """
+
+    indices: tuple[int, ...] = field(default_factory=tuple)
+    values: tuple[float, ...] = field(default_factory=tuple)
+
+    def __post_init__(self) -> None:
+        """Validate sparse vector structure upon creation."""
+        # Normalize list/iterable to tuple if passed
+        if isinstance(self.indices, (list, set)):
+            object.__setattr__(self, "indices", tuple(self.indices))
+        if isinstance(self.values, (list, set)):
+            object.__setattr__(self, "values", tuple(float(v) for v in self.values))
+
+        if len(self.indices) != len(self.values):
+            raise ValueError(
+                f"SparseVector indices and values length mismatch: "
+                f"indices={len(self.indices)}, values={len(self.values)}."
+            )
+        for i, idx in enumerate(self.indices):
+            if not isinstance(idx, int) or idx < 0:
+                raise ValueError(
+                    f"SparseVector index at position {i} must be a non-negative integer, got {idx}."
+                )
+            if i > 0 and idx <= self.indices[i - 1]:
+                raise ValueError(
+                    f"SparseVector indices must be strictly increasing and unique: "
+                    f"index[{i-1}]={self.indices[i-1]}, index[{i}]={idx}."
+                )
+        for i, val in enumerate(self.values):
+            if not isinstance(val, (int, float)) or not math.isfinite(val):
+                raise ValueError(
+                    f"SparseVector value at position {i} must be a finite float, got {val}."
+                )
+
+    @property
+    def is_empty(self) -> bool:
+        """Return True if sparse vector contains no non-zero dimensions."""
+        return len(self.indices) == 0
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize sparse vector to a standard dictionary."""
+        return {
+            "indices": list(self.indices),
+            "values": list(self.values),
+        }
+
+
 @dataclass(frozen=True)
 class VectorRecord:
     """Represents a single vector point to be stored or updated in vector storage."""
@@ -61,6 +118,7 @@ class VectorRecord:
     id: str | int
     vector: list[float]
     payload: VectorPayload
+    sparse_vector: Optional[SparseVector] = None
 
 
 @dataclass(frozen=True)

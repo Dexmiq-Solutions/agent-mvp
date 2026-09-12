@@ -107,6 +107,12 @@ class Settings(BaseSettings):
     QUERY_TRANSFORMATION_BASE_URL: str | None = None
     VECTOR_SEARCH_TOP_K: int = 10
     VECTOR_SEARCH_SCORE_THRESHOLD: float | None = None
+    SPARSE_INDEXING_ENABLED: bool = True
+    SPARSE_ENCODER_STRATEGY: str = "technical_hash"
+    SPARSE_ENCODER_VERSION: str = "1.0"
+    SPARSE_VECTOR_NAME: str = "sparse"
+    KEYWORD_SEARCH_TOP_K: int = 10
+    KEYWORD_SEARCH_SCORE_THRESHOLD: float | None = None
 
     @field_validator("LOG_LEVEL", mode="before")
     @classmethod

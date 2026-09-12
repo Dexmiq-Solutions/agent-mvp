@@ -98,3 +98,52 @@ class VectorSearchConfig:
             score_threshold=getattr(resolved, "VECTOR_SEARCH_SCORE_THRESHOLD", None),
         )
 
+
+@dataclass(frozen=True)
+class KeywordSearchConfig:
+    """Configuration settings for lexical/keyword sparse search.
+
+    Attributes:
+        top_k: Number of highest-scoring candidates to retrieve per query representation.
+        score_threshold: Optional minimum similarity score threshold forwarded to vector store.
+        sparse_vector_name: Target sparse vector configuration name in Qdrant collection.
+        encoder_strategy: Strategy name identifying the sparse representation mechanism.
+        encoder_version: Version identifier for the sparse representation mechanism.
+    """
+
+    top_k: int = 10
+    score_threshold: Optional[float] = None
+    sparse_vector_name: str = "sparse"
+    encoder_strategy: str = "technical_hash"
+    encoder_version: str = "1.0"
+
+    def __post_init__(self) -> None:
+        """Validate keyword search configuration parameters."""
+        if self.top_k <= 0:
+            raise ValueError(f"top_k must be a positive integer, got {self.top_k}.")
+        if self.score_threshold is not None:
+            if not isinstance(self.score_threshold, (int, float)) or not (
+                self.score_threshold == self.score_threshold and abs(self.score_threshold) != float("inf")
+            ):
+                raise ValueError(
+                    f"score_threshold must be a finite float or None, got {self.score_threshold}."
+                )
+        if not self.sparse_vector_name or not self.sparse_vector_name.strip():
+            raise ValueError("sparse_vector_name must be a non-empty string.")
+        if not self.encoder_strategy or not self.encoder_strategy.strip():
+            raise ValueError("encoder_strategy must be a non-empty string.")
+        if not self.encoder_version or not self.encoder_version.strip():
+            raise ValueError("encoder_version must be a non-empty string.")
+
+    @classmethod
+    def from_settings(cls, settings: Optional[Settings] = None) -> "KeywordSearchConfig":
+        """Construct configuration from application Settings (Single Source of Truth)."""
+        resolved = settings or get_settings()
+        return cls(
+            top_k=getattr(resolved, "KEYWORD_SEARCH_TOP_K", 10),
+            score_threshold=getattr(resolved, "KEYWORD_SEARCH_SCORE_THRESHOLD", None),
+            sparse_vector_name=getattr(resolved, "SPARSE_VECTOR_NAME", "sparse"),
+            encoder_strategy=getattr(resolved, "SPARSE_ENCODER_STRATEGY", "technical_hash"),
+            encoder_version=getattr(resolved, "SPARSE_ENCODER_VERSION", "1.0"),
+        )
+

@@ -3,7 +3,7 @@
 from abc import ABC, abstractmethod
 from typing import Any, Optional
 
-from storage.vector.models import VectorRecord, VectorSearchResult
+from storage.vector.models import SparseVector, VectorRecord, VectorSearchResult
 
 
 class BaseVectorStore(ABC):
@@ -159,6 +159,78 @@ class BaseVectorStore(ABC):
                 filter_metadata=filter_metadata,
                 score_threshold=score_threshold,
                 with_vectors=with_vectors,
+            )
+            results.append(res)
+        return results
+
+    async def search_sparse(
+        self,
+        query_sparse_vector: SparseVector,
+        project_id: str,
+        limit: int = 10,
+        filter_metadata: Optional[dict[str, Any]] = None,
+        score_threshold: Optional[float] = None,
+        vector_name: str = "sparse",
+    ) -> list[VectorSearchResult]:
+        """Perform sparse vector similarity search with mandatory project isolation.
+
+        Args:
+            query_sparse_vector: SparseVector query representation.
+            project_id: Mandatory project ID to strictly enforce tenant isolation.
+            limit: Maximum number of top-k results to return.
+            filter_metadata: Optional additional metadata key-value filters.
+            score_threshold: Optional minimum similarity score threshold.
+            vector_name: Name of the sparse vector in the vector storage.
+
+        Returns:
+            list[VectorSearchResult]: List of ranked search results.
+
+        Raises:
+            VectorInputValidationError: If query_sparse_vector is empty or project_id is invalid.
+            VectorSearchError: If search query fails.
+            NotImplementedError: If the vector store does not support sparse search.
+        """
+        raise NotImplementedError("search_sparse is not supported by this vector store.")
+
+    async def search_sparse_batch(
+        self,
+        query_sparse_vectors: list[SparseVector],
+        project_id: str,
+        limit: int = 10,
+        filter_metadata: Optional[dict[str, Any]] = None,
+        score_threshold: Optional[float] = None,
+        vector_name: str = "sparse",
+    ) -> list[list[VectorSearchResult]]:
+        """Perform batch sparse similarity search for multiple query vectors with project isolation.
+
+        Default fallback implementation executes search_sparse() sequentially if the underlying
+        vector store does not provide a native batch sparse search operation.
+
+        Args:
+            query_sparse_vectors: List of SparseVector query representations.
+            project_id: Mandatory project ID to strictly enforce tenant isolation.
+            limit: Maximum number of top-k results to return per query vector.
+            filter_metadata: Optional additional metadata key-value filters.
+            score_threshold: Optional minimum similarity score threshold.
+            vector_name: Name of the sparse vector in the vector storage.
+
+        Returns:
+            list[list[VectorSearchResult]]: List of ranked search result lists corresponding
+                1-to-1 with input sparse query vectors.
+
+        Raises:
+            VectorInputValidationError: If inputs are invalid.
+            VectorSearchError: If search query fails.
+        """
+        results: list[list[VectorSearchResult]] = []
+        for sv in query_sparse_vectors:
+            res = await self.search_sparse(
+                query_sparse_vector=sv,
+                project_id=project_id,
+                limit=limit,
+                filter_metadata=filter_metadata,
+                score_threshold=score_threshold,
+                vector_name=vector_name,
             )
             results.append(res)
         return results

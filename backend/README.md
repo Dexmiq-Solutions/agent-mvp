@@ -960,6 +960,126 @@ Vector search configuration is single-sourced from application `Settings` into `
 
 ---
 
+## Retrieval Pipeline: Keyword Search (Lexical / Sparse Retrieval)
+
+### Responsibility & Scope
+
+**Keyword Search** is the parallel lexical/sparse retrieval branch of the RAG retrieval pipeline, operating alongside dense **Vector Search**:
+> *"How do we extract exact technical tokens, identifiers, error codes, and lexical signals from the preprocessed queries, encode them into sparse vectors, and perform tenant-isolated sparse retrieval in Qdrant without coupling to a permanent sparse model choice or performing downstream fusion?"*
+
+```
+              RetrievalQuerySet
+       (original_query, transformed_query)
+                       │
+                       ▼
+             KeywordSearchService
+                       │
+                       ├──────────────────────────────────────────┐
+                       ▼                                          ▼
+            encode original_query                      encode transformed_query
+          (TechnicalSparseEncoder)                    (TechnicalSparseEncoder)
+                       │                                          │
+                       ▼                                          ▼
+                  SparseVector                               SparseVector
+          (indices: tuple, values: tuple)            (indices: tuple, values: tuple)
+                       │                                          │
+                       └───────────────────┬──────────────────────┘
+                                           │
+                                           ▼
+                       Single / Native Batch Sparse Search
+                      (BaseVectorStore / QdrantVectorStore)
+                  [project_id == active_tenant, top_k, threshold]
+                                           │
+                                           ▼
+                      Defensive Result Validation & Filtering
+                    (Identities, Finite Scores, Tenant Isolation)
+                                           │
+                                           ▼
+                              list[KeywordSearchCandidate]
+                   (chunk_id, doc_id, project_id, score, query_type)
+                                           │
+                                           ▼
+                             Downstream Fusion / Merge Stage
+```
+
+### Lexical Encoder: `TechnicalSparseEncoder`
+
+To avoid prematurely committing to a heavy ML sparse encoder model (such as SPLADE or BGE-M3) while avoiding third-party external service dependencies or false BM25 claims (which require corpus-level document frequency and document length statistics), Keyword Search employs an swappable, deterministic `TechnicalSparseEncoder`:
+
+1. **Deterministic Technical Tokenization**:
+   - Preserves compound technical tokens, error codes, and identifiers (`ERR-401`, `API-v2`, `BRD-102`, `user_id`, `C++`, `voyage-4`).
+   - Emits constituent sub-tokens (`err`, `401`, `brd`, `102`, `user`, `id`) with a fractional weight multiplier (`0.5`) to support both exact match and partial identifier recall.
+   - Filters common English stopwords for non-compound terms.
+2. **Deterministic 32-Bit Hashing**:
+   - Maps normalized terms to 32-bit unsigned integers using `xxhash.xxh32_intdigest`.
+   - Guaranteed deterministic across all processes and workers without corpus vocabulary coordination.
+3. **BM25-Inspired Saturated Term Frequency Weighting**:
+   - Applies saturation formula:
+     $$\text{weight} = \frac{\text{tf} \cdot (k_1 + 1)}{\text{tf} + k_1}$$
+   - Prevents term repetition dominance while assigning higher weights to repeated technical terms.
+4. **Hybrid Scoring with Qdrant Server-Side IDF**:
+   - Qdrant's sparse vector configuration applies `modifier=models.Modifier.IDF` at index query time.
+   - This creates a clean architectural synergy: the client encoder computes saturated TF locally, while Qdrant applies corpus-level IDF during search.
+5. **Swappable Abstraction (`BaseSparseEncoder`)**:
+   - The encoder is isolated behind `BaseSparseEncoder`. Alternative implementations (e.g. SPLADE, learned sparse models, or full BM25 with external index) can be introduced by implementing `BaseSparseEncoder` and registering the strategy without altering `KeywordSearchService`.
+
+### Qdrant Vector Coexistence & Storage Architecture
+
+Rather than introducing a second vector database or a separate lexical search engine, dense and sparse vectors coexist on the **exact same point** inside the unified Qdrant collection:
+
+- **Point ID**: Deterministic RFC 4122 v5 UUID derived from `(project_id, document_id, document_version_id, chunk_id)`.
+- **Dense Vector**: Unnamed vector (`""`), 1024-dimensional Voyage embedding.
+- **Sparse Vector**: Named vector (`"sparse"`), `models.SparseVector(indices=..., values=...)`.
+- **Relational Payload**: Carried once per point (`project_id`, `document_id`, `chunk_id`, `document_version_id`, metadata).
+
+### Key Architectural Boundaries
+
+- **Query Representation Provenance**: Candidates explicitly record `query_type` (`"original"`, `"transformed"`). Multiple representations are retrieved additively without deduplication or score fusion (reserved strictly for downstream Fusion).
+- **Project Isolation Invariant**: Mandatory `project_id` matching enforced at both Qdrant query filter level and defensive validation level. Leaked candidates are discarded and logged.
+- **No PostgreSQL Chunk Fetching**: Returns candidate coordinates and scores only. Full chunk content fetching is deferred to the later Fetch Chunks stage.
+- **Strict Pipeline Boundaries**:
+  - No query preprocessing or transformation (Transformation boundary).
+  - No dense embedding generation (Embedding boundary).
+  - No dense vector search (Vector Search boundary).
+  - No reciprocal rank fusion (RRF) or score merging (Fusion boundary).
+  - No reranking or cross-encoders (Reranking boundary).
+  - No SQL session or content loading (Storage boundary).
+
+### Domain Models
+
+```python
+@dataclass(frozen=True)
+class SparseVector:
+    """Sparse vector representation with sorted dimension indices and positive weights."""
+    indices: tuple[int, ...] = field(default_factory=tuple)
+    values: tuple[float, ...] = field(default_factory=tuple)
+
+@dataclass(frozen=True)
+class KeywordSearchCandidate:
+    """Represents a scored chunk candidate retrieved via keyword/sparse retrieval."""
+    chunk_id: str
+    document_id: str
+    project_id: str
+    score: float
+    query_type: str = "original"
+    document_version_id: str | None = None
+```
+
+### Configuration Reference
+
+Keyword search configuration is single-sourced from application `Settings` into `KeywordSearchConfig`:
+
+| Variable / Parameter | Default | Description |
+| :--- | :--- | :--- |
+| `SPARSE_INDEXING_ENABLED` | `true` | Master toggle for sparse vector generation and Qdrant sparse storage |
+| `SPARSE_ENCODER_STRATEGY` | `"technical_hash"` | Active sparse encoder strategy (`"technical_hash"`, `"hashed_lexical"`) |
+| `SPARSE_ENCODER_VERSION` | `"1.0"` | Version identifier for the sparse representation mechanism |
+| `SPARSE_VECTOR_NAME` | `"sparse"` | Named sparse vector configuration key in Qdrant collection |
+| `KEYWORD_SEARCH_TOP_K` | `10` | Default maximum candidate chunks retrieved per query representation |
+| `KEYWORD_SEARCH_SCORE_THRESHOLD` | `None` | Optional minimum similarity score threshold forwarded to vector store |
+
+---
+
 ## Development
 
 
@@ -983,6 +1103,7 @@ uv run uvicorn app.main:app --reload
 # Run full test suite
 uv run pytest
 
-# Run vector search and storage tests
-uv run pytest tests/test_vector_search.py tests/test_vector_qdrant.py
+# Run vector search and keyword search tests
+uv run pytest tests/test_vector_search.py tests/test_keyword_search.py tests/test_keyword_encoder.py tests/test_keyword_qdrant.py
 ```
+

@@ -7,6 +7,7 @@ from app.core.config import Settings, get_settings
 from chunking.models import DocumentChunk
 from exceptions.indexing import IndexingConfigurationError, InvalidIndexingInputError
 from indexing.identity import generate_point_id
+from retrieval.models import SparseVector
 from storage.vector.models import VectorPayload, VectorRecord
 
 
@@ -22,6 +23,10 @@ class IndexingConfig:
     expected_vector_size: Optional[int] = None
     distance: str = "Cosine"
     ensure_collection: bool = True
+    sparse_indexing_enabled: bool = True
+    sparse_encoder_strategy: str = "technical_hash"
+    sparse_encoder_version: str = "1.0"
+    sparse_vector_name: str = "sparse"
 
     def __post_init__(self) -> None:
         """Validate indexing configuration parameters upon instantiation."""
@@ -55,6 +60,10 @@ class IndexingConfig:
             expected_vector_size=app_settings.QDRANT_VECTOR_SIZE,
             distance=getattr(app_settings, "QDRANT_DISTANCE", "Cosine"),
             ensure_collection=True,
+            sparse_indexing_enabled=getattr(app_settings, "SPARSE_INDEXING_ENABLED", True),
+            sparse_encoder_strategy=getattr(app_settings, "SPARSE_ENCODER_STRATEGY", "technical_hash"),
+            sparse_encoder_version=getattr(app_settings, "SPARSE_ENCODER_VERSION", "1.0"),
+            sparse_vector_name=getattr(app_settings, "SPARSE_VECTOR_NAME", "sparse"),
         )
 
     @classmethod
@@ -67,8 +76,8 @@ class IndexingConfig:
 class IndexableRecord:
     """Represents a validated, indexable record ready to be converted into a Qdrant point.
 
-    Binds the generated embedding vector, stable entity coordinates, and retrieval metadata
-    while preserving embedding configuration provenance.
+    Binds the generated embedding vector, optional sparse vector, stable entity coordinates,
+    and retrieval metadata while preserving representation configuration provenance.
     """
 
     chunk_id: str
@@ -81,6 +90,9 @@ class IndexableRecord:
     embedding_provider: str = "voyage"
     embedding_dimension: Optional[int] = None
     point_id_override: Optional[str] = None
+    sparse_vector: Optional[SparseVector] = None
+    sparse_encoder_strategy: Optional[str] = None
+    sparse_encoder_version: Optional[str] = None
 
     @property
     def point_id(self) -> str:
@@ -96,7 +108,7 @@ class IndexableRecord:
 
     def to_vector_record(self) -> VectorRecord:
         """Construct a VectorRecord instance compatible with the vector storage abstraction."""
-        # Build metadata payload preserving retrieval attributes and embedding configuration
+        # Build metadata payload preserving retrieval attributes and representation configuration
         merged_metadata: dict[str, Any] = dict(self.payload)
 
         # Ensure embedding configuration identity is attached
@@ -106,6 +118,12 @@ class IndexableRecord:
             merged_metadata["embedding_provider"] = self.embedding_provider
         dim = self.embedding_dimension or len(self.vector)
         merged_metadata["embedding_dimension"] = dim
+
+        # Ensure sparse encoder configuration identity is attached
+        if self.sparse_encoder_strategy is not None:
+            merged_metadata["sparse_encoder_strategy"] = self.sparse_encoder_strategy
+        if self.sparse_encoder_version is not None:
+            merged_metadata["sparse_encoder_version"] = self.sparse_encoder_version
 
         vector_payload = VectorPayload(
             project_id=self.project_id,
@@ -119,6 +137,7 @@ class IndexableRecord:
             id=self.point_id,
             vector=list(self.vector),
             payload=vector_payload,
+            sparse_vector=self.sparse_vector,
         )
 
     @classmethod
@@ -129,6 +148,9 @@ class IndexableRecord:
         embedding_model: Optional[str] = None,
         embedding_provider: str = "voyage",
         embedding_dimension: Optional[int] = None,
+        sparse_vector: Optional[SparseVector] = None,
+        sparse_encoder_strategy: Optional[str] = None,
+        sparse_encoder_version: Optional[str] = None,
     ) -> "IndexableRecord":
         """Factory method to construct an IndexableRecord from a DocumentChunk and embedding vector."""
         if not isinstance(chunk, DocumentChunk):
@@ -160,6 +182,9 @@ class IndexableRecord:
             embedding_model=embedding_model,
             embedding_provider=embedding_provider,
             embedding_dimension=embedding_dimension or len(vector),
+            sparse_vector=sparse_vector,
+            sparse_encoder_strategy=sparse_encoder_strategy,
+            sparse_encoder_version=sparse_encoder_version,
         )
 
 

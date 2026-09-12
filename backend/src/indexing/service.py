@@ -33,6 +33,8 @@ from indexing.models import (
     IndexingConfig,
     IndexingReport,
 )
+from retrieval.keyword.encoder.base import BaseSparseEncoder
+from retrieval.models import SparseVector
 from storage.vector import BaseVectorStore, get_vector_store
 from storage.vector.models import VectorRecord
 
@@ -51,6 +53,7 @@ class DocumentIndexingService:
         self,
         vector_store: Optional[BaseVectorStore] = None,
         config: Optional[IndexingConfig] = None,
+        sparse_encoder: Optional[BaseSparseEncoder] = None,
         settings: Optional[Settings] = None,
     ) -> None:
         """Initialize DocumentIndexingService.
@@ -58,6 +61,7 @@ class DocumentIndexingService:
         Args:
             vector_store: Pre-configured BaseVectorStore instance. Defaults to default vector store.
             config: Indexing configuration. Defaults to IndexingConfig loaded from settings.
+            sparse_encoder: Optional BaseSparseEncoder instance override.
             settings: Application settings. Defaults to cached app settings.
         """
         self._settings = settings or get_settings()
@@ -66,7 +70,18 @@ class DocumentIndexingService:
             collection_name=self._config.collection_name,
             settings=self._settings,
         )
+        self._sparse_encoder = sparse_encoder
         self._collection_verified = False
+
+    def _get_sparse_encoder(self) -> BaseSparseEncoder:
+        """Resolve active BaseSparseEncoder instance."""
+        if self._sparse_encoder is not None:
+            return self._sparse_encoder
+        from retrieval.keyword.encoder import get_sparse_encoder
+        return get_sparse_encoder(
+            strategy=self._config.sparse_encoder_strategy,
+            settings=self._settings,
+        )
 
     @property
     def config(self) -> IndexingConfig:
@@ -131,6 +146,16 @@ class DocumentIndexingService:
             raise InvalidIndexingInputError(
                 f"Record '{record.chunk_id}' vector dimension mismatch: expected {expected_dim}, got {actual_dim}."
             )
+
+        # Validate sparse vector if present
+        if record.sparse_vector is not None:
+            if not isinstance(record.sparse_vector, SparseVector) and not (
+                hasattr(record.sparse_vector, "indices") and hasattr(record.sparse_vector, "values")
+            ):
+                raise InvalidIndexingInputError(
+                    f"Record '{record.chunk_id}' sparse_vector must be a SparseVector instance, "
+                    f"got '{type(record.sparse_vector).__name__}'."
+                )
 
     def _validate_records_batch(
         self, records: list[IndexableRecord]
@@ -469,12 +494,23 @@ class DocumentIndexingService:
 
         # Construct IndexableRecords preserving chunk metadata and embedding config
         records: list[IndexableRecord] = []
-        for chunk, vector in zip(chunks, vectors):
+        sparse_vectors = None
+        if self._config.sparse_indexing_enabled:
+            sparse_encoder = self._get_sparse_encoder()
+            if sparse_encoder is not None:
+                chunk_texts = [getattr(c, "content", "") or "" for c in chunks]
+                sparse_vectors = sparse_encoder.encode_documents(chunk_texts)
+
+        for idx, (chunk, vector) in enumerate(zip(chunks, vectors)):
+            sparse_vec = sparse_vectors[idx] if sparse_vectors is not None else None
             rec = IndexableRecord.from_chunk_and_vector(
                 chunk=chunk,
                 vector=vector,
                 embedding_model=model,
                 embedding_provider=embedding_provider,
+                sparse_vector=sparse_vec,
+                sparse_encoder_strategy=self._config.sparse_encoder_strategy if sparse_vec is not None else None,
+                sparse_encoder_version=self._config.sparse_encoder_version if sparse_vec is not None else None,
             )
             records.append(rec)
 

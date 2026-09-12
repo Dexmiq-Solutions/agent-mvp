@@ -18,8 +18,11 @@ from exceptions.retrieval import (
     TransformationUnavailableError,
     TransformationValidationError,
     VectorRetrievalError,
+    KeywordRetrievalError,
+    SparseEncodingError,
 )
 from retrieval.config import (
+    KeywordSearchConfig,
     QueryPreprocessingConfig,
     QueryTransformationConfig,
     VectorSearchConfig,
@@ -30,12 +33,24 @@ from retrieval.embedding import (
     get_query_embedding_service,
     reset_query_embedding_service,
 )
+from retrieval.keyword import (
+    BaseSparseEncoder,
+    KeywordSearchService,
+    TechnicalSparseEncoder,
+    get_keyword_search_service,
+    get_sparse_encoder,
+    reset_keyword_search_service,
+    reset_sparse_encoder,
+    search_keywords,
+)
 from retrieval.models import (
     EmbeddedQuery,
     EmbeddedQuerySet,
+    KeywordSearchCandidate,
     PolicyDecision,
     ProcessedQuery,
     RetrievalQuerySet,
+    SparseVector,
     VectorSearchCandidate,
 )
 from retrieval.preprocessing import (
@@ -74,10 +89,13 @@ __all__ = [
     "EmbeddedQuery",
     "EmbeddedQuerySet",
     "VectorSearchCandidate",
+    "SparseVector",
+    "KeywordSearchCandidate",
     # Configuration
     "QueryPreprocessingConfig",
     "QueryTransformationConfig",
     "VectorSearchConfig",
+    "KeywordSearchConfig",
     # Preprocessing Service & Helpers
     "QueryPreprocessor",
     "QueryPreprocessingService",
@@ -107,6 +125,15 @@ __all__ = [
     "get_vector_search_service",
     "reset_vector_search_service",
     "search_vectors",
+    # Keyword Search Subsystem & Helpers
+    "KeywordSearchService",
+    "get_keyword_search_service",
+    "reset_keyword_search_service",
+    "search_keywords",
+    "BaseSparseEncoder",
+    "TechnicalSparseEncoder",
+    "get_sparse_encoder",
+    "reset_sparse_encoder",
     # Domain Exceptions
     "RetrievalError",
     "QueryPreprocessingError",
@@ -121,5 +148,7 @@ __all__ = [
     "TransformationFallbackLimitExceededError",
     "QueryEmbeddingError",
     "VectorRetrievalError",
+    "KeywordRetrievalError",
+    "SparseEncodingError",
 ]
 

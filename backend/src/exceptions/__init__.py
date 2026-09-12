@@ -113,6 +113,8 @@ from exceptions.retrieval import (
     TransformationUnavailableError,
     TransformationValidationError,
     VectorRetrievalError,
+    KeywordRetrievalError,
+    SparseEncodingError,
 )
 
 __all__ = [
@@ -216,5 +218,7 @@ __all__ = [
     "TransformationFallbackLimitExceededError",
     "QueryEmbeddingError",
     "VectorRetrievalError",
+    "KeywordRetrievalError",
+    "SparseEncodingError",
 ]
 

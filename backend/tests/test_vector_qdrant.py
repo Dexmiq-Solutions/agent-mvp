@@ -186,6 +186,7 @@ async def test_ensure_collection_exists_already_present_compatible(
     mock_qdrant_client.collection_exists.return_value = True
     info = MagicMock()
     info.config.params.vectors = models.VectorParams(size=1024, distance=models.Distance.COSINE)
+    info.config.params.sparse_vectors = {"sparse": models.SparseVectorParams()}
     mock_qdrant_client.get_collection.return_value = info
 
     store = QdrantVectorStore(client=mock_qdrant_client, settings=mock_qdrant_settings)

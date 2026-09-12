@@ -67,3 +67,11 @@ class QueryEmbeddingError(RetrievalError):
 
 class VectorRetrievalError(RetrievalError):
     """Base exception for vector similarity search retrieval failures."""
+
+
+class KeywordRetrievalError(RetrievalError):
+    """Base exception for keyword/sparse retrieval failures."""
+
+
+class SparseEncodingError(RetrievalError):
+    """Base exception for sparse representation encoding failures."""

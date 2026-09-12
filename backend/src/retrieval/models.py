@@ -1,5 +1,6 @@
 """Domain models for the retrieval and query preprocessing layer."""
 
+import math
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -149,6 +150,35 @@ class VectorSearchCandidate:
     """Represents a scored chunk candidate retrieved via vector similarity search.
 
     Preserves relational coordinates, similarity score from the vector index,
+    and query representation provenance for downstream fusion and reranking.
+    """
+
+    chunk_id: str
+    document_id: str
+    project_id: str
+    score: float
+    query_type: str = "original"
+    document_version_id: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize search candidate to a standard dictionary."""
+        return {
+            "chunk_id": self.chunk_id,
+            "document_id": self.document_id,
+            "project_id": self.project_id,
+            "score": self.score,
+            "query_type": self.query_type,
+            "document_version_id": self.document_version_id,
+        }
+
+from storage.vector.models import SparseVector
+
+
+@dataclass(frozen=True)
+class KeywordSearchCandidate:
+    """Represents a scored chunk candidate retrieved via keyword/sparse retrieval.
+
+    Preserves relational coordinates, sparse retrieval score from the index,
     and query representation provenance for downstream fusion and reranking.
     """
 
