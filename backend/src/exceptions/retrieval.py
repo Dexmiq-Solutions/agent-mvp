@@ -111,3 +111,35 @@ class RerankingProviderError(RerankingError):
 
 class RerankingTimeoutError(RerankingProviderError):
     """Raised when an external reranker provider call times out."""
+
+
+class ChunkHydrationError(RetrievalError):
+    """Base exception for chunk fetching / hydration stage failures."""
+
+
+class ChunkHydrationValidationError(ChunkHydrationError):
+    """Raised when hydration input arguments or candidate references fail validation."""
+
+
+class ChunkNotFoundError(ChunkHydrationError):
+    """Raised when one or more requested chunks cannot be found in the PostgreSQL Content Store."""
+
+    def __init__(
+        self,
+        message: str,
+        missing_chunk_ids: list[str] | None = None,
+        project_id: str | None = None,
+        original_error: Exception | None = None,
+    ) -> None:
+        super().__init__(message, original_error=original_error)
+        self.missing_chunk_ids = list(missing_chunk_ids or [])
+        self.project_id = project_id
+
+
+class DatabaseRetrievalError(ChunkHydrationError):
+    """Raised when PostgreSQL Content Store query fails during chunk hydration."""
+
+
+class ProjectBoundaryViolationError(ChunkHydrationError):
+    """Raised when candidate retrieval references violate project boundary constraints."""
+

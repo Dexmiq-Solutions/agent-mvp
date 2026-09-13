@@ -107,6 +107,23 @@ from retrieval import (
     RerankingValidationError,
     RerankingProviderError,
     RerankingTimeoutError,
+    HydratedCandidate,
+    HydratedSearchCandidate,
+    HydratedChunk,
+    ChunkHydrationConfig,
+    BaseChunkRepository,
+    SQLAlchemyChunkRepository,
+    get_chunk_repository,
+    reset_chunk_repository,
+    ChunkHydrationService,
+    get_chunk_hydration_service,
+    reset_chunk_hydration_service,
+    hydrate_candidates,
+    ChunkHydrationError,
+    ChunkHydrationValidationError,
+    ChunkNotFoundError,
+    DatabaseRetrievalError,
+    ProjectBoundaryViolationError,
 )
 
 __all__ = [
@@ -123,6 +140,9 @@ __all__ = [
     "FusedSearchCandidate",
     "RerankedCandidate",
     "RerankedSearchCandidate",
+    "HydratedCandidate",
+    "HydratedSearchCandidate",
+    "HydratedChunk",
     # Configuration
     "QueryPreprocessingConfig",
     "QueryTransformationConfig",
@@ -130,6 +150,7 @@ __all__ = [
     "KeywordSearchConfig",
     "FusionConfig",
     "RerankingConfig",
+    "ChunkHydrationConfig",
     # Preprocessing
     "QueryPreprocessor",
     "QueryPreprocessingService",
@@ -203,6 +224,15 @@ __all__ = [
     "reset_reranking_service",
     "rerank_candidates",
     "resolve_candidate_text",
+    # Chunk Hydration Subsystem & Helpers
+    "BaseChunkRepository",
+    "SQLAlchemyChunkRepository",
+    "get_chunk_repository",
+    "reset_chunk_repository",
+    "ChunkHydrationService",
+    "get_chunk_hydration_service",
+    "reset_chunk_hydration_service",
+    "hydrate_candidates",
     # Domain Exceptions
     "RetrievalError",
     "QueryPreprocessingError",
@@ -228,5 +258,10 @@ __all__ = [
     "RerankingValidationError",
     "RerankingProviderError",
     "RerankingTimeoutError",
+    "ChunkHydrationError",
+    "ChunkHydrationValidationError",
+    "ChunkNotFoundError",
+    "DatabaseRetrievalError",
+    "ProjectBoundaryViolationError",
 ]
 

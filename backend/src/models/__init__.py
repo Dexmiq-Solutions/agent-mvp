@@ -1,5 +1,5 @@
-"""Database models package."""
-
 from models.base import Base
+from models.chunk import ChunkModel
 
-__all__ = ["Base"]
+__all__ = ["Base", "ChunkModel"]
+

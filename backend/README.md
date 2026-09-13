@@ -1457,7 +1457,52 @@ Reranking configuration is single-sourced from application `Settings` into `Rera
 | `RERANKER_MODEL` / `model` | `"rerank-2.5"` | Cross-encoder model identifier |
 | `RERANKER_TIMEOUT` / `timeout_seconds` | `10.0` | Timeout in seconds for reranker provider API calls |
 | `RERANKER_CANDIDATE_LIMIT` / `candidate_limit` | `50` | Maximum candidate chunks sent to reranker |
-| `RERANKER_RESULT_LIMIT` / `result_limit` | `10` | Maximum final reranked candidates retained |
+---
+
+## Chunk Fetching / Hydration
+
+### Responsibility & Scope
+
+The **Chunk Fetching / Hydration** stage is the data-resolution bridge between cross-encoder reranking and downstream Context Assembly.
+
+```
+Reranking
+    │  (Ranked references: chunk_id, scores, rank, provenance)
+    ▼
+Chunk Fetching / Hydration (ChunkHydrationService)
+    │  (Batched PostgreSQL Content Store lookup: WHERE chunk_id IN (...) AND project_id = ...)
+    ▼
+Hydrated Chunk Records (HydratedCandidate)
+    │  (Authoritative chunk text, contextual content, metadata, preserved reranking order)
+    ▼
+Context Assembly
+```
+
+> [!IMPORTANT]
+> **Key Invariants**:
+> - **PostgreSQL is Authoritative**: Chunk text and structured relational data originate exclusively from PostgreSQL, not Qdrant or source storage downloads.
+> - **Identity Lookup, Not Retrieval**: This stage resolves exact records by ID; it does not perform semantic or keyword search.
+> - **Batched Queries**: Fetches all candidate chunks in a single set-based SQL lookup to prevent $N+1$ database queries.
+> - **Preserved Reranking Order**: Application-side mapping restores the exact ranking order produced by cross-encoder reranking.
+> - **Strict Tenant Isolation**: All queries enforce `project_id` scoping at the database level and defensively filter cross-tenant references.
+> - **Score & Provenance Preservation**: Rerank scores, ranks, and retrieval provenance are preserved without modification.
+
+### Core Components
+
+- **`ChunkModel` (`models.chunk`)**: SQLAlchemy entity mapped to the `chunks` table storing authoritative text, contextual representations, hierarchy coordinates, and JSON metadata.
+- **`BaseChunkRepository` & `SQLAlchemyChunkRepository` (`retrieval.hydration.repository`)**: Data-access abstraction managing async SQLAlchemy sessions and batched queries.
+- **`ChunkHydrationService` (`retrieval.hydration.service`)**: Service orchestrating validation, deduplication, project-scoped batched retrieval, missing chunk audits, and deterministic order restoration.
+- **`HydratedCandidate` (`retrieval.models`)**: Immutable output representation containing full chunk text, contextual content, hierarchy, retrieval scores, and metadata.
+
+### Configuration Reference
+
+`ChunkHydrationConfig` parameters:
+
+| Variable / Parameter | Default | Description |
+| :--- | :--- | :--- |
+| `CHUNK_HYDRATION_FAIL_ON_MISSING` / `fail_on_missing` | `false` | If `true`, raises `ChunkNotFoundError` when records are missing in Content Store; if `false`, returns partial valid results and logs observability warnings |
+| `CHUNK_HYDRATION_VERIFY_VERSION` / `verify_version_identity` | `true` | Validates that candidate `document_version_id` matches the stored record |
+| `CHUNK_HYDRATION_MAX_BATCH_SIZE` / `max_batch_size` | `500` | Upper bound for candidate chunks fetched in a single hydration batch |
 
 ---
 
@@ -1484,7 +1529,8 @@ uv run uvicorn app.main:app --reload
 # Run full test suite
 uv run pytest
 
-# Run retrieval pipeline tests (indexing, search, fusion, filtering, reranking)
-uv run pytest tests/test_indexing.py tests/test_vector_search.py tests/test_keyword_search.py tests/test_keyword_encoder.py tests/test_keyword_qdrant.py tests/test_fusion.py tests/test_metadata_filtering.py tests/test_reranking.py
+# Run retrieval pipeline tests (indexing, search, fusion, filtering, reranking, hydration)
+uv run pytest tests/test_indexing.py tests/test_vector_search.py tests/test_keyword_search.py tests/test_keyword_encoder.py tests/test_keyword_qdrant.py tests/test_fusion.py tests/test_metadata_filtering.py tests/test_reranking.py tests/test_chunk_hydration.py
 ```
+
 

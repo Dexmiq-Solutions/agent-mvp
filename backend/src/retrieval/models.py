@@ -337,3 +337,168 @@ class RerankedCandidate:
 RerankedSearchCandidate = RerankedCandidate
 
 
+@dataclass(frozen=True)
+class HydratedCandidate:
+    """Represents a fully hydrated chunk candidate resolved from the PostgreSQL Content Store.
+
+    Preserves exact retrieval coordinates, cross-encoder rerank score, ranking position,
+    first-stage retrieval provenance (dense/sparse ranks and scores, fusion score),
+    and attaches the authoritative stored chunk text, contextual content, and
+    structured hierarchy/metadata required for downstream Context Assembly.
+    """
+
+    chunk_id: str
+    document_id: str
+    project_id: str
+    content: str
+    rank: int
+    rerank_score: float | None = None
+    fusion_score: float | None = None
+    dense_rank: int | None = None
+    sparse_rank: int | None = None
+    dense_score: float | None = None
+    sparse_score: float | None = None
+    document_version_id: str | None = None
+    contextual_content: str | None = None
+    chunk_index: int = 0
+    heading: str | None = None
+    heading_level: int | None = None
+    section_path: tuple[str, ...] = ()
+    parent_element_id: str | None = None
+    parent_chunk_id: str | None = None
+    element_types: tuple[str, ...] = ()
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def text(self) -> str:
+        """Convenience property returning authoritative chunk text."""
+        return self.content
+
+    @property
+    def chunk_text(self) -> str:
+        """Convenience property returning authoritative chunk text."""
+        return self.content
+
+    @property
+    def index(self) -> int:
+        """Convenience property returning chunk_index."""
+        return self.chunk_index
+
+    @property
+    def score(self) -> float:
+        """Convenience property returning primary relevance score."""
+        if self.rerank_score is not None:
+            return self.rerank_score
+        if self.fusion_score is not None:
+            return self.fusion_score
+        return 0.0
+
+    @classmethod
+    def from_candidate_and_record(
+        cls,
+        candidate: Any,
+        record: Any,
+    ) -> "HydratedCandidate":
+        """Construct a HydratedCandidate by combining a ranked candidate and a stored record."""
+        content = (
+            getattr(record, "content", None)
+            or getattr(record, "chunk_text", None)
+            or getattr(record, "text", "")
+            or ""
+        )
+        contextual = getattr(record, "contextual_content", None)
+
+        rerank_score = getattr(candidate, "rerank_score", None)
+        fusion_score = getattr(candidate, "fusion_score", None)
+        if fusion_score is None and hasattr(candidate, "score") and rerank_score is None:
+            fusion_score = getattr(candidate, "score")
+        elif rerank_score is None and hasattr(candidate, "score"):
+            rerank_score = getattr(candidate, "score")
+
+        rank = getattr(candidate, "rank", 1)
+
+        merged_meta: dict[str, Any] = {}
+        record_meta = getattr(record, "chunk_metadata", None) or getattr(record, "meta", None)
+        if not isinstance(record_meta, dict):
+            raw_meta = getattr(record, "metadata", None)
+            if isinstance(raw_meta, dict):
+                record_meta = raw_meta
+        if isinstance(record_meta, dict):
+            merged_meta.update(record_meta)
+        cand_meta = getattr(candidate, "metadata", None)
+        if isinstance(cand_meta, dict):
+            merged_meta.update(cand_meta)
+
+        section_path = getattr(record, "section_path", ()) or ()
+        if isinstance(section_path, (list, set)):
+            section_path = tuple(section_path)
+
+        element_types = getattr(record, "element_types", ()) or ()
+        if isinstance(element_types, (list, set)):
+            element_types = tuple(str(et) for et in element_types)
+
+        doc_version = getattr(candidate, "document_version_id", None) or getattr(
+            record, "document_version_id", None
+        )
+
+        return cls(
+            chunk_id=getattr(candidate, "chunk_id"),
+            document_id=getattr(candidate, "document_id"),
+            project_id=getattr(candidate, "project_id"),
+            content=str(content),
+            rank=rank,
+            rerank_score=rerank_score,
+            fusion_score=fusion_score,
+            dense_rank=getattr(candidate, "dense_rank", None),
+            sparse_rank=getattr(candidate, "sparse_rank", None),
+            dense_score=getattr(candidate, "dense_score", None),
+            sparse_score=getattr(candidate, "sparse_score", None),
+            document_version_id=doc_version,
+            contextual_content=str(contextual) if contextual else None,
+            chunk_index=int(getattr(record, "chunk_index", getattr(record, "index", 0)) or 0),
+            heading=getattr(record, "heading", None),
+            heading_level=getattr(record, "heading_level", None),
+            section_path=section_path,
+            parent_element_id=getattr(record, "parent_element_id", None),
+            parent_chunk_id=getattr(record, "parent_chunk_id", None),
+            element_types=element_types,
+            metadata=merged_meta,
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize hydrated candidate to a standard dictionary."""
+        data: dict[str, Any] = {
+            "chunk_id": self.chunk_id,
+            "document_id": self.document_id,
+            "project_id": self.project_id,
+            "content": self.content,
+            "chunk_text": self.content,
+            "rank": self.rank,
+            "rerank_score": self.rerank_score,
+            "fusion_score": self.fusion_score,
+            "score": self.score,
+            "dense_rank": self.dense_rank,
+            "sparse_rank": self.sparse_rank,
+            "dense_score": self.dense_score,
+            "sparse_score": self.sparse_score,
+            "document_version_id": self.document_version_id,
+            "contextual_content": self.contextual_content,
+            "chunk_index": self.chunk_index,
+            "index": self.chunk_index,
+            "heading": self.heading,
+            "heading_level": self.heading_level,
+            "section_path": list(self.section_path),
+            "parent_element_id": self.parent_element_id,
+            "parent_chunk_id": self.parent_chunk_id,
+            "element_types": list(self.element_types),
+        }
+        if self.metadata:
+            data["metadata"] = dict(self.metadata)
+        return data
+
+
+HydratedSearchCandidate = HydratedCandidate
+HydratedChunk = HydratedCandidate
+
+
+
