@@ -1212,6 +1212,115 @@ Hybrid fusion configuration is single-sourced from application `Settings` into `
 
 ---
 
+## Retrieval Pipeline: Metadata Filtering
+
+### Responsibility & Scope
+
+**Metadata Filtering** is the sixth stage of the **Retrieval Pipeline**, positioned directly between **Hybrid Fusion (RRF)** and downstream processing (**Reranking** and **Fetch Chunks**):
+> *"How do we enforce structured business, provenance, structural, and temporal constraints on unified candidates without corrupting ranking relevance scores, weakening project isolation, or making unnecessary database calls?"*
+
+```
+Dense Vector Search                   Keyword / Sparse Search
+[Top-K Dense Results]                 [Top-K Sparse Results]
+         │                                      │
+         └──────────────────┬───────────────────┘
+                            ▼
+                    [ FusionService ]
+                            ▼
+              Unified Ranked Candidates
+                  (FusedCandidate)
+                            │
+                            ▼
+              [ MetadataFilteringService ]
+                            │
+                            ├── Exact-Match (document_id, document_type, version)
+                            ├── Set / Multi-Value (document_type IN {req, spec})
+                            ├── Range (date >= 2026-01-01 AND date <= 2026-03-31)
+                            ├── Boolean (has_code = true)
+                            └── Compound Logic (AND, OR, NOT)
+                            │
+                            ▼
+              Defensive Project Isolation
+                   (cand.project_id == project_id)
+                            │
+                            ▼
+              Eligible Ranked Candidates
+                  (FusedCandidate)
+         (Score, Rank, Provenance 100% Preserved)
+                            │
+                            ▼
+             Downstream Stage (Reranking)
+```
+
+- **Scope**: Accepts deduplicated, scored `FusedCandidate` instances from `FusionService`, evaluates structured metadata constraints (`MetadataFilter` or dictionary syntax), strictly enforces project boundaries, drops violating or leaked candidates, and emits ordered eligible `FusedCandidate` instances for downstream reranking.
+- **Fundamental Principle**: *"Filter candidates; never alter candidate relevance."*
+- **Preservation Contract**:
+  - **Relevance**: Metadata filtering is strictly a binary constraint operation (`Keep` or `Remove`). It performs zero reranking, score recalculation, or RRF modification. Fused scores (`fused_score`, `score`) and ranks are preserved verbatim.
+  - **Identity & Provenance**: Chunks retain `chunk_id`, `document_id`, `project_id`, `document_version_id`, `dense_rank`, `sparse_rank`, `dense_score`, and `sparse_score`.
+  - **Deterministic Ordering**: Eligible candidates retain their exact relative order as established by Fusion.
+- **Missing Metadata Invariant**:
+  - Missing metadata is **never** silently interpreted as satisfying a constraint. If an exact-match, set, range, or boolean filter targets a field that does not exist on the candidate or in metadata, the condition evaluates to `False`.
+- **Project Isolation Invariant**:
+  - Mandatory `project_id` matching is defensively enforced. Candidates from foreign projects are dropped immediately with structured warning logs.
+- **Separation of Concerns & Boundaries**:
+  - Does not fetch full chunk text from PostgreSQL (Fetch Chunks boundary).
+  - Does not compute cross-encoder scores or perform re-scoring (Reranking boundary).
+  - Does not execute dense or sparse searches (Search boundary).
+- **Performance & Time Complexity**:
+  - Single-pass in-memory evaluation: $O(N \cdot C)$ where $N$ is candidate count and $C$ is number of constraints.
+  - Zero database or network calls when filtering on vector payload metadata.
+
+### Documented Filtering Capabilities
+
+1. **Exact-Match Filtering**:
+   - Compares scalar metadata values (strings, integers, enums) strictly without fuzzy matching.
+   - Example: `ExactMatchCondition("document_type", "requirements")` matches `"requirements"`, but rejects `"requirement"` or `"architecture"`.
+2. **Multiple-Value / Set Filtering**:
+   - Asserts membership in a permitted set (`IN`).
+   - Scalar candidate values match if included in the target set.
+   - Sequence/collection candidate values (e.g. `section_path`) match if any element intersects the target set.
+   - Example: `SetCondition("document_type", ["requirements", "specification"])`.
+3. **Range Filtering**:
+   - Supports numerical values and chronological ISO dates/datetimes with inclusive (`gte`, `lte`) and exclusive (`gt`, `lt`) boundaries.
+   - Boundary values are handled strictly (e.g. date `2026-01-01` satisfies `gte="2026-01-01"`).
+   - Example: `RangeCondition("date", gte="2026-01-01", lte="2026-03-31")`.
+4. **Boolean Filtering**:
+   - Evaluates strict boolean attributes (`True` / `False`). Strings like `"true"` or numbers like `1` are rejected.
+   - Example: `BooleanCondition("has_code", True)`.
+5. **Compound Filtering**:
+   - Combines multiple sub-conditions using `AND` (`must`), `OR` (`should`), and `NOT` (`must_not`) with short-circuiting Boolean logic.
+   - Supports arbitrary nested expressions (e.g. `dept == engineering AND (level == senior OR level == staff)`).
+6. **Native Qdrant Translation**:
+   - `to_qdrant_filter(filter_spec, project_id)` compiles domain `MetadataFilter` structures directly into native Qdrant `models.Filter` instances for pushdown support.
+
+### Domain Models
+
+```python
+@dataclass(frozen=True)
+class MetadataFilter:
+    """Structured container representing composite metadata filtering constraints."""
+
+    must: tuple[BaseFilterCondition, ...] = ()
+    should: tuple[BaseFilterCondition, ...] = ()
+    must_not: tuple[BaseFilterCondition, ...] = ()
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any] | None) -> "MetadataFilter": ...
+
+    def to_dict(self) -> dict[str, Any]: ...
+```
+
+### Configuration Reference
+
+Metadata filtering configuration is single-sourced from application `Settings` into `MetadataFilteringConfig`:
+
+| Variable / Parameter | Default | Description |
+| :--- | :--- | :--- |
+| `METADATA_FILTERING_ENABLED` / `enabled` | `True` | Whether metadata filtering is active |
+| `METADATA_FILTERING_STRICT_MODE` / `strict_mode` | `False` | When True, type mismatches or unknown condition operators raise errors |
+
+---
+
 ## Development
 
 
@@ -1235,7 +1344,7 @@ uv run uvicorn app.main:app --reload
 # Run full test suite
 uv run pytest
 
-# Run indexing, vector search, keyword search, and fusion tests
-uv run pytest tests/test_indexing.py tests/test_vector_search.py tests/test_keyword_search.py tests/test_keyword_encoder.py tests/test_keyword_qdrant.py tests/test_fusion.py
+# Run retrieval pipeline tests (indexing, search, fusion, filtering)
+uv run pytest tests/test_indexing.py tests/test_vector_search.py tests/test_keyword_search.py tests/test_keyword_encoder.py tests/test_keyword_qdrant.py tests/test_fusion.py tests/test_metadata_filtering.py
 ```
 

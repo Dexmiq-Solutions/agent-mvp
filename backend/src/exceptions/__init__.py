@@ -115,6 +115,10 @@ from exceptions.retrieval import (
     VectorRetrievalError,
     KeywordRetrievalError,
     SparseEncodingError,
+    FusionError,
+    MetadataFilteringError,
+    InvalidFilterError,
+    FilterEvaluationError,
 )
 
 __all__ = [
@@ -220,5 +224,9 @@ __all__ = [
     "VectorRetrievalError",
     "KeywordRetrievalError",
     "SparseEncodingError",
+    "FusionError",
+    "MetadataFilteringError",
+    "InvalidFilterError",
+    "FilterEvaluationError",
 ]
 

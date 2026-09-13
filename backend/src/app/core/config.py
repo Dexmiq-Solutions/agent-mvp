@@ -115,6 +115,8 @@ class Settings(BaseSettings):
     KEYWORD_SEARCH_SCORE_THRESHOLD: float | None = None
     FUSION_RRF_K: int = 60
     FUSION_TOP_K: int = 10
+    METADATA_FILTERING_ENABLED: bool = True
+    METADATA_FILTERING_STRICT_MODE: bool = False
 
     @field_validator("LOG_LEVEL", mode="before")
     @classmethod

@@ -176,3 +176,26 @@ class FusionConfig:
             top_k=getattr(resolved, "FUSION_TOP_K", 10),
         )
 
+
+@dataclass(frozen=True)
+class MetadataFilteringConfig:
+    """Configuration settings for retrieval metadata filtering.
+
+    Attributes:
+        enabled: Whether metadata filtering is active.
+        strict_mode: When True, unknown filter fields or type mismatches raise errors instead
+            of evaluating as non-matching.
+    """
+
+    enabled: bool = True
+    strict_mode: bool = False
+
+    @classmethod
+    def from_settings(cls, settings: Optional[Settings] = None) -> "MetadataFilteringConfig":
+        """Construct configuration from application Settings (Single Source of Truth)."""
+        resolved = settings or get_settings()
+        return cls(
+            enabled=getattr(resolved, "METADATA_FILTERING_ENABLED", True),
+            strict_mode=getattr(resolved, "METADATA_FILTERING_STRICT_MODE", False),
+        )
+

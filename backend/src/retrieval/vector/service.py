@@ -217,6 +217,7 @@ class VectorSearchService:
                         score=float(item.score),
                         query_type=q_type,
                         document_version_id=doc_version,
+                        metadata=dict(payload.metadata) if payload.metadata else {},
                     )
                 )
 

@@ -150,7 +150,7 @@ class VectorSearchCandidate:
     """Represents a scored chunk candidate retrieved via vector similarity search.
 
     Preserves relational coordinates, similarity score from the vector index,
-    and query representation provenance for downstream fusion and reranking.
+    query representation provenance, and retrieval metadata for downstream fusion and filtering.
     """
 
     chunk_id: str
@@ -159,10 +159,11 @@ class VectorSearchCandidate:
     score: float
     query_type: str = "original"
     document_version_id: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize search candidate to a standard dictionary."""
-        return {
+        data: dict[str, Any] = {
             "chunk_id": self.chunk_id,
             "document_id": self.document_id,
             "project_id": self.project_id,
@@ -170,6 +171,9 @@ class VectorSearchCandidate:
             "query_type": self.query_type,
             "document_version_id": self.document_version_id,
         }
+        if self.metadata:
+            data["metadata"] = dict(self.metadata)
+        return data
 
 from storage.vector.models import SparseVector
 
@@ -179,7 +183,7 @@ class KeywordSearchCandidate:
     """Represents a scored chunk candidate retrieved via keyword/sparse retrieval.
 
     Preserves relational coordinates, sparse retrieval score from the index,
-    and query representation provenance for downstream fusion and reranking.
+    query representation provenance, and retrieval metadata for downstream fusion and filtering.
     """
 
     chunk_id: str
@@ -188,10 +192,11 @@ class KeywordSearchCandidate:
     score: float
     query_type: str = "original"
     document_version_id: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize search candidate to a standard dictionary."""
-        return {
+        data: dict[str, Any] = {
             "chunk_id": self.chunk_id,
             "document_id": self.document_id,
             "project_id": self.project_id,
@@ -199,6 +204,9 @@ class KeywordSearchCandidate:
             "query_type": self.query_type,
             "document_version_id": self.document_version_id,
         }
+        if self.metadata:
+            data["metadata"] = dict(self.metadata)
+        return data
 
 
 @dataclass(frozen=True)
@@ -206,7 +214,7 @@ class FusedCandidate:
     """Represents a scored chunk candidate produced by hybrid retrieval fusion (RRF).
 
     Preserves relational coordinates, unified fused ranking score, 1-based rank,
-    and individual retrieval branch provenance (dense/sparse ranks and scores).
+    individual retrieval branch provenance, and combined retrieval metadata.
     """
 
     chunk_id: str
@@ -219,6 +227,7 @@ class FusedCandidate:
     dense_score: float | None = None
     sparse_score: float | None = None
     document_version_id: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     @property
     def fused_score(self) -> float:
@@ -227,7 +236,7 @@ class FusedCandidate:
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize fused candidate to a standard dictionary."""
-        return {
+        data: dict[str, Any] = {
             "chunk_id": self.chunk_id,
             "document_id": self.document_id,
             "project_id": self.project_id,
@@ -240,7 +249,11 @@ class FusedCandidate:
             "sparse_score": self.sparse_score,
             "document_version_id": self.document_version_id,
         }
+        if self.metadata:
+            data["metadata"] = dict(self.metadata)
+        return data
 
 
 FusedSearchCandidate = FusedCandidate
+
 

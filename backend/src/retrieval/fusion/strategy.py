@@ -220,6 +220,8 @@ class ReciprocalRankFusionStrategy(BaseFusionStrategy):
                 else None
             )
 
+            cand_metadata = dict(getattr(candidate, "metadata", None) or {})
+
             accumulator[cid] = {
                 "chunk_id": cid,
                 "document_id": document_id.strip(),
@@ -230,6 +232,7 @@ class ReciprocalRankFusionStrategy(BaseFusionStrategy):
                 "dense_score": dense_score_val,
                 "sparse_rank": None,
                 "sparse_score": None,
+                "metadata": cand_metadata,
             }
 
         # --- Process Sparse Results ---
@@ -304,6 +307,8 @@ class ReciprocalRankFusionStrategy(BaseFusionStrategy):
                 else None
             )
 
+            sparse_metadata = dict(getattr(candidate, "metadata", None) or {})
+
             if cid in accumulator:
                 # Deduplicate and merge: candidate appeared in both branches
                 accumulator[cid]["score"] += score_contrib
@@ -311,6 +316,10 @@ class ReciprocalRankFusionStrategy(BaseFusionStrategy):
                 accumulator[cid]["sparse_score"] = sparse_score_val
                 if accumulator[cid]["document_version_id"] is None and doc_version is not None:
                     accumulator[cid]["document_version_id"] = doc_version
+                # Merge sparse metadata fields if not already populated from dense branch
+                for k, v in sparse_metadata.items():
+                    if k not in accumulator[cid]["metadata"]:
+                        accumulator[cid]["metadata"][k] = v
             else:
                 # Candidate appeared only in sparse search
                 accumulator[cid] = {
@@ -323,6 +332,7 @@ class ReciprocalRankFusionStrategy(BaseFusionStrategy):
                     "dense_score": None,
                     "sparse_rank": rank,
                     "sparse_score": sparse_score_val,
+                    "metadata": sparse_metadata,
                 }
 
         if discarded_count > 0:
@@ -350,6 +360,7 @@ class ReciprocalRankFusionStrategy(BaseFusionStrategy):
                     dense_score=entry["dense_score"],
                     sparse_score=entry["sparse_score"],
                     document_version_id=entry["document_version_id"],
+                    metadata=entry.get("metadata", {}),
                 )
             )
 

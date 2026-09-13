@@ -79,3 +79,15 @@ class SparseEncodingError(RetrievalError):
 
 class FusionError(RetrievalError):
     """Base exception for hybrid retrieval fusion stage failures."""
+
+
+class MetadataFilteringError(RetrievalError):
+    """Base exception for metadata filtering stage failures."""
+
+
+class InvalidFilterError(MetadataFilteringError):
+    """Raised when a filter expression or constraint is structurally invalid or malformed."""
+
+
+class FilterEvaluationError(MetadataFilteringError):
+    """Raised when evaluation of a filter against candidate metadata encounters an error."""
