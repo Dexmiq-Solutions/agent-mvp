@@ -87,6 +87,10 @@ class DocumentChunk:
             "metadata": dict(self.metadata),
         }
 
+    def to_representation_text(self) -> str:
+        """Return the text representation for downstream embedding and sparse encoders."""
+        return self.content
+
     def __repr__(self) -> str:
         """Safe representation omitting raw document chunk text."""
         return (

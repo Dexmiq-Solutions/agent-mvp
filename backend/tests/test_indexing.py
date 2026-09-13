@@ -37,7 +37,12 @@ from indexing import (
 )
 from metadata_enrichment.models import ChunkMetadata, EnrichedChunk, EnrichedDocument
 from storage.vector import BaseVectorStore
-from storage.vector.models import VectorRecord
+from storage.vector.models import SparseVector, VectorRecord
+from indexing.representations import (
+    extract_representation_text,
+    extract_representation_texts,
+    generate_sparse_representations,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -384,8 +389,9 @@ async def test_index_document_success(mock_vector_store, mock_indexing_settings,
         model="voyage-3-large",
         total_tokens=10,
     )
+    sparse_vecs = [SparseVector(indices=(10, 20), values=(0.5, 0.9))]
 
-    report = await service.index_document(doc, embeddings)
+    report = await service.index_document(doc, embeddings, sparse_vectors=sparse_vecs)
 
     assert report.total_attempted == 1
     assert report.total_indexed == 1
@@ -410,9 +416,10 @@ async def test_index_document_mismatched_counts(mock_vector_store, mock_indexing
         embeddings=[[0.1, 0.2, 0.3, 0.4], [0.5, 0.6, 0.7, 0.8]],
         model="voyage-3-large",
     )
+    sparse_vecs = [SparseVector(indices=(10,), values=(0.5,))]
 
     with pytest.raises(InvalidIndexingInputError) as exc_info:
-        await service.index_document(doc, embeddings)
+        await service.index_document(doc, embeddings, sparse_vectors=sparse_vecs)
     assert "Mismatched chunk and embedding counts" in str(exc_info.value)
 
 
@@ -642,7 +649,8 @@ async def test_index_document_with_contextually_enriched_document(
     )
 
     service = DocumentIndexingService(vector_store=mock_vector_store, settings=mock_indexing_settings)
-    report = await service.index_document(ctx_doc, [[0.1, 0.2, 0.3, 0.4]])
+    sparse_vectors = generate_sparse_representations(ctx_doc)
+    report = await service.index_document(ctx_doc, [[0.1, 0.2, 0.3, 0.4]], sparse_vectors=sparse_vectors)
 
     assert report.total_attempted == 1
     assert report.total_indexed == 1
@@ -761,3 +769,225 @@ async def test_delete_document_validation_errors(mock_vector_store, mock_indexin
 
     with pytest.raises(InvalidIndexingInputError):
         await service.delete_chunks("p1", [])
+
+
+# ==============================================================================
+# 11. Dual Dense and Sparse Representation Pipeline Tests
+# ==============================================================================
+
+
+@pytest.mark.anyio
+async def test_index_document_missing_sparse_vectors_raises_error(
+    mock_vector_store, mock_indexing_settings, sample_enriched_chunk
+):
+    """Verify InvalidIndexingInputError is raised when sparse indexing is enabled and sparse_vectors is None."""
+    service = DocumentIndexingService(vector_store=mock_vector_store, settings=mock_indexing_settings)
+    doc = EnrichedDocument(
+        document_id="doc-123",
+        project_id="proj-abc",
+        document_type=DocumentType.MARKDOWN,
+        chunks=[sample_enriched_chunk],
+    )
+
+    with pytest.raises(InvalidIndexingInputError) as exc_info:
+        await service.index_document(doc, [[0.1, 0.2, 0.3, 0.4]], sparse_vectors=None)
+    assert "sparse_vectors must be provided" in str(exc_info.value)
+
+
+@pytest.mark.anyio
+async def test_index_document_sparse_vectors_count_mismatch(
+    mock_vector_store, mock_indexing_settings, sample_enriched_chunk
+):
+    """Verify InvalidIndexingInputError is raised when sparse_vectors length does not match chunks length."""
+    service = DocumentIndexingService(vector_store=mock_vector_store, settings=mock_indexing_settings)
+    doc = EnrichedDocument(
+        document_id="doc-123",
+        project_id="proj-abc",
+        document_type=DocumentType.MARKDOWN,
+        chunks=[sample_enriched_chunk],
+    )
+    sparse_vecs = [
+        SparseVector(indices=(1,), values=(1.0,)),
+        SparseVector(indices=(2,), values=(2.0,)),
+    ]
+
+    with pytest.raises(InvalidIndexingInputError) as exc_info:
+        await service.index_document(doc, [[0.1, 0.2, 0.3, 0.4]], sparse_vectors=sparse_vecs)
+    assert "Mismatched chunk and sparse vector counts" in str(exc_info.value)
+
+
+@pytest.mark.anyio
+async def test_index_document_sparse_vectors_invalid_type(
+    mock_vector_store, mock_indexing_settings, sample_enriched_chunk
+):
+    """Verify InvalidIndexingInputError is raised when sparse_vectors contains non-SparseVector items."""
+    service = DocumentIndexingService(vector_store=mock_vector_store, settings=mock_indexing_settings)
+    doc = EnrichedDocument(
+        document_id="doc-123",
+        project_id="proj-abc",
+        document_type=DocumentType.MARKDOWN,
+        chunks=[sample_enriched_chunk],
+    )
+
+    with pytest.raises(InvalidIndexingInputError) as exc_info:
+        await service.index_document(doc, [[0.1, 0.2, 0.3, 0.4]], sparse_vectors=["not-a-sparse-vector"])
+    assert "must be a SparseVector instance" in str(exc_info.value)
+
+
+@pytest.mark.anyio
+async def test_index_document_sparse_disabled(
+    mock_vector_store, mock_indexing_settings, sample_enriched_chunk
+):
+    """Verify that when sparse_indexing_enabled=False, sparse vectors are not required and omitted from records."""
+    cfg = IndexingConfig(sparse_indexing_enabled=False)
+    service = DocumentIndexingService(vector_store=mock_vector_store, config=cfg, settings=mock_indexing_settings)
+    doc = EnrichedDocument(
+        document_id="doc-123",
+        project_id="proj-abc",
+        document_type=DocumentType.MARKDOWN,
+        chunks=[sample_enriched_chunk],
+    )
+
+    report = await service.index_document(doc, [[0.1, 0.2, 0.3, 0.4]], sparse_vectors=None)
+    assert report.is_success is True
+
+    upserted_records = mock_vector_store.upsert.call_args[0][0]
+    assert len(upserted_records) == 1
+    assert upserted_records[0].sparse_vector is None
+
+
+@pytest.mark.anyio
+async def test_index_document_with_both_dense_and_sparse_vectors(
+    mock_vector_store, mock_indexing_settings, sample_enriched_chunk
+):
+    """Verify index_document attaches both dense vector and sparse vector to the exact same VectorRecord."""
+    service = DocumentIndexingService(vector_store=mock_vector_store, settings=mock_indexing_settings)
+    doc = EnrichedDocument(
+        document_id="doc-123",
+        project_id="proj-abc",
+        document_type=DocumentType.MARKDOWN,
+        chunks=[sample_enriched_chunk],
+    )
+    dense_vec = [0.1, 0.2, 0.3, 0.4]
+    sparse_vec = SparseVector(indices=(10, 20), values=(0.7, 1.2))
+
+    report = await service.index_document(doc, [dense_vec], sparse_vectors=[sparse_vec])
+    assert report.is_success is True
+
+    upserted_records = mock_vector_store.upsert.call_args[0][0]
+    assert len(upserted_records) == 1
+    record = upserted_records[0]
+    assert record.vector == dense_vec
+    assert record.sparse_vector == sparse_vec
+    assert record.payload.chunk_id == sample_enriched_chunk.chunk_id
+    assert record.payload.project_id == sample_enriched_chunk.project_id
+    assert record.payload.document_id == sample_enriched_chunk.document_id
+    assert record.payload.metadata.get("sparse_encoder_strategy") == "technical_hash"
+
+
+@pytest.mark.anyio
+async def test_representation_ready_text_used_for_both_dense_and_sparse(sample_enriched_chunk):
+    """Verify that ContextuallyEnrichedChunk provides identical representation-ready text to both paths."""
+    from contextual_enrichment.models import ContextuallyEnrichedChunk, ContextuallyEnrichedDocument
+
+    ctx_chunk = ContextuallyEnrichedChunk(
+        chunk_id=sample_enriched_chunk.chunk_id,
+        document_id=sample_enriched_chunk.document_id,
+        project_id=sample_enriched_chunk.project_id,
+        content=sample_enriched_chunk.content,
+        index=0,
+        context_text="Context: User Authentication Specification",
+        is_contextually_enriched=True,
+    )
+    ctx_doc = ContextuallyEnrichedDocument(
+        document_id="doc-123",
+        project_id="proj-abc",
+        document_type=DocumentType.MARKDOWN,
+        chunks=[ctx_chunk],
+    )
+
+    # 1. Verify extract_representation_text returns composite contextual representation
+    rep_text = extract_representation_text(ctx_chunk)
+    assert "Context: User Authentication Specification" in rep_text
+    assert sample_enriched_chunk.content in rep_text
+    assert rep_text == ctx_chunk.to_representation_text()
+    assert rep_text == ctx_chunk.to_embedding_text()
+
+    # 2. Verify extract_representation_texts produces matching list
+    texts = extract_representation_texts(ctx_doc)
+    assert texts == [rep_text]
+
+    # 3. Verify sparse representation encodes the representation-ready text
+    sparse_vecs = generate_sparse_representations(ctx_doc)
+    assert len(sparse_vecs) == 1
+    assert not sparse_vecs[0].is_empty
+
+
+@pytest.mark.anyio
+async def test_dual_representation_same_qdrant_point(mock_indexing_settings, sample_enriched_chunk):
+    """Verify that Qdrant receives both dense and sparse vectors on the exact same PointStruct."""
+    from storage.vector.qdrant import QdrantVectorStore
+
+    q_store = QdrantVectorStore(collection_name="test_chunks", settings=mock_indexing_settings)
+    mock_client = AsyncMock()
+    mock_client.collection_exists = AsyncMock(return_value=False)
+    mock_client.create_collection = AsyncMock(return_value=True)
+    mock_client.upsert = AsyncMock(return_value=True)
+    q_store._client = mock_client
+
+    service = DocumentIndexingService(vector_store=q_store, settings=mock_indexing_settings)
+    doc = EnrichedDocument(
+        document_id="doc-123",
+        project_id="proj-abc",
+        document_type=DocumentType.MARKDOWN,
+        chunks=[sample_enriched_chunk],
+    )
+
+    dense_vec = [0.1, 0.2, 0.3, 0.4]
+    sparse_vec = SparseVector(indices=(5, 12), values=(0.8, 1.4))
+
+    await service.index_document(doc, [dense_vec], sparse_vectors=[sparse_vec])
+
+    mock_client.upsert.assert_awaited_once()
+    call_kwargs = mock_client.upsert.call_args.kwargs
+    points = call_kwargs["points"]
+    assert len(points) == 1
+    point = points[0]
+
+    # Validate that dense is in "" and sparse is in "sparse"
+    assert point.vector[""] == dense_vec
+    assert point.vector["sparse"].indices == [5, 12]
+    assert point.vector["sparse"].values == [0.8, 1.4]
+
+    # Validate stable identity and tenant isolation
+    assert point.payload["chunk_id"] == sample_enriched_chunk.chunk_id
+    assert point.payload["project_id"] == sample_enriched_chunk.project_id
+    assert point.payload["document_id"] == sample_enriched_chunk.document_id
+
+
+def test_chunk_to_representation_text_polymorphism():
+    """Verify DocumentChunk and ContextuallyEnrichedChunk both implement to_representation_text polymorphically."""
+    from chunking.models import DocumentChunk
+    from contextual_enrichment.models import ContextuallyEnrichedChunk
+
+    plain_chunk = DocumentChunk(
+        chunk_id="c1",
+        document_id="d1",
+        project_id="p1",
+        content="Standard chunk content",
+        index=0,
+    )
+    assert plain_chunk.to_representation_text() == "Standard chunk content"
+    assert extract_representation_text(plain_chunk) == "Standard chunk content"
+
+    enriched_chunk = ContextuallyEnrichedChunk(
+        chunk_id="c2",
+        document_id="d1",
+        project_id="p1",
+        content="Raw body",
+        index=1,
+        context_text="Header Context",
+        is_contextually_enriched=True,
+    )
+    assert enriched_chunk.to_representation_text() == "Header Context\n\nRaw body"
+    assert extract_representation_text(enriched_chunk) == "Header Context\n\nRaw body"

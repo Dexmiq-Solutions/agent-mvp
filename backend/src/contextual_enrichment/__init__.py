@@ -6,6 +6,7 @@ from contextual_enrichment.models import (
     ContextualEnrichmentReport,
     ContextuallyEnrichedChunk,
     ContextuallyEnrichedDocument,
+    extract_representation_text,
 )
 from contextual_enrichment.providers.structured import StructuredContextProvider
 from contextual_enrichment.service import (
@@ -23,6 +24,7 @@ __all__ = [
     "ContextuallyEnrichedChunk",
     "ContextualEnrichmentReport",
     "ContextuallyEnrichedDocument",
+    "extract_representation_text",
     # Providers
     "StructuredContextProvider",
     # Service & Factories

@@ -10,6 +10,9 @@ from indexing import (
     generate_point_id,
     get_indexing_service,
     reset_indexing_service,
+    extract_representation_text,
+    extract_representation_texts,
+    generate_sparse_representations,
 )
 
 __all__ = [
@@ -21,5 +24,8 @@ __all__ = [
     "generate_point_id",
     "get_indexing_service",
     "reset_indexing_service",
+    "extract_representation_text",
+    "extract_representation_texts",
+    "generate_sparse_representations",
     "IndexingError",
 ]

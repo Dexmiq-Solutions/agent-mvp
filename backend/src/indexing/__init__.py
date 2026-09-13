@@ -18,6 +18,11 @@ from indexing.models import (
     IndexingConfig,
     IndexingReport,
 )
+from indexing.representations import (
+    extract_representation_text,
+    extract_representation_texts,
+    generate_sparse_representations,
+)
 from indexing.service import DocumentIndexingService
 from storage.vector import BaseVectorStore
 
@@ -76,6 +81,10 @@ __all__ = [
     # Identity
     "generate_point_id",
     "INDEXING_NAMESPACE",
+    # Representation Generation
+    "extract_representation_text",
+    "extract_representation_texts",
+    "generate_sparse_representations",
     # Exceptions
     "IndexingError",
     "InvalidIndexingInputError",

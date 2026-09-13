@@ -3,6 +3,7 @@
 import asyncio
 import math
 import time
+from collections.abc import Sequence
 from typing import Any, Optional
 
 from app.core.config import Settings, get_settings
@@ -433,18 +434,21 @@ class DocumentIndexingService:
         self,
         document: Any,
         embeddings: Any,
+        sparse_vectors: Optional[Sequence[SparseVector]] = None,
         embedding_model: Optional[str] = None,
         embedding_provider: str = "voyage",
         strict: bool = True,
     ) -> IndexingReport:
-        """Index a document and its corresponding generated embeddings into Qdrant.
+        """Index a document and its corresponding generated representations into Qdrant.
 
-        Integrates with the output of Chunking, Metadata Enrichment, Contextual Enrichment,
-        and Embedding Generation.
+        Integrates with the output of Contextual Enrichment, Embedding Generation,
+        and Sparse Representation Generation.
 
         Args:
             document: Document object carrying `chunks` and `project_id` (e.g. EnrichedDocument).
             embeddings: EmbeddingBatchResult, list of EmbeddingResults, or list of float vectors.
+            sparse_vectors: Optional sequence of SparseVector representations corresponding 1-to-1
+                with document chunks. Required when sparse indexing is enabled.
             embedding_model: Optional model name override.
             embedding_provider: Embedding provider identifier (default: 'voyage').
             strict: If True, raises IndexingPartialFailureError on partial failure.
@@ -453,7 +457,8 @@ class DocumentIndexingService:
             IndexingReport: Detailed execution and audit report.
 
         Raises:
-            InvalidIndexingInputError: If document or embeddings are mismatched or invalid.
+            InvalidIndexingInputError: If document, embeddings, or sparse_vectors are mismatched,
+                invalid, or missing when required.
         """
         chunks = getattr(document, "chunks", None)
         if not isinstance(chunks, (list, tuple)) or len(chunks) == 0:
@@ -492,17 +497,40 @@ class DocumentIndexingService:
                 f"but received {len(vectors)} embedding vectors."
             )
 
-        # Construct IndexableRecords preserving chunk metadata and embedding config
-        records: list[IndexableRecord] = []
-        sparse_vectors = None
+        # Validate sparse representations when sparse indexing is enabled
+        validated_sparse_vectors: Optional[Sequence[Optional[SparseVector]]] = None
         if self._config.sparse_indexing_enabled:
-            sparse_encoder = self._get_sparse_encoder()
-            if sparse_encoder is not None:
-                chunk_texts = [getattr(c, "content", "") or "" for c in chunks]
-                sparse_vectors = sparse_encoder.encode_documents(chunk_texts)
+            if sparse_vectors is None:
+                raise InvalidIndexingInputError(
+                    "sparse_vectors must be provided when sparse indexing is enabled."
+                )
+            if not isinstance(sparse_vectors, (list, tuple)):
+                raise InvalidIndexingInputError(
+                    f"sparse_vectors must be a sequence of SparseVector instances, got '{type(sparse_vectors).__name__}'."
+                )
+            if len(chunks) != len(sparse_vectors):
+                raise InvalidIndexingInputError(
+                    f"Mismatched chunk and sparse vector counts: document has {len(chunks)} chunks, "
+                    f"but received {len(sparse_vectors)} sparse vectors."
+                )
+            for idx, sv in enumerate(sparse_vectors):
+                if sv is not None and not isinstance(sv, SparseVector) and not (
+                    hasattr(sv, "indices") and hasattr(sv, "values")
+                ):
+                    raise InvalidIndexingInputError(
+                        f"Item at index {idx} in sparse_vectors must be a SparseVector instance, "
+                        f"got '{type(sv).__name__}'."
+                    )
+            validated_sparse_vectors = sparse_vectors
 
+        # Construct IndexableRecords preserving chunk metadata and representation config
+        records: list[IndexableRecord] = []
         for idx, (chunk, vector) in enumerate(zip(chunks, vectors)):
-            sparse_vec = sparse_vectors[idx] if sparse_vectors is not None else None
+            sparse_vec = (
+                validated_sparse_vectors[idx]
+                if validated_sparse_vectors is not None
+                else None
+            )
             rec = IndexableRecord.from_chunk_and_vector(
                 chunk=chunk,
                 vector=vector,

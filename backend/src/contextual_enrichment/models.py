@@ -70,6 +70,10 @@ class ContextuallyEnrichedChunk(EnrichedChunk):
         """Return the text representation to be embedded."""
         return self.contextual_content
 
+    def to_representation_text(self) -> str:
+        """Return representation used for both dense and sparse representation generation."""
+        return self.contextual_content
+
     def to_dict(self) -> dict[str, Any]:
         """Serialize contextually enriched chunk to a dictionary."""
         base = super().to_dict()
@@ -160,3 +164,24 @@ class ContextuallyEnrichedDocument(EnrichedDocument):
             f"enriched_chunks={self.contextual_enrichment_report.enriched_chunks_count}, "
             f"enabled={self.contextual_enrichment_report.enabled})"
         )
+
+
+def extract_representation_text(chunk: Any) -> str:
+    """Extract representation-ready content from a chunk after Contextual Enrichment.
+
+    Consumes to_representation_text(), to_embedding_text(), or contextual_content
+    if present on the chunk, falling back to chunk.content verbatim.
+
+    Args:
+        chunk: DocumentChunk, EnrichedChunk, ContextuallyEnrichedChunk, or duck-typed chunk.
+
+    Returns:
+        str: Representation-ready text content for downstream vector and sparse generators.
+    """
+    if hasattr(chunk, "to_representation_text") and callable(chunk.to_representation_text):
+        return str(chunk.to_representation_text())
+    if hasattr(chunk, "to_embedding_text") and callable(chunk.to_embedding_text):
+        return str(chunk.to_embedding_text())
+    if hasattr(chunk, "contextual_content"):
+        return str(getattr(chunk, "contextual_content"))
+    return str(getattr(chunk, "content", "") or "")

@@ -659,7 +659,7 @@ Contextual enrichment is controlled via environment variables loaded into `Setti
 
 > [!NOTE]
 > **Pipeline Boundary Contract**:
-> Contextual Enrichment is strictly responsible for synthesizing situational context and exposing the composite representation for embedding models via `chunk.to_embedding_text()` and `chunk.contextual_content`. It preserves original `chunk.content` verbatim and does not define or duplicate downstream vector storage (Qdrant) payloads or relational (PostgreSQL) records.
+> Contextual Enrichment is strictly responsible for synthesizing situational context and exposing the composite representation for downstream representation generation via polymorphic `chunk.to_representation_text()` (and `extract_representation_text()`), which supplies the identical input for both dense embedding generation (`chunk.to_embedding_text()` / `chunk.contextual_content`) and sparse representation generation. It preserves original `chunk.content` verbatim and does not define or duplicate downstream vector storage (Qdrant) payloads or relational (PostgreSQL) records.
 
 ---
 
@@ -667,42 +667,65 @@ Contextual enrichment is controlled via environment variables loaded into `Setti
 
 ### Responsibility & Scope
 
-**Indexing / Storage** is the tenth stage of the document indexing pipeline, positioned directly between **Embedding Generation** and the downstream **Retrieval Pipeline**:
-> *"How do we take successfully generated embedding vectors and document chunks and make them persistently, idempotently, and efficiently searchable in Qdrant while strictly enforcing project isolation?"*
+**Indexing / Storage** is the tenth stage of the document indexing pipeline, positioned directly after parallel **Representation Generation** (Dense Embeddings + Sparse Representation Generation) and before the downstream **Retrieval Pipeline**:
+> *"How do we take successfully generated dense and sparse vector representations alongside document chunks and make them persistently, idempotently, and efficiently searchable in Qdrant while strictly enforcing project isolation?"*
 
 ```
-Data Sources ──► Ingestion ──► Parsing ──► Cleaning ──► Normalization ──► Chunking ──► Metadata ──► Contextual ──► Embeddings ──► [ Indexing / Storage ] ──► Qdrant
-                                                                                                                                           │
-                                                                                                                              DocumentIndexingService
-                                                                                                                                           ▼
-                                                                                                                             Validate Records & Identity
-                                                                                                                             (Project Isolation & Dim Check)
-                                                                                                                                           ▼
-                                                                                                                              Deterministic Point IDs
-                                                                                                                                (RFC 4122 v5 UUIDs)
-                                                                                                                                           ▼
-                                                                                                                                 Bounded Batched Upserts
-                                                                                                                               (Retries & Partial Failure)
-                                                                                                                                           ▼
-                                                                                                                                  Qdrant Vector Points
+                                Contextual Enrichment
+                                          │
+                        extract_representation_texts()
+                                          ▼
+                      ┌───────────────────┴───────────────────┐
+                      │                                       │
+                      ▼                                       ▼
+            Embedding Generation                 Sparse Representation Generation
+             (Voyage AI Client)                     (TechnicalSparseEncoder)
+                      │                                       │
+                      ▼                                       ▼
+                Dense Vectors                           Sparse Vectors
+             (list[list[float]])                   (Sequence[SparseVector])
+                      │                                       │
+                      └───────────────────┬───────────────────┘
+                                          │
+                                          ▼
+                              [ Indexing / Storage ]
+                            (DocumentIndexingService)
+                                          │
+                                          ▼
+                             Validate Records & Identity
+                           (Project Isolation & Dim Check)
+                                          │
+                                          ▼
+                               Deterministic Point IDs
+                                 (RFC 4122 v5 UUIDs)
+                                          │
+                                          ▼
+                                Bounded Batched Upserts
+                              (Retries & Partial Failure)
+                                          │
+                                          ▼
+                                 Qdrant Vector Points
+                         vector={'': dense, 'sparse': sparse}
 ```
 
-### Embedding vs. Indexing: Critical Architectural Boundary
+### Representation Generation vs. Indexing: Critical Architectural Boundary
 
-| Concern | Embedding Generation | Indexing / Storage | Qdrant Vector Database |
-| :--- | :--- | :--- | :--- |
-| **Input** | Clean text representation (`to_embedding_text()`) | Vector + Chunk Identity + Retrieval Metadata | Qdrant Points (`id`, `vector`, `payload`) |
-| **Responsibility** | High-dimensional vector conversion via Voyage AI | Validation, stable point ID, batched idempotent upsert | Vector storage, HNSW indexing, similarity search |
-| **Boundary** | Does not interact with Qdrant or manage points | Does not generate vectors, does not run search algorithms | Does not parse, chunk, or generate embeddings |
+| Concern | Dense Embedding Generation | Sparse Representation Generation | Indexing / Storage (`DocumentIndexingService`) | Qdrant Vector Database |
+| :--- | :--- | :--- | :--- | :--- |
+| **Input** | Clean text representation (`to_representation_text()`) | Clean text representation (`to_representation_text()`) | Dense Vectors + Sparse Vectors + Chunk Identity + Retrieval Metadata | Qdrant Points (`id`, `vector`, `payload`) |
+| **Responsibility** | High-dimensional dense vector conversion via Voyage AI | Lexical tokenization, hashing, and saturated TF weighting via `TechnicalSparseEncoder` | Strict validation, stable point ID, batched idempotent upsert onto unified point | Multi-vector storage (dense HNSW + sparse inverted index), hybrid search |
+| **Boundary** | Does not interact with Qdrant or manage points | Does not interact with Qdrant or manage points | Does not generate vectors (no silent fallback); validates and persists | Does not parse, chunk, or generate representations |
+| **Silent Fallback Policy** | N/A | N/A | **Zero silent fallback**: When `sparse_indexing_enabled=True`, missing/invalid sparse vectors immediately raise `InvalidIndexingInputError` | N/A |
 
 ### PostgreSQL vs. Qdrant Responsibilities
 
 - **PostgreSQL (Supabase)**: Remains the single source of truth for full structured entity data, user management, projects, documents, document versions, complete chunk records, relationships, and processing state.
 - **Qdrant**: Stores the retrieval-oriented representation only:
-  - Vector embedding (`list[float]`).
+  - Dense vector embedding (`list[float]`) under default vector `""`.
+  - Sparse vector embedding (`SparseVector(indices=..., values=...)`) under named vector `"sparse"`.
   - Stable relational coordinates (`project_id`, `document_id`, `chunk_id`, `document_version_id`).
   - Key filtering attributes (`section_path`, `heading`, `content_type`, `character_count`, etc.).
-  - Embedding configuration provenance (`embedding_model`, `embedding_provider`, `embedding_dimension`).
+  - Embedding and sparse configuration provenance (`embedding_model`, `embedding_provider`, `embedding_dimension`, sparse encoder version).
   - **Does NOT** duplicate full relational tables or raw source files.
 - **Supabase Storage**: Stores the original uploaded binary/source documents.
 
@@ -714,24 +737,40 @@ Data Sources ──► Ingestion ──► Parsing ──► Cleaning ──► 
    - Repeated indexing runs produce identical point IDs, guaranteeing **idempotent upserts** without duplicate points.
    - Different document versions map to distinct point IDs.
 
-2. **Project-Level Tenant Isolation**:
+2. **Dual Representation Coexistence & Strict Validation**:
+   - `DocumentIndexingService.index_document(...)` accepts `embeddings: Sequence[list[float]]` and `sparse_vectors: Optional[Sequence[SparseVector]] = None`.
+   - **No Silent Fallback**: When `sparse_indexing_enabled=True`, `sparse_vectors` must be explicitly provided by the pipeline. If missing, mismatched in count, or containing invalid elements, an `InvalidIndexingInputError` is raised immediately.
+   - **Separation of Concerns**: Representation generation is performed upstream via `extract_representation_texts()` and `generate_sparse_representations()`, leaving indexing strictly responsible for validation, point formation, and persistence.
+   - **Unified Qdrant Point**: Coexists on the exact same point via named vectors:
+     ```python
+     point_vector = {
+         "": rec.vector,
+         self._sparse_vector_name: models.SparseVector(
+             indices=list(rec.sparse_vector.indices),
+             values=list(rec.sparse_vector.values),
+         ),
+     }
+     ```
+   - When `sparse_indexing_enabled=False`, indexing operates in dense-only mode (`point_vector = rec.vector`).
+
+3. **Project-Level Tenant Isolation**:
    - Every point payload carries `project_id`.
    - Batch inputs are strictly validated: mixed project IDs in a single batch trigger an immediate `InvalidIndexingInputError`.
    - Similarity searches and filter deletions require `project_id` matching, strictly preventing cross-tenant leakage.
 
-3. **Bounded Batched Upserts**:
+4. **Bounded Batched Upserts**:
    - Points are partitioned into configurable batches (`QDRANT_BATCH_SIZE`, default: `64`).
    - Minimizes network round-trips and memory overhead.
 
-4. **Transient Failure Handling & Retries**:
+5. **Transient Failure Handling & Retries**:
    - Bounded retries with exponential backoff (`QDRANT_MAX_RETRIES`, default: `3`) handle transient network drops.
    - Permanent errors (authentication, validation, dimension mismatches) fail fast without retrying.
 
-5. **Detailed Partial Failure Reporting**:
+6. **Detailed Partial Failure Reporting**:
    - Multi-batch jobs track succeeded and failed batches explicitly in `IndexingReport`.
    - In strict mode (`strict=True`, default), partial failures raise `IndexingPartialFailureError(report)` preserving failed chunk IDs for safe selective retry.
 
-6. **Document Lifecycle Management**:
+7. **Document Lifecycle Management**:
    - `delete_document(project_id, document_id)`: Removes all vectors for a document.
    - `delete_document_version(project_id, document_id, version_id)`: Scopes removal to a specific version.
    - `delete_chunks(project_id, point_ids)`: Removes specific point IDs.
@@ -752,6 +791,8 @@ Configure vector indexing parameters in `backend/.env` or via `IndexingConfig`:
 | `QDRANT_MAX_RETRIES` | `3` | Maximum retry attempts for transient failures |
 | `QDRANT_RETRY_DELAY` | `0.5` | Initial backoff delay in seconds |
 | `QDRANT_RETRY_BACKOFF` | `2.0` | Exponential backoff multiplier |
+| `SPARSE_INDEXING_ENABLED` | `true` | Enables dual-representation indexing with both dense and sparse vectors |
+| `SPARSE_VECTOR_NAME` | `"sparse"` | Named sparse vector configuration key in Qdrant collection |
 
 ---
 
@@ -1103,7 +1144,7 @@ uv run uvicorn app.main:app --reload
 # Run full test suite
 uv run pytest
 
-# Run vector search and keyword search tests
-uv run pytest tests/test_vector_search.py tests/test_keyword_search.py tests/test_keyword_encoder.py tests/test_keyword_qdrant.py
+# Run indexing, vector search, and keyword search tests
+uv run pytest tests/test_indexing.py tests/test_vector_search.py tests/test_keyword_search.py tests/test_keyword_encoder.py tests/test_keyword_qdrant.py
 ```
 
