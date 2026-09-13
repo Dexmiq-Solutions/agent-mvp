@@ -200,3 +200,47 @@ class KeywordSearchCandidate:
             "document_version_id": self.document_version_id,
         }
 
+
+@dataclass(frozen=True)
+class FusedCandidate:
+    """Represents a scored chunk candidate produced by hybrid retrieval fusion (RRF).
+
+    Preserves relational coordinates, unified fused ranking score, 1-based rank,
+    and individual retrieval branch provenance (dense/sparse ranks and scores).
+    """
+
+    chunk_id: str
+    document_id: str
+    project_id: str
+    score: float
+    rank: int
+    dense_rank: int | None = None
+    sparse_rank: int | None = None
+    dense_score: float | None = None
+    sparse_score: float | None = None
+    document_version_id: str | None = None
+
+    @property
+    def fused_score(self) -> float:
+        """Convenience alias for the unified fused score."""
+        return self.score
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize fused candidate to a standard dictionary."""
+        return {
+            "chunk_id": self.chunk_id,
+            "document_id": self.document_id,
+            "project_id": self.project_id,
+            "score": self.score,
+            "fused_score": self.score,
+            "rank": self.rank,
+            "dense_rank": self.dense_rank,
+            "sparse_rank": self.sparse_rank,
+            "dense_score": self.dense_score,
+            "sparse_score": self.sparse_score,
+            "document_version_id": self.document_version_id,
+        }
+
+
+FusedSearchCandidate = FusedCandidate
+

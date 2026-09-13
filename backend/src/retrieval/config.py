@@ -147,3 +147,32 @@ class KeywordSearchConfig:
             encoder_version=getattr(resolved, "SPARSE_ENCODER_VERSION", "1.0"),
         )
 
+
+@dataclass(frozen=True)
+class FusionConfig:
+    """Configuration settings for hybrid retrieval fusion.
+
+    Attributes:
+        rrf_k: Reciprocal Rank Fusion smoothing constant k (default: 60).
+        top_k: Optional maximum number of fused candidates to return (default: 10).
+    """
+
+    rrf_k: int = 60
+    top_k: Optional[int] = 10
+
+    def __post_init__(self) -> None:
+        """Validate fusion configuration parameters."""
+        if not isinstance(self.rrf_k, int) or self.rrf_k <= 0:
+            raise ValueError(f"rrf_k must be a positive integer, got {self.rrf_k}.")
+        if self.top_k is not None and (not isinstance(self.top_k, int) or self.top_k <= 0):
+            raise ValueError(f"top_k must be a positive integer or None, got {self.top_k}.")
+
+    @classmethod
+    def from_settings(cls, settings: Optional[Settings] = None) -> "FusionConfig":
+        """Construct configuration from application Settings (Single Source of Truth)."""
+        resolved = settings or get_settings()
+        return cls(
+            rrf_k=getattr(resolved, "FUSION_RRF_K", 60),
+            top_k=getattr(resolved, "FUSION_TOP_K", 10),
+        )
+

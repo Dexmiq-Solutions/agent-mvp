@@ -1121,6 +1121,97 @@ Keyword search configuration is single-sourced from application `Settings` into 
 
 ---
 
+## Retrieval Pipeline: Hybrid Fusion (Reciprocal Rank Fusion - RRF)
+
+### Responsibility & Scope
+
+**Fusion** is the fifth stage of the **Retrieval Pipeline**, positioned directly between parallel retrieval branches (**Dense Vector Search** and **Keyword / Sparse Search**) and downstream processing (**Metadata Filtering** and **Reranking**):
+> *"How do we merge heterogeneous candidate rankings from vector search and sparse keyword search into a single, deduplicated, calibrated candidate ranking without requiring raw scores to share numerical scales or fetching chunk text?"*
+
+```
+Dense Vector Search                   Keyword / Sparse Search
+(VectorSearchCandidate)               (KeywordSearchCandidate)
+[Top-K Dense Results]                 [Top-K Sparse Results]
+         │                                      │
+         └──────────────────┬───────────────────┘
+                            │
+                            ▼
+                    [ FusionService ]
+                            │
+                            ▼
+             Candidate Deduplication (chunk_id)
+                            │
+                            ▼
+              Reciprocal Rank Fusion (RRF)
+                  RRF(d) = Σ 1 / (k + rank_m(d))
+                            │
+                            ▼
+               Deterministic Tie-Breaking
+                   (-score, chunk_id)
+                            │
+                            ▼
+                  [ FusedCandidate ]
+        (chunk_id, doc_id, project_id, score, rank,
+         dense_rank, sparse_rank, dense_score, sparse_score)
+                            │
+                            ▼
+            Downstream Stage (Metadata Filtering)
+```
+
+- **Scope**: Accepts independent candidate lists produced by `VectorSearchService` and `KeywordSearchService`, deduplicates candidates on stable `chunk_id`, calculates unified ranking scores using Reciprocal Rank Fusion (RRF), strictly preserves tenant isolation, records retrieval branch provenance (`dense_rank`, `sparse_rank`, `dense_score`, `sparse_score`), and emits deterministically ordered `FusedCandidate` records bounded by `top_k`.
+- **Selected Strategy (RRF)**:
+  $$\text{RRF}(d) = \sum_{m \in M} \frac{1}{k + \text{rank}_m(d)}$$
+  Where:
+  - $d$ is a candidate chunk identified by its stable relational `chunk_id`.
+  - $\text{rank}_m(d)$ is the 1-based rank ($1, 2, \dots$) of chunk $d$ in retrieval list $m$.
+  - $k$ is the configurable smoothing constant (default: `60`, configured via `FUSION_RRF_K`).
+- **Rank-Based vs Score-Based**: RRF uses rank rather than raw score addition because dense cosine similarity and sparse IDF dot-product scores have incompatible distributions.
+- **Intra-List Deduplication**: If a candidate appears multiple times within a single retrieval branch (e.g. from multi-query expansion), its best/first rank is preserved to avoid intra-branch score inflation.
+- **Strict Pipeline Boundaries**:
+  - No database or Qdrant search calls (Search boundary).
+  - No dense embedding generation (Embedding boundary).
+  - No query preprocessing or transformation (Transformation boundary).
+  - No PostgreSQL chunk text fetching (Storage boundary).
+  - No reranking or cross-encoder scoring (Reranking boundary).
+- **Performance & Time Complexity**:
+  - Pure in-memory local computation: $O(D + S + C \log C)$ where $D$ is dense candidates, $S$ is sparse candidates, and $C$ is unique candidates.
+  - Zero network, database, or LLM overhead.
+
+### Domain Model: `FusedCandidate`
+
+```python
+@dataclass(frozen=True)
+class FusedCandidate:
+    """Represents a scored chunk candidate produced by hybrid retrieval fusion (RRF)."""
+
+    chunk_id: str
+    document_id: str
+    project_id: str
+    score: float
+    rank: int
+    dense_rank: int | None = None
+    sparse_rank: int | None = None
+    dense_score: float | None = None
+    sparse_score: float | None = None
+    document_version_id: str | None = None
+
+    @property
+    def fused_score(self) -> float: ...
+
+    def to_dict(self) -> dict[str, Any]: ...
+```
+
+### Configuration Reference
+
+Hybrid fusion configuration is single-sourced from application `Settings` into `FusionConfig`:
+
+| Variable / Parameter | Default | Description |
+| :--- | :--- | :--- |
+| `FUSION_RRF_K` / `rrf_k` | `60` | Reciprocal Rank Fusion smoothing constant $k$ (must be a positive integer) |
+| `FUSION_TOP_K` / `top_k` | `10` | Default maximum unified candidate chunks passed downstream (positive integer or `None`) |
+
+---
+
 ## Development
 
 
@@ -1144,7 +1235,7 @@ uv run uvicorn app.main:app --reload
 # Run full test suite
 uv run pytest
 
-# Run indexing, vector search, and keyword search tests
-uv run pytest tests/test_indexing.py tests/test_vector_search.py tests/test_keyword_search.py tests/test_keyword_encoder.py tests/test_keyword_qdrant.py
+# Run indexing, vector search, keyword search, and fusion tests
+uv run pytest tests/test_indexing.py tests/test_vector_search.py tests/test_keyword_search.py tests/test_keyword_encoder.py tests/test_keyword_qdrant.py tests/test_fusion.py
 ```
 

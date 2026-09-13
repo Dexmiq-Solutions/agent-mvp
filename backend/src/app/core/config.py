@@ -113,6 +113,8 @@ class Settings(BaseSettings):
     SPARSE_VECTOR_NAME: str = "sparse"
     KEYWORD_SEARCH_TOP_K: int = 10
     KEYWORD_SEARCH_SCORE_THRESHOLD: float | None = None
+    FUSION_RRF_K: int = 60
+    FUSION_TOP_K: int = 10
 
     @field_validator("LOG_LEVEL", mode="before")
     @classmethod

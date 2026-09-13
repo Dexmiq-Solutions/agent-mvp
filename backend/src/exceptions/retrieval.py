@@ -75,3 +75,7 @@ class KeywordRetrievalError(RetrievalError):
 
 class SparseEncodingError(RetrievalError):
     """Base exception for sparse representation encoding failures."""
+
+
+class FusionError(RetrievalError):
+    """Base exception for hybrid retrieval fusion stage failures."""

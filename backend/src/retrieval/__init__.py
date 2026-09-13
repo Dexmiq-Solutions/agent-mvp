@@ -20,12 +20,22 @@ from exceptions.retrieval import (
     VectorRetrievalError,
     KeywordRetrievalError,
     SparseEncodingError,
+    FusionError,
 )
 from retrieval.config import (
+    FusionConfig,
     KeywordSearchConfig,
     QueryPreprocessingConfig,
     QueryTransformationConfig,
     VectorSearchConfig,
+)
+from retrieval.fusion import (
+    BaseFusionStrategy,
+    FusionService,
+    ReciprocalRankFusionStrategy,
+    fuse_results,
+    get_fusion_service,
+    reset_fusion_service,
 )
 from retrieval.embedding import (
     QueryEmbeddingService,
@@ -46,6 +56,8 @@ from retrieval.keyword import (
 from retrieval.models import (
     EmbeddedQuery,
     EmbeddedQuerySet,
+    FusedCandidate,
+    FusedSearchCandidate,
     KeywordSearchCandidate,
     PolicyDecision,
     ProcessedQuery,
@@ -91,11 +103,14 @@ __all__ = [
     "VectorSearchCandidate",
     "SparseVector",
     "KeywordSearchCandidate",
+    "FusedCandidate",
+    "FusedSearchCandidate",
     # Configuration
     "QueryPreprocessingConfig",
     "QueryTransformationConfig",
     "VectorSearchConfig",
     "KeywordSearchConfig",
+    "FusionConfig",
     # Preprocessing Service & Helpers
     "QueryPreprocessor",
     "QueryPreprocessingService",
@@ -134,6 +149,13 @@ __all__ = [
     "TechnicalSparseEncoder",
     "get_sparse_encoder",
     "reset_sparse_encoder",
+    # Fusion Subsystem & Helpers
+    "FusionService",
+    "get_fusion_service",
+    "reset_fusion_service",
+    "fuse_results",
+    "BaseFusionStrategy",
+    "ReciprocalRankFusionStrategy",
     # Domain Exceptions
     "RetrievalError",
     "QueryPreprocessingError",
@@ -150,5 +172,6 @@ __all__ = [
     "VectorRetrievalError",
     "KeywordRetrievalError",
     "SparseEncodingError",
+    "FusionError",
 ]
 
