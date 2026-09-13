@@ -1321,6 +1321,146 @@ Metadata filtering configuration is single-sourced from application `Settings` i
 
 ---
 
+## Retrieval Pipeline: Cross-Encoder Reranking
+
+### Responsibility & Scope
+
+**Cross-Encoder Reranking** is the seventh stage of the **Retrieval Pipeline**, positioned directly between **Metadata Filtering** and downstream **Context Assembly**:
+> *"How do we apply deep semantic relevance scoring to a bounded candidate set using a dedicated cross-encoder model without corrupting retrieval provenance, violating tenant boundaries, or combining disparate scores?"*
+
+```
+Dense Vector Search                   Keyword / Sparse Search
+         │                                      │
+         └──────────────────┬───────────────────┘
+                            ▼
+                    [ FusionService ]
+                            ▼
+                Unified Ranked Candidates
+                     (FusedCandidate)
+                            │
+                            ▼
+               [ MetadataFilteringService ]
+                            │
+                            ▼
+                Eligible Ranked Candidates
+                     (FusedCandidate)
+                            │
+                            ▼
+                 [ RerankingService ]
+                            │
+                            ├── Bounded Candidate Set (RERANKER_CANDIDATE_LIMIT)
+                            ├── Decoupled Chunk Text Resolution
+                            │   (attributes, metadata, or content_lookup)
+                            ├── Defensive Tenant Isolation (project_id)
+                            ├── Deterministic Deduplication (chunk_id)
+                            │
+                            ▼
+               [ BaseReranker / VoyageReranker ]
+                   (Voyage AI: rerank-2.5)
+              Query + Candidate Chunk Texts (Batched)
+                            │
+                            ▼
+                Cross-Encoder Relevance Scores
+                            │
+                            ▼
+             Deterministic Ranking & Tie-Breaking
+                (-rerank_score, chunk_id)
+                            │
+                            ▼
+                  Output Result Bounding
+                 (RERANKER_RESULT_LIMIT)
+                            │
+                            ▼
+                 list[RerankedCandidate]
+     (rerank_score, rank, fusion_score, dense_rank, sparse_rank)
+                            │
+                            ▼
+             Downstream Stage (Context Assembly)
+```
+
+- **Scope**: Consumes project-scoped, metadata-filtered `FusedCandidate` instances, resolves raw chunk text (via candidate attributes, metadata, or external lookup), bounds candidate count to `candidate_limit` (default: 50), invokes a cross-encoder provider in a single batched asynchronous call, reorders candidates strictly by relevance score with deterministic tie-breaking on `chunk_id`, bounds output to `result_limit` (default: 10), and produces immutable `RerankedCandidate` instances with full retrieval provenance preserved.
+- **Fundamental Principle**: *"Second-stage cross-encoder relevance establishes the new ranking; original scores are never combined numerically."*
+- **Score Invariant**:
+  - **No Score Blending**: Dense similarity scores, sparse BM25/lexical scores, and RRF fused scores are **never** numerically combined, weighted, or summed with the cross-encoder score.
+  - The cross-encoder relevance score (`rerank_score`, exposed polymorphically as `score`) establishes the new authoritative ranking.
+- **Identity & Provenance Preservation**:
+  - Chunks retain their original identity: `chunk_id`, `document_id`, `project_id`, `document_version_id`, and `metadata`.
+  - First-stage retrieval provenance is preserved intact: `dense_rank`, `sparse_rank`, `dense_score`, `sparse_score`, and `fusion_score`.
+- **Project Isolation Invariant**:
+  - Mandatory `project_id` matching is defensively enforced. Any candidate from an unexpected project is dropped before being passed to the reranker.
+- **Clean Passthrough when Disabled**:
+  - When `RERANKING_ENABLED=false`, the reranker provider is bypassed cleanly without network overhead, passing through input candidates truncated to `result_limit`.
+- **Performance & Time Complexity**:
+  - Bounded candidate set: Operates strictly on a bounded window (default: 50 candidates) rather than the entire corpus.
+  - Single batched API request: Sends all candidate texts in one asynchronous request via official SDK (`voyageai.AsyncClient.rerank`).
+  - Deterministic sorting: $O(N \log N)$ where $N \le 50$.
+- **Separation of Concerns & Strict Boundaries**:
+  - **What Reranking Does NOT Do**:
+    - Does not perform database lookups or arbitrary SQL queries (content access is decoupled).
+    - Does not evaluate metadata constraints (Metadata Filtering boundary).
+    - Does not re-retrieve or transform queries (Search / Transformation boundary).
+    - Does not concatenate context or generate answers (Context Assembly / LLM boundary).
+
+### Provider Abstraction & Model Configuration
+
+- **Provider Abstraction (`BaseReranker`)**:
+  Decouples the retrieval pipeline from Voyage AI or any specific vendor SDK. Any provider implementing `rerank(query, documents, top_k) -> list[ScoredDocument]` can be substituted without altering pipeline orchestration.
+- **Concrete Provider (`VoyageReranker`)**:
+  Official implementation targeting Voyage AI's cross-encoder reranking endpoint.
+  - Default Model: `rerank-2.5`.
+  - Asynchronous non-blocking network I/O with explicit timeout enforcement (`asyncio.wait_for`).
+  - Domain error mapping: translates `voyage_errors.AuthenticationError`, `RateLimitError`, `Timeout`, and `VoyageError` to domain exceptions (`RerankingProviderError`, `RerankingTimeoutError`).
+  - Strict response validation ensuring returned document indices and finite scores.
+
+### Domain Models
+
+```python
+@dataclass(frozen=True)
+class ScoredDocument:
+    """Scored document returned by a cross-encoder reranker."""
+    index: int
+    score: float
+
+@dataclass(frozen=True)
+class RerankedCandidate:
+    """Scored chunk candidate produced by cross-encoder reranking."""
+    chunk_id: str
+    document_id: str
+    project_id: str
+    rerank_score: float
+    rank: int
+    fusion_score: float | None = None
+    dense_rank: int | None = None
+    sparse_rank: int | None = None
+    dense_score: float | None = None
+    sparse_score: float | None = None
+    document_version_id: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def score(self) -> float:
+        """Authoritative score is the reranker relevance score."""
+        return self.rerank_score
+
+    @classmethod
+    def from_candidate(cls, candidate: Any, rerank_score: float, rank: int) -> "RerankedCandidate": ...
+    def to_dict(self) -> dict[str, Any]: ...
+```
+
+### Configuration Reference
+
+Reranking configuration is single-sourced from application `Settings` into `RerankingConfig`:
+
+| Variable / Parameter | Default | Description |
+| :--- | :--- | :--- |
+| `RERANKING_ENABLED` / `enabled` | `true` | Whether cross-encoder reranking is active |
+| `RERANKER_MODEL` / `model` | `"rerank-2.5"` | Cross-encoder model identifier |
+| `RERANKER_TIMEOUT` / `timeout_seconds` | `10.0` | Timeout in seconds for reranker provider API calls |
+| `RERANKER_CANDIDATE_LIMIT` / `candidate_limit` | `50` | Maximum candidate chunks sent to reranker |
+| `RERANKER_RESULT_LIMIT` / `result_limit` | `10` | Maximum final reranked candidates retained |
+
+---
+
 ## Development
 
 
@@ -1344,7 +1484,7 @@ uv run uvicorn app.main:app --reload
 # Run full test suite
 uv run pytest
 
-# Run retrieval pipeline tests (indexing, search, fusion, filtering)
-uv run pytest tests/test_indexing.py tests/test_vector_search.py tests/test_keyword_search.py tests/test_keyword_encoder.py tests/test_keyword_qdrant.py tests/test_fusion.py tests/test_metadata_filtering.py
+# Run retrieval pipeline tests (indexing, search, fusion, filtering, reranking)
+uv run pytest tests/test_indexing.py tests/test_vector_search.py tests/test_keyword_search.py tests/test_keyword_encoder.py tests/test_keyword_qdrant.py tests/test_fusion.py tests/test_metadata_filtering.py tests/test_reranking.py
 ```
 

@@ -257,3 +257,83 @@ class FusedCandidate:
 FusedSearchCandidate = FusedCandidate
 
 
+@dataclass(frozen=True)
+class RerankedCandidate:
+    """Represents a scored chunk candidate produced by cross-encoder reranking.
+
+    Preserves relational coordinates, individual retrieval branch provenance,
+    prior fused ranking score, updated 1-based rank, and attached cross-encoder
+    relevance score.
+    """
+
+    chunk_id: str
+    document_id: str
+    project_id: str
+    rerank_score: float
+    rank: int
+    fusion_score: float | None = None
+    dense_rank: int | None = None
+    sparse_rank: int | None = None
+    dense_score: float | None = None
+    sparse_score: float | None = None
+    document_version_id: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def score(self) -> float:
+        """Convenience property returning the authoritative cross-encoder relevance score."""
+        return self.rerank_score
+
+    @classmethod
+    def from_candidate(
+        cls,
+        candidate: Any,
+        rerank_score: float,
+        rank: int,
+    ) -> "RerankedCandidate":
+        """Construct a RerankedCandidate from an existing candidate model (e.g. FusedCandidate)."""
+        fusion_score_val = getattr(candidate, "fusion_score", None)
+        if fusion_score_val is None and hasattr(candidate, "score"):
+            fusion_score_val = getattr(candidate, "score")
+
+        cand_metadata = dict(getattr(candidate, "metadata", None) or {})
+
+        return cls(
+            chunk_id=getattr(candidate, "chunk_id"),
+            document_id=getattr(candidate, "document_id"),
+            project_id=getattr(candidate, "project_id"),
+            rerank_score=rerank_score,
+            rank=rank,
+            fusion_score=fusion_score_val,
+            dense_rank=getattr(candidate, "dense_rank", None),
+            sparse_rank=getattr(candidate, "sparse_rank", None),
+            dense_score=getattr(candidate, "dense_score", None),
+            sparse_score=getattr(candidate, "sparse_score", None),
+            document_version_id=getattr(candidate, "document_version_id", None),
+            metadata=cand_metadata,
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize reranked candidate to a standard dictionary."""
+        data: dict[str, Any] = {
+            "chunk_id": self.chunk_id,
+            "document_id": self.document_id,
+            "project_id": self.project_id,
+            "rerank_score": self.rerank_score,
+            "score": self.rerank_score,
+            "rank": self.rank,
+            "fusion_score": self.fusion_score,
+            "dense_rank": self.dense_rank,
+            "sparse_rank": self.sparse_rank,
+            "dense_score": self.dense_score,
+            "sparse_score": self.sparse_score,
+            "document_version_id": self.document_version_id,
+        }
+        if self.metadata:
+            data["metadata"] = dict(self.metadata)
+        return data
+
+
+RerankedSearchCandidate = RerankedCandidate
+
+

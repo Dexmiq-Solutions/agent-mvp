@@ -199,3 +199,45 @@ class MetadataFilteringConfig:
             strict_mode=getattr(resolved, "METADATA_FILTERING_STRICT_MODE", False),
         )
 
+
+@dataclass(frozen=True)
+class RerankingConfig:
+    """Configuration settings for cross-encoder reranking.
+
+    Attributes:
+        enabled: Whether reranking stage is active.
+        model: Target cross-encoder reranking model name (default: 'rerank-2.5').
+        candidate_limit: Maximum number of candidate chunks forwarded to reranker.
+        result_limit: Maximum number of final reranked candidates to retain.
+        timeout_seconds: Timeout in seconds for reranker provider API calls.
+    """
+
+    enabled: bool = True
+    model: str = "rerank-2.5"
+    candidate_limit: int = 50
+    result_limit: int = 10
+    timeout_seconds: float = 10.0
+
+    def __post_init__(self) -> None:
+        """Validate reranking configuration parameters."""
+        if not self.model or not self.model.strip():
+            raise ValueError("model must be a non-empty string.")
+        if not isinstance(self.candidate_limit, int) or self.candidate_limit <= 0:
+            raise ValueError(f"candidate_limit must be a positive integer, got {self.candidate_limit}.")
+        if not isinstance(self.result_limit, int) or self.result_limit <= 0:
+            raise ValueError(f"result_limit must be a positive integer, got {self.result_limit}.")
+        if not isinstance(self.timeout_seconds, (int, float)) or self.timeout_seconds <= 0:
+            raise ValueError(f"timeout_seconds must be a positive number, got {self.timeout_seconds}.")
+
+    @classmethod
+    def from_settings(cls, settings: Optional[Settings] = None) -> "RerankingConfig":
+        """Construct configuration from application Settings (Single Source of Truth)."""
+        resolved = settings or get_settings()
+        return cls(
+            enabled=getattr(resolved, "RERANKING_ENABLED", True),
+            model=getattr(resolved, "RERANKER_MODEL", "rerank-2.5"),
+            candidate_limit=getattr(resolved, "RERANKER_CANDIDATE_LIMIT", 50),
+            result_limit=getattr(resolved, "RERANKER_RESULT_LIMIT", 10),
+            timeout_seconds=getattr(resolved, "RERANKER_TIMEOUT", 10.0),
+        )
+

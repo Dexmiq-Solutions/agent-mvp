@@ -24,6 +24,11 @@ from exceptions.retrieval import (
     MetadataFilteringError,
     InvalidFilterError,
     FilterEvaluationError,
+    RerankingError,
+    RerankingConfigurationError,
+    RerankingValidationError,
+    RerankingProviderError,
+    RerankingTimeoutError,
 )
 from retrieval.config import (
     FusionConfig,
@@ -31,6 +36,7 @@ from retrieval.config import (
     MetadataFilteringConfig,
     QueryPreprocessingConfig,
     QueryTransformationConfig,
+    RerankingConfig,
     VectorSearchConfig,
 )
 from retrieval.filtering import (
@@ -60,6 +66,16 @@ from retrieval.fusion import (
     get_fusion_service,
     reset_fusion_service,
 )
+from retrieval.reranking import (
+    BaseReranker,
+    RerankingService,
+    ScoredDocument,
+    VoyageReranker,
+    get_reranking_service,
+    rerank_candidates,
+    reset_reranking_service,
+    resolve_candidate_text,
+)
 from retrieval.embedding import (
     QueryEmbeddingService,
     embed_query_set,
@@ -84,6 +100,8 @@ from retrieval.models import (
     KeywordSearchCandidate,
     PolicyDecision,
     ProcessedQuery,
+    RerankedCandidate,
+    RerankedSearchCandidate,
     RetrievalQuerySet,
     SparseVector,
     VectorSearchCandidate,
@@ -128,12 +146,15 @@ __all__ = [
     "KeywordSearchCandidate",
     "FusedCandidate",
     "FusedSearchCandidate",
+    "RerankedCandidate",
+    "RerankedSearchCandidate",
     # Configuration
     "QueryPreprocessingConfig",
     "QueryTransformationConfig",
     "VectorSearchConfig",
     "KeywordSearchConfig",
     "FusionConfig",
+    "RerankingConfig",
     # Preprocessing Service & Helpers
     "QueryPreprocessor",
     "QueryPreprocessingService",
@@ -198,6 +219,15 @@ __all__ = [
     "filter_candidates",
     "to_qdrant_condition",
     "to_qdrant_filter",
+    # Reranking Subsystem & Helpers
+    "BaseReranker",
+    "ScoredDocument",
+    "VoyageReranker",
+    "RerankingService",
+    "get_reranking_service",
+    "reset_reranking_service",
+    "rerank_candidates",
+    "resolve_candidate_text",
     # Domain Exceptions
     "RetrievalError",
     "QueryPreprocessingError",
@@ -218,5 +248,10 @@ __all__ = [
     "MetadataFilteringError",
     "InvalidFilterError",
     "FilterEvaluationError",
+    "RerankingError",
+    "RerankingConfigurationError",
+    "RerankingValidationError",
+    "RerankingProviderError",
+    "RerankingTimeoutError",
 ]
 

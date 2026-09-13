@@ -91,3 +91,23 @@ class InvalidFilterError(MetadataFilteringError):
 
 class FilterEvaluationError(MetadataFilteringError):
     """Raised when evaluation of a filter against candidate metadata encounters an error."""
+
+
+class RerankingError(RetrievalError):
+    """Base exception for reranking stage failures."""
+
+
+class RerankingConfigurationError(RerankingError):
+    """Raised when reranking configuration or parameters are invalid."""
+
+
+class RerankingValidationError(RerankingError):
+    """Raised when query, candidates, or provider outputs fail structural validation."""
+
+
+class RerankingProviderError(RerankingError):
+    """Raised when an external reranker provider encounters an error."""
+
+
+class RerankingTimeoutError(RerankingProviderError):
+    """Raised when an external reranker provider call times out."""
