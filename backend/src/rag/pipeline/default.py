@@ -1,9 +1,12 @@
 """Default document processing pipeline boundary implementation."""
 
-from typing import Any, Callable, Optional, Awaitable
+from typing import Any, Awaitable, Callable, Optional
+
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.config import Settings, get_settings
 from app.core.logging import get_logger
+from rag.indexing.orchestrator import EndToEndIndexingService, get_end_to_end_indexing_service
 from rag.pipeline.base import BaseDocumentProcessingPipeline
 from storage.object import BaseObjectStorage
 
@@ -11,19 +14,20 @@ logger = get_logger(__name__)
 
 
 class DefaultDocumentProcessingPipeline(BaseDocumentProcessingPipeline):
-    """Default processing pipeline establishing the boundary for document version execution.
+    """Default processing pipeline connecting Document Processing Lifecycle to End-to-End Indexing.
 
-    Serves as the integration point between the Document Processing Lifecycle and
-    downstream RAG stages. In the upcoming End-to-End Indexing phase, this boundary
-    will connect all 10 stages (Acquisition -> Ingestion -> Parsing -> Cleaning ->
-    Normalization -> Chunking -> Metadata Enrichment -> Contextual Enrichment ->
-    Embeddings/Sparse -> Indexing).
+    Coordinates all 10 indexing stages through EndToEndIndexingService:
+      Acquisition -> Ingestion -> Parsing -> Cleaning -> Normalization ->
+      Chunking -> Metadata Enrichment -> Contextual Enrichment ->
+      Representation Generation (Dense + Sparse) -> PostgreSQL Persistence -> Qdrant Indexing.
     """
 
     def __init__(
         self,
         storage: Optional[BaseObjectStorage] = None,
         stage_hook: Optional[Callable[..., Awaitable[Any]]] = None,
+        indexing_service: Optional[EndToEndIndexingService] = None,
+        session_maker: Optional[async_sessionmaker[AsyncSession]] = None,
         settings: Optional[Settings] = None,
     ) -> None:
         """Initialize the default processing pipeline.
@@ -31,11 +35,25 @@ class DefaultDocumentProcessingPipeline(BaseDocumentProcessingPipeline):
         Args:
             storage: Optional object storage client for reading raw source binaries.
             stage_hook: Optional custom async processing hook (useful for testing or delegates).
+            indexing_service: Optional EndToEndIndexingService instance override.
+            session_maker: Optional async session maker factory for short chunk persistence transactions.
             settings: Optional application settings override.
         """
         self._storage = storage
         self._stage_hook = stage_hook
+        self._indexing_service = indexing_service
+        self._session_maker = session_maker
         self._settings = settings or get_settings()
+
+    def _get_indexing_service(self) -> EndToEndIndexingService:
+        """Resolve active EndToEndIndexingService."""
+        if self._indexing_service is not None:
+            return self._indexing_service
+        return get_end_to_end_indexing_service(
+            storage=self._storage,
+            session_maker=self._session_maker,
+            settings=self._settings,
+        )
 
     async def process_document_version(
         self,
@@ -89,26 +107,19 @@ class DefaultDocumentProcessingPipeline(BaseDocumentProcessingPipeline):
                 "hook_result": hook_result,
             }
 
-        # If storage client is provided, verify raw object can be read/retrieved
-        if self._storage is not None:
-            metadata = await self._storage.get_metadata(storage_path)
-            logger.debug(
-                "Verified storage object for version '%s': size=%s bytes",
-                document_version_id,
-                metadata.size_bytes if metadata else None,
-            )
-
-        logger.info(
-            "Pipeline processing boundary successfully verified for version '%s'",
-            document_version_id,
+        # Execute end-to-end indexing orchestration
+        indexing_svc = self._get_indexing_service()
+        report = await indexing_svc.index_document_version(
+            project_id=project_id,
+            document_id=document_id,
+            document_version_id=document_version_id,
+            storage_bucket=storage_bucket,
+            storage_path=storage_path,
+            original_filename=original_filename,
+            content_type=content_type,
         )
-        return {
-            "status": "success",
-            "document_version_id": document_version_id,
-            "project_id": project_id,
-            "document_id": document_id,
-            "storage_path": storage_path,
-        }
+
+        return report.to_dict()
 
 
 _default_pipeline: Optional[BaseDocumentProcessingPipeline] = None
@@ -117,15 +128,24 @@ _default_pipeline: Optional[BaseDocumentProcessingPipeline] = None
 def get_processing_pipeline(
     storage: Optional[BaseObjectStorage] = None,
     stage_hook: Optional[Callable[..., Awaitable[Any]]] = None,
+    indexing_service: Optional[EndToEndIndexingService] = None,
+    session_maker: Optional[async_sessionmaker[AsyncSession]] = None,
     settings: Optional[Settings] = None,
 ) -> BaseDocumentProcessingPipeline:
     """Get or create the singleton BaseDocumentProcessingPipeline instance."""
     global _default_pipeline
 
-    if storage is not None or stage_hook is not None:
+    if (
+        storage is not None
+        or stage_hook is not None
+        or indexing_service is not None
+        or session_maker is not None
+    ):
         return DefaultDocumentProcessingPipeline(
             storage=storage,
             stage_hook=stage_hook,
+            indexing_service=indexing_service,
+            session_maker=session_maker,
             settings=settings,
         )
 

@@ -666,3 +666,34 @@ class DocumentIndexingService:
             raise IndexingOperationError(
                 f"Failed to delete points: {exc}", original_error=exc
             ) from exc
+
+
+_default_indexing_service: Optional[DocumentIndexingService] = None
+
+
+def get_indexing_service(
+    vector_store: Optional[BaseVectorStore] = None,
+    config: Optional[IndexingConfig] = None,
+    settings: Optional[Settings] = None,
+) -> DocumentIndexingService:
+    """Get or create the singleton DocumentIndexingService instance."""
+    global _default_indexing_service
+
+    if vector_store is not None or config is not None:
+        return DocumentIndexingService(
+            vector_store=vector_store,
+            config=config,
+            settings=settings,
+        )
+
+    if _default_indexing_service is None:
+        _default_indexing_service = DocumentIndexingService(settings=settings)
+
+    return _default_indexing_service
+
+
+def reset_indexing_service() -> None:
+    """Reset the cached default indexing service instance. Useful for tests."""
+    global _default_indexing_service
+    _default_indexing_service = None
+

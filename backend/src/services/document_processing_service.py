@@ -96,6 +96,7 @@ class DocumentProcessingService:
         self._settings = settings or get_settings()
         self._pipeline = pipeline or get_processing_pipeline(
             storage=storage,
+            session_maker=self._session_maker,
             settings=self._settings,
         )
 

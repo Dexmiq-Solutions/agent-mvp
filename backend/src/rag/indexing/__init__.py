@@ -18,62 +18,43 @@ from rag.indexing.models import (
     IndexingConfig,
     IndexingReport,
 )
+from rag.indexing.orchestrator import (
+    EndToEndIndexingService,
+    IndexingPipelineReport,
+    get_end_to_end_indexing_service,
+    reset_end_to_end_indexing_service,
+)
+from rag.indexing.persistence import (
+    ChunkPersistenceService,
+    get_chunk_persistence_service,
+    reset_chunk_persistence_service,
+)
 from rag.indexing.representations import (
     extract_representation_text,
     extract_representation_texts,
     generate_sparse_representations,
 )
-from rag.indexing.service import DocumentIndexingService
+from rag.indexing.service import (
+    DocumentIndexingService,
+    get_indexing_service,
+    reset_indexing_service,
+)
 from storage.vector import BaseVectorStore
-
-_default_indexing_service: Optional[DocumentIndexingService] = None
-
-
-def get_indexing_service(
-    vector_store: Optional[BaseVectorStore] = None,
-    config: Optional[IndexingConfig] = None,
-    settings: Optional[Settings] = None,
-) -> DocumentIndexingService:
-    """Get or create the singleton DocumentIndexingService instance.
-
-    If custom parameters are supplied, creates and returns a new instance.
-    Otherwise, returns the cached singleton instance.
-
-    Args:
-        vector_store: Optional BaseVectorStore instance override.
-        config: Optional IndexingConfig override.
-        settings: Optional Settings override.
-
-    Returns:
-        DocumentIndexingService: Configured document indexing service.
-    """
-    global _default_indexing_service
-
-    if vector_store is not None or config is not None:
-        return DocumentIndexingService(
-            vector_store=vector_store,
-            config=config,
-            settings=settings,
-        )
-
-    if _default_indexing_service is None:
-        _default_indexing_service = DocumentIndexingService(settings=settings)
-
-    return _default_indexing_service
-
-
-def reset_indexing_service() -> None:
-    """Reset the cached default indexing service instance. Useful for tests."""
-    global _default_indexing_service
-    _default_indexing_service = None
 
 
 __all__ = [
-    # Main Service & Factory
+    # Main Services & Factories
     "DocumentIndexingService",
     "get_indexing_service",
     "reset_indexing_service",
-    # Models & Config
+    "EndToEndIndexingService",
+    "get_end_to_end_indexing_service",
+    "reset_end_to_end_indexing_service",
+    "ChunkPersistenceService",
+    "get_chunk_persistence_service",
+    "reset_chunk_persistence_service",
+    # Reports & Models & Config
+    "IndexingPipelineReport",
     "IndexingConfig",
     "IndexableRecord",
     "IndexingBatchResult",
