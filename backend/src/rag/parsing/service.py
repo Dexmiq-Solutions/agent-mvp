@@ -4,7 +4,7 @@ import asyncio
 import time
 from typing import Optional
 
-from app.core.logging import get_logger
+from observability.logging import get_logger
 from exceptions.parsing import (
     DocumentExtractionError,
     InvalidParsingInputError,

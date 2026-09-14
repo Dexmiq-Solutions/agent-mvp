@@ -3,7 +3,7 @@
 import pytest
 
 from rag.acquisition.formats import DocumentType
-from app.core.config import Settings
+from core.config import Settings
 from rag.chunking.models import ChunkingReport, DocumentChunk
 from rag.cleaning.models import CleaningReport
 from rag.contextual_enrichment import (

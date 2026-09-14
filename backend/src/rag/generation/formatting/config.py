@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 from typing import Optional
 
-from app.core.config import Settings, get_settings
+from core.config import Settings, get_settings
 
 DEFAULT_CONTEXT_HEADER = "RETRIEVED CONTEXT"
 DEFAULT_CONTEXT_FOOTER = "END RETRIEVED CONTEXT"

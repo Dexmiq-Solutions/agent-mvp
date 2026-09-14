@@ -3,7 +3,7 @@
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
-from app.core.config import Settings, get_settings
+from core.config import Settings, get_settings
 from rag.chunking.models import DocumentChunk
 from exceptions.indexing import IndexingConfigurationError, InvalidIndexingInputError
 from rag.indexing.identity import generate_point_id

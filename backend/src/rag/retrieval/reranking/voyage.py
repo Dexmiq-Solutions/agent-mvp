@@ -7,8 +7,8 @@ from typing import Any, Optional, Sequence
 import voyageai
 import voyageai.error as voyage_errors
 
-from app.core.config import Settings, get_settings
-from app.core.logging import get_logger
+from core.config import Settings, get_settings
+from observability.logging import get_logger
 from rag.embeddings.client import get_async_voyage_client
 from exceptions.retrieval import (
     RerankingConfigurationError,

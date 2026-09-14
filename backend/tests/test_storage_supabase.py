@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from storage3.exceptions import StorageApiError
 
-from app.core.config import Settings
+from core.config import Settings
 from exceptions.storage import (
     BucketNotFoundError,
     ObjectNotFoundError,

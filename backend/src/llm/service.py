@@ -1,15 +1,14 @@
-"""LLM Generation service providing application-level inference orchestration."""
+"""LLM service providing application-level inference orchestration."""
 
 from collections.abc import AsyncIterator
 from typing import Any, Optional
 
-from app.core.config import Settings, get_settings
-from app.core.logging import get_logger
-from rag.generation.llm.adapters.openai import OpenAICompatibleLLMAdapter
-from rag.generation.llm.config import LLMConfig
-from rag.generation.llm.interface import BaseLLMInterface
-from rag.generation.llm.models import LLMResult, LLMStreamEvent
-from rag.generation.prompt.models import ConstructedPrompt
+from core.config import Settings, get_settings
+from llm.adapters.openai import OpenAICompatibleLLMAdapter
+from llm.config import LLMConfig
+from llm.interface import BaseLLMInterface
+from llm.models import LLMResult, LLMStreamEvent
+from observability.logging import get_logger
 
 logger = get_logger(__name__)
 
@@ -17,12 +16,11 @@ _llm_service: Optional["LLMService"] = None
 
 
 class LLMService:
-    """Application-level service orchestrating LLM execution in the generation stage.
+    """Application-level service orchestrating LLM execution.
 
-    Positions directly following the Prompt Construction stage. Decoupled from
-    concrete LLM providers via BaseLLMInterface dependency injection, ensuring
-    that the RAG foundation remains intact when transitioning to future Deep Agent /
-    LangGraph orchestration architectures.
+    Positions as a root-level capability usable by RAG generation, autonomous Agents,
+    Tools, and Workflows. Decoupled from concrete LLM providers via BaseLLMInterface
+    dependency injection.
     """
 
     def __init__(
@@ -55,7 +53,7 @@ class LLMService:
 
     async def generate(
         self,
-        prompt: ConstructedPrompt | Any,
+        prompt: Any,
         *,
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
@@ -65,7 +63,7 @@ class LLMService:
         """Execute non-streaming LLM generation.
 
         Args:
-            prompt: ConstructedPrompt instance from Prompt Construction stage.
+            prompt: Prompt object with .to_messages(), sequence of message dicts, or raw string.
             temperature: Optional per-request temperature override.
             max_tokens: Optional per-request max tokens override.
             timeout: Optional per-request timeout in seconds.
@@ -84,7 +82,7 @@ class LLMService:
 
     async def generate_stream(
         self,
-        prompt: ConstructedPrompt | Any,
+        prompt: Any,
         *,
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
@@ -94,7 +92,7 @@ class LLMService:
         """Execute streaming LLM generation, yielding token events.
 
         Args:
-            prompt: ConstructedPrompt instance from Prompt Construction stage.
+            prompt: Prompt object with .to_messages(), sequence of message dicts, or raw string.
             temperature: Optional per-request temperature override.
             max_tokens: Optional per-request max tokens override.
             timeout: Optional per-request timeout in seconds.
@@ -148,7 +146,7 @@ def reset_llm_service() -> None:
 
 
 async def generate_async(
-    prompt: ConstructedPrompt | Any,
+    prompt: Any,
     *,
     temperature: Optional[float] = None,
     max_tokens: Optional[int] = None,
@@ -168,7 +166,7 @@ async def generate_async(
 
 
 async def generate_stream_async(
-    prompt: ConstructedPrompt | Any,
+    prompt: Any,
     *,
     temperature: Optional[float] = None,
     max_tokens: Optional[int] = None,

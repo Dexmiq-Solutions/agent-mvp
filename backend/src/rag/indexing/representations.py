@@ -3,7 +3,7 @@
 from collections.abc import Sequence
 from typing import Any, Optional
 
-from app.core.config import Settings, get_settings
+from core.config import Settings, get_settings
 from rag.contextual_enrichment.models import extract_representation_text
 from exceptions.indexing import InvalidIndexingInputError
 from exceptions.retrieval import SparseEncodingError

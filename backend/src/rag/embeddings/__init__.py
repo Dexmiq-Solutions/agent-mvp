@@ -2,7 +2,7 @@
 
 from typing import Optional
 
-from app.core.config import Settings
+from core.config import Settings
 from rag.embeddings.base import BaseEmbeddingProvider
 from rag.embeddings.cache import (
     RedisEmbeddingCache,

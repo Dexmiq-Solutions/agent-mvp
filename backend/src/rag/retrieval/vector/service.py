@@ -4,7 +4,7 @@ import math
 import time
 from typing import Optional
 
-from app.core.logging import get_logger
+from observability.logging import get_logger
 from exceptions.retrieval import VectorRetrievalError
 from exceptions.vector import VectorStoreError
 from rag.retrieval.config import VectorSearchConfig

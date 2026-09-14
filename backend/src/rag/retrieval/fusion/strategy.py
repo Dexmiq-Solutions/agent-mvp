@@ -4,7 +4,7 @@ from abc import ABC, abstractmethod
 import math
 from typing import Any, Optional, Sequence
 
-from app.core.logging import get_logger
+from observability.logging import get_logger
 from exceptions.retrieval import FusionError
 from rag.retrieval.models import FusedCandidate, KeywordSearchCandidate, VectorSearchCandidate
 

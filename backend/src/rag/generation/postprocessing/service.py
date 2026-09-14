@@ -5,10 +5,10 @@ import re
 import time
 from typing import Any, Optional
 
-from app.core.config import Settings, get_settings
-from app.core.logging import get_logger
+from core.config import Settings, get_settings
+from observability.logging import get_logger
 from exceptions.generation import PostProcessingValidationError, StructuredOutputError
-from rag.generation.llm.models import LLMResult, LLMUsage
+from llm.models import LLMResult, LLMUsage
 from rag.generation.postprocessing.base import BasePostProcessor
 from rag.generation.postprocessing.config import PostProcessingConfig
 from rag.generation.postprocessing.models import ProcessedResponse

@@ -4,7 +4,7 @@ import asyncio
 import time
 from typing import Any
 
-from app.core.logging import get_logger
+from observability.logging import get_logger
 from rag.contextual_enrichment.base import BaseContextProvider, DocumentContext
 from rag.contextual_enrichment.models import (
     ContextualEnrichmentConfig,

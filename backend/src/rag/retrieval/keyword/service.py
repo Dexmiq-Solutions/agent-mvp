@@ -4,8 +4,8 @@ import math
 import time
 from typing import Optional
 
-from app.core.config import Settings, get_settings
-from app.core.logging import get_logger
+from core.config import Settings, get_settings
+from observability.logging import get_logger
 from exceptions.retrieval import KeywordRetrievalError, SparseEncodingError
 from exceptions.vector import VectorStoreError
 from rag.retrieval.config import KeywordSearchConfig

@@ -4,7 +4,7 @@ import asyncio
 from unittest.mock import AsyncMock, MagicMock
 import pytest
 
-from app.core.config import Settings
+from core.config import Settings
 from rag.embeddings import (
     BaseEmbeddingProvider,
     EmbeddingAuthenticationError,

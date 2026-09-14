@@ -7,8 +7,8 @@ from typing import Any, Optional, Sequence
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.core.config import Settings, get_settings
-from app.core.logging import get_logger
+from core.config import Settings, get_settings
+from observability.logging import get_logger
 from db.session import get_async_session_maker
 from exceptions.indexing import (
     IndexingConfigurationError,

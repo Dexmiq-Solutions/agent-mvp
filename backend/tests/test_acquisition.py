@@ -23,7 +23,7 @@ from rag.acquisition import (
     normalize_extension,
     reset_acquisition_service,
 )
-from app.core.config import Settings
+from core.config import Settings
 from exceptions.storage import (
     ObjectNotFoundError,
     StorageAuthenticationError,

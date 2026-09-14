@@ -6,8 +6,8 @@ import time
 from collections.abc import Sequence
 from typing import Any, Optional
 
-from app.core.config import Settings, get_settings
-from app.core.logging import get_logger
+from core.config import Settings, get_settings
+from observability.logging import get_logger
 from rag.chunking.models import ChunkedDocument, DocumentChunk
 from rag.embeddings.models import EmbeddingBatchResult, EmbeddingResult
 from exceptions.indexing import (

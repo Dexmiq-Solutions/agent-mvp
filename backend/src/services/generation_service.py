@@ -5,8 +5,8 @@ from typing import Any, Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import Settings, get_settings
-from app.core.logging import get_logger
+from core.config import Settings, get_settings
+from observability.logging import get_logger
 from exceptions.conversation import (
     ConversationMessageMismatchError,
     ConversationNotFoundError,
@@ -29,8 +29,8 @@ from rag.generation.formatting.service import (
     ContextFormattingService,
     get_context_formatting_service,
 )
-from rag.generation.llm.models import LLMResult
-from rag.generation.llm.service import LLMService, get_llm_service
+from llm.models import LLMResult
+from llm.service import LLMService, get_llm_service
 from rag.generation.postprocessing.models import ProcessedResponse
 from rag.generation.postprocessing.service import (
     PostProcessingService,

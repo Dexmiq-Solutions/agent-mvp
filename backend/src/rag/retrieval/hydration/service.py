@@ -5,8 +5,8 @@ from typing import Any, Optional, Sequence
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import Settings, get_settings
-from app.core.logging import get_logger
+from core.config import Settings, get_settings
+from observability.logging import get_logger
 from exceptions.retrieval import (
     ChunkHydrationError,
     ChunkHydrationValidationError,

@@ -4,8 +4,8 @@ from typing import Any, Awaitable, Callable, Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.core.config import Settings, get_settings
-from app.core.logging import get_logger
+from core.config import Settings, get_settings
+from observability.logging import get_logger
 from rag.indexing.orchestrator import EndToEndIndexingService, get_end_to_end_indexing_service
 from rag.pipeline.base import BaseDocumentProcessingPipeline
 from storage.object import BaseObjectStorage

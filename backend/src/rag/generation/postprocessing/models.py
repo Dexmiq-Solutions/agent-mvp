@@ -3,7 +3,7 @@
 from dataclasses import dataclass, field
 from typing import Any
 
-from rag.generation.llm.models import LLMUsage
+from llm.models import LLMUsage
 
 
 @dataclass(frozen=True)

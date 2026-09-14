@@ -5,7 +5,7 @@ from typing import Optional
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.logging import get_logger
+from observability.logging import get_logger
 from exceptions.project import InvalidProjectDataError, ProjectNotFoundError
 from models.project import ProjectModel
 from storage.object.base import BaseObjectStorage

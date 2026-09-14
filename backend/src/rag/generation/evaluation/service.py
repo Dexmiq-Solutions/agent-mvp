@@ -7,8 +7,8 @@ import re
 import time
 from typing import Any, Optional, Sequence
 
-from app.core.config import Settings, get_settings
-from app.core.logging import get_logger
+from core.config import Settings, get_settings
+from observability.logging import get_logger
 from exceptions.generation import (
     EvaluationError,
     EvaluationOutputError,
@@ -24,9 +24,9 @@ from rag.generation.evaluation.base import BaseEvaluator
 from rag.generation.evaluation.config import EvaluationConfig
 from rag.generation.evaluation.models import EvaluationResult
 from rag.generation.formatting.models import FormattedContext
-from rag.generation.llm.interface import BaseLLMInterface
-from rag.generation.llm.models import LLMResult
-from rag.generation.llm.service import get_llm_service
+from llm.interface import BaseLLMInterface
+from llm.models import LLMResult
+from llm.service import get_llm_service
 from rag.generation.postprocessing.base import BasePostProcessor
 from rag.generation.postprocessing.models import ProcessedResponse
 from rag.generation.postprocessing.service import get_post_processing_service

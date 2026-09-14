@@ -4,8 +4,8 @@ from typing import Optional
 
 import voyageai
 
-from app.core.config import Settings, get_settings
-from app.core.logging import get_logger
+from core.config import Settings, get_settings
+from observability.logging import get_logger
 from exceptions.embedding import EmbeddingConfigurationError
 
 logger = get_logger(__name__)

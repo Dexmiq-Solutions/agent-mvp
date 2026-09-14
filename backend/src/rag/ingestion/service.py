@@ -5,8 +5,8 @@ from typing import Any, Optional
 
 from rag.acquisition.formats import DocumentType
 from rag.acquisition.models import SourceDocument, SourceReference
-from app.core.config import Settings, get_settings
-from app.core.logging import get_logger
+from core.config import Settings, get_settings
+from observability.logging import get_logger
 from exceptions.ingestion import (
     DocumentRetrievalError,
     InvalidIngestionInputError,

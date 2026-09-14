@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 import voyageai.error as voyage_errors
 
-from app.core.config import Settings
+from core.config import Settings
 from rag.embeddings.base import BaseEmbeddingProvider
 from rag.embeddings.client import get_async_voyage_client, reset_async_voyage_client
 from rag.embeddings.models import EmbeddingBatchResult, EmbeddingResult

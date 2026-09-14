@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 from typing import Any, Optional
 
-from app.core.config import Settings, get_settings
+from core.config import Settings, get_settings
 
 
 @dataclass(frozen=True)

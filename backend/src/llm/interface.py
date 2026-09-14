@@ -1,24 +1,23 @@
-"""Abstract base interface for LLM execution in the RAG generation pipeline."""
+"""Abstract base interface for LLM execution in the application."""
 
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
 from typing import Any, Optional
 
-from rag.generation.llm.models import LLMResult, LLMStreamEvent
-from rag.generation.prompt.models import ConstructedPrompt
+from llm.models import LLMResult, LLMStreamEvent
 
 
 class BaseLLMInterface(ABC):
     """Abstract base interface for LLM inference execution.
 
-    Decouples the RAG generation pipeline from any concrete LLM provider,
-    SDK, or orchestration framework (such as OpenAI, Anthropic, or future
-    LangGraph / DeepAgent workflows).
+    Decouples callers (such as RAG generation, autonomous Agents, Tools, and Workflows)
+    from any concrete LLM provider, SDK, or orchestration framework.
 
-    The interface accepts a ConstructedPrompt (or structured prompt/messages),
-    invokes the underlying model execution asynchronously with bounded timeouts
-    and retries, and returns an application-level normalized LLMResult without
-    leaking provider-specific types into business logic.
+    The interface accepts a prompt (such as a prompt object with a .to_messages() method,
+    a structured sequence of chat message dicts, or a raw string), invokes the underlying
+    model execution asynchronously with bounded timeouts and retries, and returns an
+    application-level normalized LLMResult without leaking provider-specific types into
+    business logic.
     """
 
     @property
@@ -34,7 +33,7 @@ class BaseLLMInterface(ABC):
     @abstractmethod
     async def generate(
         self,
-        prompt: ConstructedPrompt | Any,
+        prompt: Any,
         *,
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
@@ -44,7 +43,7 @@ class BaseLLMInterface(ABC):
         """Execute non-streaming LLM generation asynchronously.
 
         Args:
-            prompt: Upstream ConstructedPrompt or structured messages.
+            prompt: Prompt object with .to_messages(), sequence of message dicts, or raw string.
             temperature: Optional per-request sampling temperature override.
             max_tokens: Optional per-request maximum output tokens override.
             timeout: Optional per-request timeout in seconds.
@@ -65,7 +64,7 @@ class BaseLLMInterface(ABC):
     @abstractmethod
     async def generate_stream(
         self,
-        prompt: ConstructedPrompt | Any,
+        prompt: Any,
         *,
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
@@ -75,7 +74,7 @@ class BaseLLMInterface(ABC):
         """Execute streaming LLM generation asynchronously, yielding token events.
 
         Args:
-            prompt: Upstream ConstructedPrompt or structured messages.
+            prompt: Prompt object with .to_messages(), sequence of message dicts, or raw string.
             temperature: Optional per-request sampling temperature override.
             max_tokens: Optional per-request maximum output tokens override.
             timeout: Optional per-request timeout in seconds.

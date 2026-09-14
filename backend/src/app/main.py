@@ -4,8 +4,8 @@ from typing import Any
 
 from fastapi import FastAPI
 
-from app.core.config import get_settings
-from app.core.logging import get_logger, setup_logging
+from core.config import get_settings
+from observability.logging import get_logger, setup_logging
 
 from api import api_router
 from db.session import dispose_engine

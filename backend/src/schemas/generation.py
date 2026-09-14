@@ -6,7 +6,7 @@ from typing import Any, Optional
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from models.message import MessageModel
-from rag.generation.llm.models import LLMUsage
+from llm.models import LLMUsage
 from schemas.conversation import MessageResponse
 
 

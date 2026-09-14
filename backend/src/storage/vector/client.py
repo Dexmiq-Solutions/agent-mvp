@@ -4,8 +4,8 @@ from typing import Optional
 
 from qdrant_client import AsyncQdrantClient
 
-from app.core.config import Settings, get_settings
-from app.core.logging import get_logger
+from core.config import Settings, get_settings
+from observability.logging import get_logger
 from exceptions.vector import VectorStoreConfigurationError
 
 logger = get_logger(__name__)

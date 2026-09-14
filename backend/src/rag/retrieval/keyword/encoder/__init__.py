@@ -2,7 +2,7 @@
 
 from typing import Optional
 
-from app.core.config import Settings, get_settings
+from core.config import Settings, get_settings
 from exceptions.retrieval import SparseEncodingError
 from rag.retrieval.keyword.encoder.base import BaseSparseEncoder
 from rag.retrieval.keyword.encoder.technical import TechnicalSparseEncoder

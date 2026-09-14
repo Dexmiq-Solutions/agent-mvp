@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from qdrant_client.http import models
 
-from app.core.config import Settings
+from core.config import Settings
 from exceptions.vector import (
     CollectionConfigurationError,
     VectorInputValidationError,

@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.core.logging import get_logger
+from observability.logging import get_logger
 from db.session import get_async_session_maker
 from exceptions.retrieval import ChunkHydrationValidationError, DatabaseRetrievalError
 from models.chunk import ChunkModel

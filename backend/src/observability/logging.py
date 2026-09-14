@@ -2,7 +2,7 @@ import logging
 import sys
 from typing import TextIO
 
-from app.core.config import get_settings
+from core.config import get_settings
 
 LOG_FORMAT = "%(asctime)s | %(levelname)-8s | %(name)s:%(lineno)d - %(message)s"
 DATE_FORMAT = "%Y-%m-%d %H:%M:%S"

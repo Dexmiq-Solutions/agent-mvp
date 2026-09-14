@@ -2,7 +2,7 @@
 
 from typing import Optional
 
-from app.core.config import Settings
+from core.config import Settings
 from rag.acquisition.base import BaseAcquisitionService
 from rag.acquisition.formats import (
     SUPPORTED_EXTENSIONS,

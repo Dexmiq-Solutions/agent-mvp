@@ -6,7 +6,7 @@ import pytest
 from qdrant_client import AsyncQdrantClient, models
 from qdrant_client.http import exceptions as qdrant_exceptions
 
-from app.core.config import Settings
+from core.config import Settings
 from exceptions.vector import (
     CollectionConfigurationError,
     CollectionNotFoundError,

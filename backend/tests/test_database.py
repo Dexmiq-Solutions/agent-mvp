@@ -6,7 +6,7 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase
 
-from app.core.config import Settings
+from core.config import Settings
 from db.base import Base as DbBase
 from db.session import (
     dispose_engine,

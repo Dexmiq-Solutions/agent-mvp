@@ -4,7 +4,7 @@ import asyncio
 import time
 from typing import Sequence
 
-from app.core.logging import get_logger
+from observability.logging import get_logger
 from rag.cleaning.context import DocumentStructureContext
 from rag.cleaning.heuristics import (
     BaseHeuristicEvaluator,

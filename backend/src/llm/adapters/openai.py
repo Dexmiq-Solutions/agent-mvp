@@ -20,8 +20,7 @@ from openai import (
     RateLimitError,
 )
 
-from app.core.logging import get_logger
-from exceptions.generation import (
+from exceptions.llm import (
     LLMAuthenticationError,
     LLMConfigurationError,
     LLMError,
@@ -32,10 +31,10 @@ from exceptions.generation import (
     LLMUnavailableError,
     LLMValidationError,
 )
-from rag.generation.llm.config import LLMConfig
-from rag.generation.llm.interface import BaseLLMInterface
-from rag.generation.llm.models import LLMResult, LLMStreamEvent, LLMUsage
-from rag.generation.prompt.models import ConstructedPrompt
+from llm.config import LLMConfig
+from llm.interface import BaseLLMInterface
+from llm.models import LLMResult, LLMStreamEvent, LLMUsage
+from observability.logging import get_logger
 
 logger = get_logger(__name__)
 
@@ -93,11 +92,11 @@ class OpenAICompatibleLLMAdapter(BaseLLMInterface):
     def _extract_messages(self, prompt: Any) -> list[dict[str, str]]:
         """Extract structured chat messages from input prompt representation.
 
-        Preserves system instructions and user prompt without re-constructing
-        or modifying retrieval context.
+        Supports objects with a .to_messages() method (such as ConstructedPrompt),
+        sequences of message dictionaries, or raw prompt strings.
 
         Args:
-            prompt: ConstructedPrompt, Sequence of message dicts, or raw text.
+            prompt: Prompt object with .to_messages(), Sequence of message dicts, or raw text.
 
         Returns:
             list[dict[str, str]]: List of standard chat messages.
@@ -108,11 +107,12 @@ class OpenAICompatibleLLMAdapter(BaseLLMInterface):
         if prompt is None:
             raise LLMValidationError("Prompt cannot be None.")
 
-        if isinstance(prompt, ConstructedPrompt):
+        # Duck-typing check for objects implementing to_messages() (e.g. ConstructedPrompt)
+        if hasattr(prompt, "to_messages") and callable(prompt.to_messages):
             msgs = prompt.to_messages()
             if not msgs:
                 raise LLMValidationError("ConstructedPrompt contains no messages.")
-            return msgs
+            return [dict(m) for m in msgs]
 
         if isinstance(prompt, (list, tuple)):
             if not prompt:
@@ -131,13 +131,6 @@ class OpenAICompatibleLLMAdapter(BaseLLMInterface):
             if not stripped:
                 raise LLMValidationError("Input prompt string cannot be empty.")
             return [{"role": "user", "content": stripped}]
-
-        # Fallback check for to_messages method
-        if hasattr(prompt, "to_messages") and callable(prompt.to_messages):
-            msgs = prompt.to_messages()
-            if not msgs:
-                raise LLMValidationError("Prompt to_messages() returned no messages.")
-            return [dict(m) for m in msgs]
 
         raise LLMValidationError(
             f"Unsupported prompt type: {type(prompt).__name__}. Expected ConstructedPrompt, list of dicts, or str."
@@ -247,7 +240,7 @@ class OpenAICompatibleLLMAdapter(BaseLLMInterface):
 
     async def generate(
         self,
-        prompt: ConstructedPrompt | Any,
+        prompt: Any,
         *,
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
@@ -358,7 +351,7 @@ class OpenAICompatibleLLMAdapter(BaseLLMInterface):
 
     async def generate_stream(
         self,
-        prompt: ConstructedPrompt | Any,
+        prompt: Any,
         *,
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,

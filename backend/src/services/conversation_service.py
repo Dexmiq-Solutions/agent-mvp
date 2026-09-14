@@ -7,7 +7,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.core.logging import get_logger
+from observability.logging import get_logger
 from exceptions.conversation import (
     ConversationNotFoundError,
     InvalidConversationDataError,

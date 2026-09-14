@@ -3,7 +3,7 @@
 import math
 import pytest
 
-from app.core.config import Settings
+from core.config import Settings
 from exceptions.retrieval import FusionError, RetrievalError
 from rag.retrieval import (
     BaseFusionStrategy as RagBaseFusionStrategy,

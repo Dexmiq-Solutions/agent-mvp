@@ -3,7 +3,7 @@
 from dataclasses import dataclass, field
 from typing import Any
 
-from app.core.config import Settings, get_settings
+from core.config import Settings, get_settings
 from rag.contextual_enrichment.base import BaseContextProvider
 from exceptions.contextual_enrichment import ContextualEnrichmentConfigurationError
 from rag.metadata_enrichment.models import EnrichedChunk, EnrichedDocument

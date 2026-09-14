@@ -3,7 +3,7 @@
 from fastapi import Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import get_settings
+from core.config import get_settings
 from db.session import get_db_session
 from services.document_processing_service import DocumentProcessingService
 from services.document_service import DocumentService

@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 import re
 
-from app.core.logging import get_logger
+from observability.logging import get_logger
 
 logger = get_logger(__name__)
 

@@ -15,7 +15,7 @@ src_dir = Path(__file__).resolve().parents[1] / "src"
 if str(src_dir) not in sys.path:
     sys.path.insert(0, str(src_dir))
 
-from app.core.config import get_settings
+from core.config import get_settings
 from db.base import Base
 # Import models package to ensure all future entity models are registered with Base.metadata
 import models  # noqa: F401

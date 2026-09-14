@@ -1,6 +1,6 @@
-"""LLM Generation package providing provider-independent model execution."""
+"""LLM subsystem providing provider-independent model execution and adapter interfaces."""
 
-from exceptions.generation import (
+from exceptions.llm import (
     LLMAuthenticationError,
     LLMConfigurationError,
     LLMError,
@@ -11,11 +11,11 @@ from exceptions.generation import (
     LLMUnavailableError,
     LLMValidationError,
 )
-from rag.generation.llm.adapters.openai import OpenAICompatibleLLMAdapter
-from rag.generation.llm.config import LLMConfig
-from rag.generation.llm.interface import BaseLLMInterface
-from rag.generation.llm.models import LLMResult, LLMStreamEvent, LLMUsage
-from rag.generation.llm.service import (
+from llm.adapters.openai import OpenAICompatibleLLMAdapter
+from llm.config import LLMConfig
+from llm.interface import BaseLLMInterface
+from llm.models import LLMResult, LLMStreamEvent, LLMUsage
+from llm.service import (
     LLMService,
     generate_async,
     generate_stream_async,

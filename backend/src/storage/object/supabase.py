@@ -7,8 +7,8 @@ from typing import Any, BinaryIO, Optional
 from storage3.exceptions import StorageApiError, StorageException
 from supabase import AsyncClient
 
-from app.core.config import Settings, get_settings
-from app.core.logging import get_logger
+from core.config import Settings, get_settings
+from observability.logging import get_logger
 from exceptions.storage import (
     BucketNotFoundError,
     ObjectNotFoundError,

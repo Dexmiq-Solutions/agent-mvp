@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Any, AsyncIterator, Optional
 import pytest
 
-from app.core.config import Settings
+from core.config import Settings
 from exceptions.generation import (
     EvaluationError,
     EvaluationOutputError,
@@ -31,8 +31,8 @@ from rag.generation.evaluation.service import (
     reset_evaluation_service,
 )
 from rag.generation.formatting.models import FormattedContext, FormattedContextItem
-from rag.generation.llm.interface import BaseLLMInterface
-from rag.generation.llm.models import LLMResult, LLMStreamEvent, LLMUsage
+from llm.interface import BaseLLMInterface
+from llm.models import LLMResult, LLMStreamEvent, LLMUsage
 from rag.generation.postprocessing.models import ProcessedResponse
 from rag.generation.postprocessing.service import PostProcessingService
 from rag.generation.prompt.service import PromptConstructionService

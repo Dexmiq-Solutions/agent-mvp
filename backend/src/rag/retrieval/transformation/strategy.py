@@ -3,7 +3,7 @@
 from abc import ABC, abstractmethod
 from typing import Any, Optional
 
-from app.core.logging import get_logger
+from observability.logging import get_logger
 from exceptions.retrieval import TransformationValidationError
 from rag.retrieval.models import ProcessedQuery
 from rag.retrieval.transformation.provider import BaseLLMClient

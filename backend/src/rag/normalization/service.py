@@ -5,7 +5,7 @@ from collections import defaultdict
 import time
 from typing import Mapping
 
-from app.core.logging import get_logger
+from observability.logging import get_logger
 from rag.cleaning.models import CleanedDocument, CleaningReport
 from exceptions.normalization import (
     InvalidNormalizationInputError,

@@ -5,14 +5,14 @@ from dataclasses import dataclass
 from typing import Any
 import pytest
 
-from app.core.config import Settings
+from core.config import Settings
 from exceptions.generation import (
     GenerationError,
     PostProcessingError,
     PostProcessingValidationError,
     StructuredOutputError,
 )
-from rag.generation.llm.models import LLMResult, LLMUsage
+from llm.models import LLMResult, LLMUsage
 from rag.generation.postprocessing.base import BasePostProcessor
 from rag.generation.postprocessing.config import PostProcessingConfig
 from rag.generation.postprocessing.models import PostProcessedResponse, ProcessedResponse

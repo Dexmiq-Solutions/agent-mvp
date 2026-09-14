@@ -41,8 +41,8 @@ In strict accordance with system architecture rules, the LLM Generation Integrat
 
 | Responsibility | Authoritative Implementation Reused | Architectural Rationale |
 | :--- | :--- | :--- |
-| **LLM Configuration** | `app.core.config.Settings` & `rag.generation.llm.config.LLMConfig` | All model names, timeouts, retry limits, temperatures, and credentials derive strictly from application `Settings`. No parallel `GenerationConfig` or `ChatConfig`. |
-| **LLM Inference** | `rag.generation.llm.service.LLMService` & `BaseLLMInterface` | OpenAI-compatible adapter encapsulates provider calls, payload mapping, and vendor-specific error translation. |
+| **LLM Configuration** | `core.config.Settings` & `llm.config.LLMConfig` | All model names, timeouts, retry limits, temperatures, and credentials derive strictly from application `Settings`. No parallel `GenerationConfig` or `ChatConfig`. |
+| **LLM Inference** | `llm.service.LLMService` & `BaseLLMInterface` | OpenAI-compatible adapter encapsulates provider calls, payload mapping, and vendor-specific error translation. |
 | **Infrastructure Retries** | `OpenAICompatibleLLMAdapter` backoff loop | Network timeouts and transient 5xx/429 errors are retried at the adapter layer. The generation layer never wraps this with a duplicate HTTP retry loop. |
 | **RAG Retrieval** | `services.rag_service.RAGService` (`rag/retrieval/service.py`) | Orchestrates multi-stage retrieval across Qdrant, technical sparse encoding, and PostgreSQL hydration. |
 | **Context Formatting** | `rag.generation.formatting.service.ContextFormattingService` | Pre-formats retrieved candidates into deterministic, model-readable context items. |

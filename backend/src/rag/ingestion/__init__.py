@@ -3,7 +3,7 @@
 from typing import Optional
 
 from rag.acquisition.formats import DocumentType
-from app.core.config import Settings
+from core.config import Settings
 from exceptions.ingestion import (
     DocumentRetrievalError,
     IngestionConfigurationError,

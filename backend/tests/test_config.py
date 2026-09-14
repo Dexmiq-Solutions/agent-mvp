@@ -3,7 +3,7 @@
 import pytest
 from pydantic import ValidationError
 
-from app.core.config import Settings, get_settings
+from core.config import Settings, get_settings
 
 
 def test_default_settings():

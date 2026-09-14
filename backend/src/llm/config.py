@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 import os
 from typing import Optional, Sequence
 
-from app.core.config import Settings, get_settings
+from core.config import Settings, get_settings
 
 
 @dataclass(frozen=True)

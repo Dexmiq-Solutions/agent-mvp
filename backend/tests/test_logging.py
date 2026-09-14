@@ -3,7 +3,7 @@
 import io
 import logging
 
-from app.core.logging import get_logger, setup_logging
+from observability.logging import get_logger, setup_logging
 
 
 def test_logging_configuration():

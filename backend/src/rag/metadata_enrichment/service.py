@@ -4,7 +4,7 @@ import asyncio
 import time
 from typing import Any
 
-from app.core.logging import get_logger
+from observability.logging import get_logger
 from rag.chunking.models import ChunkedDocument, DocumentChunk
 from exceptions.metadata_enrichment import (
     InvalidMetadataEnrichmentInputError,

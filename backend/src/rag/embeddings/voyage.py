@@ -5,8 +5,8 @@ from typing import Any, Optional
 import voyageai
 import voyageai.error as voyage_errors
 
-from app.core.config import Settings, get_settings
-from app.core.logging import get_logger
+from core.config import Settings, get_settings
+from observability.logging import get_logger
 from rag.embeddings.base import BaseEmbeddingProvider
 from rag.embeddings.client import get_async_voyage_client
 from rag.embeddings.models import EmbeddingBatchResult

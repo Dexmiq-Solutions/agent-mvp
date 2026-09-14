@@ -3,8 +3,8 @@
 import time
 from typing import Any, Optional, Union
 
-from app.core.config import Settings
-from app.core.logging import get_logger
+from core.config import Settings
+from observability.logging import get_logger
 from exceptions.retrieval import (
     TransformationProviderError,
     TransformationTimeoutError,

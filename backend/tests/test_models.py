@@ -552,7 +552,7 @@ def test_alembic_offline_sql_upgrade_and_downgrade(monkeypatch):
     import io
     from contextlib import redirect_stdout
     from alembic import command
-    from app.core.config import get_settings
+    from core.config import get_settings
 
     monkeypatch.setenv("DATABASE_URL", "postgresql://test:test@localhost:5432/testdb")
     get_settings.cache_clear()

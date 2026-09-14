@@ -3,7 +3,7 @@
 import asyncio
 import time
 
-from app.core.logging import get_logger
+from observability.logging import get_logger
 from rag.chunking.models import (
     ChunkedDocument,
     ChunkingConfig,

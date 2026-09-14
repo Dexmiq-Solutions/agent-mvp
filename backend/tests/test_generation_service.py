@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from app.core.config import Settings, get_settings
+from core.config import Settings, get_settings
 from exceptions.conversation import (
     ConversationMessageMismatchError,
     ConversationNotFoundError,
@@ -30,10 +30,10 @@ from rag.generation.evaluation.models import EvaluationResult
 from rag.generation.evaluation.service import EvaluationService
 from rag.generation.formatting.models import FormattedContext, FormattedContextItem
 from rag.generation.formatting.service import ContextFormattingService
-from rag.generation.llm.config import LLMConfig
-from rag.generation.llm.interface import BaseLLMInterface
-from rag.generation.llm.models import LLMResult, LLMUsage
-from rag.generation.llm.service import LLMService
+from llm.config import LLMConfig
+from llm.interface import BaseLLMInterface
+from llm.models import LLMResult, LLMUsage
+from llm.service import LLMService
 from rag.generation.postprocessing.models import ProcessedResponse
 from rag.generation.postprocessing.service import PostProcessingService
 from rag.generation.prompt.models import ConstructedPrompt

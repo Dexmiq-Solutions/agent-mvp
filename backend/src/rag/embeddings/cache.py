@@ -4,8 +4,8 @@ import hashlib
 import json
 from typing import Any, Optional
 
-from app.core.config import Settings, get_settings
-from app.core.logging import get_logger
+from core.config import Settings, get_settings
+from observability.logging import get_logger
 
 logger = get_logger(__name__)
 

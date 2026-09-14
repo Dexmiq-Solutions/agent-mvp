@@ -3,8 +3,8 @@
 import time
 from typing import Any, Optional, Sequence
 
-from app.core.config import Settings, get_settings
-from app.core.logging import get_logger
+from core.config import Settings, get_settings
+from observability.logging import get_logger
 from exceptions.generation import ContextFormattingValidationError
 from rag.generation.formatting.base import BaseContextFormatter
 from rag.generation.formatting.config import ContextFormattingConfig

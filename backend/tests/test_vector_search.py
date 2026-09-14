@@ -4,7 +4,7 @@ import math
 from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
-from app.core.config import Settings
+from core.config import Settings
 from exceptions.retrieval import RetrievalError, VectorRetrievalError
 from exceptions.vector import (
     CollectionNotFoundError,

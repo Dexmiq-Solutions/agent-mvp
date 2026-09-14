@@ -3,7 +3,7 @@
 from datetime import date, datetime, time
 from typing import Any, Callable, Mapping, Optional
 
-from app.core.logging import get_logger
+from observability.logging import get_logger
 from exceptions.retrieval import FilterEvaluationError
 from rag.retrieval.filtering.models import (
     BaseFilterCondition,

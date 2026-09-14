@@ -5,8 +5,8 @@ from typing import Any, Optional
 from qdrant_client import AsyncQdrantClient, models
 from qdrant_client.http import exceptions as qdrant_exceptions
 
-from app.core.config import Settings, get_settings
-from app.core.logging import get_logger
+from core.config import Settings, get_settings
+from observability.logging import get_logger
 from exceptions.vector import (
     CollectionConfigurationError,
     CollectionNotFoundError,

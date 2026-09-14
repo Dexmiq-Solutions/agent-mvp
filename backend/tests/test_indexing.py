@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.core.config import Settings
+from core.config import Settings
 from rag.acquisition.formats import DocumentType
 from rag.chunking.models import DocumentChunk
 from rag.embeddings.models import EmbeddingBatchResult, EmbeddingResult
