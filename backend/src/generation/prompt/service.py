@@ -207,6 +207,7 @@ class PromptConstructionService:
         project_id: Optional[str] = None,
         include_metadata: Optional[bool] = None,
         include_provenance: Optional[bool] = None,
+        evaluation_feedback: Optional[str] = None,
     ) -> ConstructedPrompt:
         """Construct a structured prompt from original user query and final retrieval context.
 
@@ -217,6 +218,7 @@ class PromptConstructionService:
             project_id: Optional project/tenant ID enforcing project boundary.
             include_metadata: Optional override for including document/chunk metadata.
             include_provenance: Optional override for including structural provenance.
+            evaluation_feedback: Optional feedback from previous failed evaluation attempt for regeneration.
 
         Returns:
             ConstructedPrompt: Provider-independent structured prompt container.
@@ -294,6 +296,13 @@ class PromptConstructionService:
             self._config.query_header,
             original_query,
         ]
+        if evaluation_feedback and str(evaluation_feedback).strip():
+            user_prompt_sections.extend([
+                "",
+                "[PREVIOUS ATTEMPT FEEDBACK - REGENERATION REQUIRED]",
+                f"Your previous response was rejected by the quality gate for the following reason:\n{str(evaluation_feedback).strip()}",
+                "Please regenerate your answer addressing this feedback. Ensure every claim is strictly supported by the retrieved context above and satisfies all safety criteria.",
+            ])
         user_prompt = "\n".join(user_prompt_sections)
 
         # 7. Construct Provider-Independent Chat Messages
@@ -326,6 +335,7 @@ class PromptConstructionService:
                 "prompt_characters": len(user_prompt),
                 "context_characters": len(formatted_context),
                 "query_characters": len(original_query),
+                "has_evaluation_feedback": bool(evaluation_feedback and str(evaluation_feedback).strip()),
             },
         )
 
@@ -368,6 +378,7 @@ def construct_prompt(
     project_id: Optional[str] = None,
     include_metadata: Optional[bool] = None,
     include_provenance: Optional[bool] = None,
+    evaluation_feedback: Optional[str] = None,
     service: Optional[PromptConstructionService] = None,
 ) -> ConstructedPrompt:
     """Functional convenience entrypoint to construct a structured prompt.
@@ -379,6 +390,7 @@ def construct_prompt(
         project_id: Optional project boundary identifier.
         include_metadata: Optional flag to include document/chunk identifiers.
         include_provenance: Optional flag to include structural provenance.
+        evaluation_feedback: Optional corrective feedback string for regeneration.
         service: Optional PromptConstructionService override.
 
     Returns:
@@ -392,6 +404,7 @@ def construct_prompt(
         project_id=project_id,
         include_metadata=include_metadata,
         include_provenance=include_provenance,
+        evaluation_feedback=evaluation_feedback,
     )
 
 
@@ -402,6 +415,7 @@ async def construct_prompt_async(
     project_id: Optional[str] = None,
     include_metadata: Optional[bool] = None,
     include_provenance: Optional[bool] = None,
+    evaluation_feedback: Optional[str] = None,
     service: Optional[PromptConstructionService] = None,
 ) -> ConstructedPrompt:
     """Async convenience wrapper for construct_prompt in async RAG pipeline chains.
@@ -415,5 +429,6 @@ async def construct_prompt_async(
         project_id=project_id,
         include_metadata=include_metadata,
         include_provenance=include_provenance,
+        evaluation_feedback=evaluation_feedback,
         service=service,
     )

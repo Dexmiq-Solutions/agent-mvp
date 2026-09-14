@@ -140,6 +140,12 @@ from exceptions.generation import (
     PostProcessingError,
     PostProcessingValidationError,
     StructuredOutputError,
+    EvaluationError,
+    EvaluationValidationError,
+    EvaluationProviderError,
+    EvaluationTimeoutError,
+    EvaluationOutputError,
+    RegenerationExhaustedError,
 )
 
 __all__ = [
@@ -271,5 +277,12 @@ __all__ = [
     "PostProcessingError",
     "PostProcessingValidationError",
     "StructuredOutputError",
+    # Evaluation Exceptions
+    "EvaluationError",
+    "EvaluationValidationError",
+    "EvaluationProviderError",
+    "EvaluationTimeoutError",
+    "EvaluationOutputError",
+    "RegenerationExhaustedError",
 ]
 

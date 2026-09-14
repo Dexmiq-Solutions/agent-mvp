@@ -1785,8 +1785,95 @@ Final API Response
 
 ---
 
-## Development
+## Groundedness & Safety Evaluation (Generation Stage)
 
+### Responsibility & Scope
+
+The **Groundedness / Safety Check** stage serves as the authoritative **quality gate** in the RAG generation pipeline, positioned immediately downstream of Post-processing:
+
+```
+User Query
+    │
+    ▼
+RAG Retrieval (Context Assembly)
+    │
+    ▼
+Context Formatting (FormattedContext)
+    │
+    ▼
+Prompt Construction (ConstructedPrompt)
+    │
+    ▼
+LLM Interface (OpenAI-compatible inference)
+    │
+    ▼
+Post-processing (ProcessedResponse)
+    │
+    ▼
+Groundedness / Safety Check (EvaluationService)
+    │
+    ├─────────────────────────────┐
+    │ [Passed: grounded & safe]   │ [Failed: ungrounded or unsafe]
+    ▼                             ▼
+Final Accepted Response    Bounded Regeneration / Fallback
+    │                             │
+    ▼                             ▼
+Downstream API / User      Prompt Construction (with Feedback)
+                                  │
+                                  ▼
+                                 LLM
+                                  │
+                                  ▼
+                           Post-processing
+                                  │
+                                  ▼
+                     Groundedness / Safety Check
+                                  │
+                                 ...
+```
+
+> [!IMPORTANT]
+> **Key Architectural Invariants**:
+> - **Strict Quality Gate**: Evaluates candidate responses without generating replacement content, without rewriting responses, and without querying databases or vector stores.
+> - **Evaluation Dimensions**:
+>   1. **Groundedness**: All claims must be directly supported by supplied project context. Semantic similarity alone is not sufficient.
+>   2. **Relevance**: The response must directly address the user's original query.
+>   3. **Answerability / Coverage**: If context contains insufficient information, the response must truthfully decline rather than hallucinate.
+>   4. **Specificity**: Claims must not exceed the degree of precision warranted by the evidence.
+>   5. **Evidence Quality**: Statements must derive from actual context evidence rather than generic assumptions.
+>   6. **Safety**: Responses must be free from harmful instructions, prompt injection exploits, and confidential system instruction leaks.
+> - **Quality Gate Acceptance Rule**: A response passes **only** if both `grounded == True` AND `safe == True`. Under no circumstance can evaluator timeouts, provider errors, or malformed outputs default to a passing evaluation.
+> - **Bounded Regeneration**: Regeneration attempts are strictly bounded by `max_regeneration_attempts` (default: 2 retries, 3 total attempts). Evaluator reasons are passed to Prompt Construction as corrective feedback.
+> - **Exhaustion Behavior**: If all allowed attempts fail evaluation, the pipeline raises `RegenerationExhaustedError` containing the final failure reason. It never fabricates an answer or returns a rejected response as successful.
+> - **Future Deep Agent / LangGraph Compatibility**: Cleanly modular and replaceable. Can easily serve as a validation node in future LangGraph or Deep Agent workflows without altering RAG retrieval or prompt boundaries.
+
+### Core Components
+
+- **`EvaluationResult` (`generation.evaluation.models`)**: Structured quality gate decision capturing `grounded`, `safe`, `reason`, `score`, and `metadata`, with `passed` (`grounded and safe`) and `is_acceptable`.
+- **`EvaluationRequest` (`generation.evaluation.models`)**: Encapsulates validated original query, context, response, and project ID.
+- **`EvaluationConfig` (`generation.evaluation.config`)**: Configuration governing model selection, bounded timeouts, retries, temperature, and regeneration limits.
+- **`BaseEvaluator` (`generation.evaluation.base`)**: Abstract base interface for evaluation implementations.
+- **`EvaluationService` (`generation.evaluation.service`)**: Core evaluator service enforcing original query validation, project tenant isolation, fast-path rejection of empty responses, evaluator prompt construction, asynchronous LLM invocation, and structured JSON parsing.
+- **`generate_with_evaluation_async` (`generation.evaluation.service`)**: Orchestrator executing the bounded generation loop with quality gate validation, feedback propagation, and exhaustion handling.
+- **`evaluate` / `evaluate_async` (`generation.evaluation`)**: Functional convenience entrypoints for synchronous and asynchronous quality gate evaluation.
+- **Domain Exceptions (`exceptions.generation`)**: `EvaluationError`, `EvaluationValidationError`, `EvaluationProviderError`, `EvaluationTimeoutError`, `EvaluationOutputError`, `RegenerationExhaustedError`.
+
+### Configuration Reference
+
+`EvaluationConfig` parameters and application settings:
+
+| Variable / Parameter | Default | Description |
+| :--- | :--- | :--- |
+| `EVALUATION_ENABLED` / `enabled` | `true` | If `true`, executes LLM-based quality gate check; if `false`, bypasses evaluation |
+| `EVALUATION_MODEL` / `model` | `null` (defaults to `LLM_MODEL`) | Dedicated model identifier for quality gate evaluation |
+| `EVALUATION_TIMEOUT` / `timeout` | `15.0` | Bounded execution timeout in seconds for evaluation requests |
+| `EVALUATION_MAX_RETRIES` / `max_retries` | `1` | Maximum transient retry attempts for evaluation LLM calls |
+| `EVALUATION_TEMPERATURE` / `temperature` | `0.0` | Sampling temperature for deterministic quality gate evaluation |
+| `EVALUATION_MAX_REGENERATION_ATTEMPTS` / `max_regeneration_attempts` | `2` | Maximum bounded regeneration attempts after an initial rejected generation |
+
+---
+
+## Development
 
 ### Prerequisites
 - Python >= 3.12
@@ -1809,7 +1896,7 @@ uv run uvicorn app.main:app --reload
 uv run pytest
 
 # Run retrieval and generation pipeline tests
-uv run pytest tests/test_indexing.py tests/test_vector_search.py tests/test_keyword_search.py tests/test_keyword_encoder.py tests/test_keyword_qdrant.py tests/test_fusion.py tests/test_metadata_filtering.py tests/test_reranking.py tests/test_chunk_hydration.py tests/test_context_assembly.py tests/test_context_formatting.py tests/test_prompt_construction.py tests/test_llm_interface.py
+uv run pytest tests/test_indexing.py tests/test_vector_search.py tests/test_keyword_search.py tests/test_keyword_encoder.py tests/test_keyword_qdrant.py tests/test_fusion.py tests/test_metadata_filtering.py tests/test_reranking.py tests/test_chunk_hydration.py tests/test_context_assembly.py tests/test_context_formatting.py tests/test_prompt_construction.py tests/test_llm_interface.py tests/test_post_processing.py tests/test_evaluation.py
 ```
 
 

@@ -18,6 +18,12 @@ from exceptions.generation import (
     PostProcessingError,
     PostProcessingValidationError,
     StructuredOutputError,
+    EvaluationError,
+    EvaluationValidationError,
+    EvaluationProviderError,
+    EvaluationTimeoutError,
+    EvaluationOutputError,
+    RegenerationExhaustedError,
 )
 from generation.formatting import (
     DEFAULT_CONTEXT_FOOTER,
@@ -70,6 +76,19 @@ from generation.postprocessing import (
     post_process,
     post_process_async,
     reset_post_processing_service,
+)
+from generation.evaluation import (
+    DEFAULT_EVALUATOR_SYSTEM_INSTRUCTION,
+    BaseEvaluator,
+    EvaluationConfig,
+    EvaluationRequest,
+    EvaluationResult,
+    EvaluationService,
+    evaluate,
+    evaluate_async,
+    generate_with_evaluation_async,
+    get_evaluation_service,
+    reset_evaluation_service,
 )
 
 __all__ = [
@@ -132,6 +151,21 @@ __all__ = [
     "reset_post_processing_service",
     "post_process",
     "post_process_async",
+    # Groundedness & Safety Evaluation Domain Models
+    "EvaluationResult",
+    "EvaluationRequest",
+    # Groundedness & Safety Evaluation Configuration
+    "EvaluationConfig",
+    "DEFAULT_EVALUATOR_SYSTEM_INSTRUCTION",
+    # Groundedness & Safety Evaluation Interfaces & Implementations
+    "BaseEvaluator",
+    # Groundedness & Safety Evaluation Service & Entrypoints
+    "EvaluationService",
+    "get_evaluation_service",
+    "reset_evaluation_service",
+    "evaluate",
+    "evaluate_async",
+    "generate_with_evaluation_async",
     # Domain Exceptions
     "GenerationError",
     "ContextFormattingError",
@@ -150,6 +184,12 @@ __all__ = [
     "PostProcessingError",
     "PostProcessingValidationError",
     "StructuredOutputError",
+    "EvaluationError",
+    "EvaluationValidationError",
+    "EvaluationProviderError",
+    "EvaluationTimeoutError",
+    "EvaluationOutputError",
+    "RegenerationExhaustedError",
 ]
 
 

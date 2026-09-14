@@ -162,6 +162,14 @@ class Settings(BaseSettings):
     POST_PROCESSING_ALLOW_EMPTY_CONTENT: bool = False
     POST_PROCESSING_PARSE_JSON: bool = False
 
+    # Groundedness & Safety Evaluation Configuration
+    EVALUATION_ENABLED: bool = True
+    EVALUATION_MODEL: str | None = None
+    EVALUATION_TIMEOUT: float = 15.0
+    EVALUATION_MAX_RETRIES: int = 1
+    EVALUATION_TEMPERATURE: float = 0.0
+    EVALUATION_MAX_REGENERATION_ATTEMPTS: int = 2
+
     @field_validator("LOG_LEVEL", mode="before")
     @classmethod
     def validate_log_level(cls, v: str) -> str:
