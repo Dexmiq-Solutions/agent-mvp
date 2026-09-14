@@ -8,7 +8,7 @@ from exceptions.generation import (
     PromptConstructionError,
     PromptConstructionValidationError,
 )
-from generation import (
+from rag.generation import (
     DEFAULT_SYSTEM_INSTRUCTION,
     ConstructedPrompt,
     GenerationPrompt,
@@ -20,7 +20,7 @@ from generation import (
     get_prompt_construction_service,
     reset_prompt_construction_service,
 )
-from generation.prompt import (
+from rag.generation.prompt import (
     ConstructedPrompt as PromptConstructedPrompt,
     PromptConstructionConfig as PromptPromptConstructionConfig,
     PromptConstructionService as PromptPromptConstructionService,
@@ -42,7 +42,7 @@ from rag.generation import (
     get_prompt_construction_service as rag_get_prompt_construction_service,
     reset_prompt_construction_service as rag_reset_prompt_construction_service,
 )
-from retrieval.models import (
+from rag.retrieval.models import (
     AssembledContext,
     AssembledContextItem,
     PolicyDecision,
@@ -507,7 +507,7 @@ def test_singleton_get_and_reset():
 
 
 def test_reexports_across_packages():
-    """Verify components can be imported from generation, generation.prompt, and rag.generation."""
+    """Verify components can be imported from rag.generation, generation.prompt, and rag.generation."""
     assert ConstructedPrompt is PromptConstructedPrompt
     assert ConstructedPrompt is RagConstructedPrompt
     assert GenerationPrompt is RagGenerationPrompt

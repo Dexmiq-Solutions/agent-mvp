@@ -25,7 +25,7 @@ from rag.retrieval import (
     get_context_assembly_service as rag_get_context_assembly_service,
     reset_context_assembly_service as rag_reset_context_assembly_service,
 )
-from retrieval import (
+from rag.retrieval import (
     AssembledContext,
     AssembledContextItem,
     ContextAssemblyConfig,

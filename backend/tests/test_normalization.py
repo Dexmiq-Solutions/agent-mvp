@@ -2,8 +2,8 @@
 
 import pytest
 
-from acquisition.formats import DocumentType
-from cleaning import (
+from rag.acquisition.formats import DocumentType
+from rag.cleaning import (
     CleanedDocument,
     CleaningReport,
     DocumentCleaningService,
@@ -12,7 +12,7 @@ from exceptions.normalization import (
     InvalidNormalizationInputError,
     NormalizationError,
 )
-from normalization import (
+from rag.normalization import (
     CodeBlockNormalizer,
     DefaultNormalizer,
     DocumentNormalizationService,
@@ -33,7 +33,7 @@ from normalization import (
     reset_normalization_service,
     strip_safe_control_characters,
 )
-from parsing.models import ElementType, ParsedDocument, ParsedElement
+from rag.parsing.models import ElementType, ParsedDocument, ParsedElement
 
 
 @pytest.fixture(autouse=True)

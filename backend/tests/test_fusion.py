@@ -17,7 +17,7 @@ from rag.retrieval import (
     get_fusion_service as rag_get_fusion_service,
     reset_fusion_service as rag_reset_fusion_service,
 )
-from retrieval import (
+from rag.retrieval import (
     BaseFusionStrategy,
     FusedCandidate,
     FusedSearchCandidate,

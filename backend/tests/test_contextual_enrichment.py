@@ -2,11 +2,11 @@
 
 import pytest
 
-from acquisition.formats import DocumentType
+from rag.acquisition.formats import DocumentType
 from app.core.config import Settings
-from chunking.models import ChunkingReport, DocumentChunk
-from cleaning.models import CleaningReport
-from contextual_enrichment import (
+from rag.chunking.models import ChunkingReport, DocumentChunk
+from rag.cleaning.models import CleaningReport
+from rag.contextual_enrichment import (
     BaseContextProvider,
     ContextualEnrichmentConfig,
     ContextualEnrichmentReport,
@@ -25,14 +25,14 @@ from exceptions.contextual_enrichment import (
     ContextualEnrichmentProviderError,
     InvalidContextualEnrichmentInputError,
 )
-from metadata_enrichment.models import (
+from rag.metadata_enrichment.models import (
     ChunkMetadata,
     EnrichedChunk,
     EnrichedDocument,
     MetadataEnrichmentReport,
 )
-from normalization.models import NormalizationReport
-from parsing.models import ElementType
+from rag.normalization.models import NormalizationReport
+from rag.parsing.models import ElementType
 
 
 @pytest.fixture(autouse=True)

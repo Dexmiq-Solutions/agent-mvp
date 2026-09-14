@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from app.core.config import Settings
-from embeddings import (
+from rag.embeddings import (
     BaseEmbeddingProvider,
     EmbeddingAuthenticationError,
     EmbeddingBatchResult,
@@ -28,7 +28,7 @@ from rag.retrieval import (
     get_query_embedding_service as rag_get_query_embedding_service,
     reset_query_embedding_service as rag_reset_query_embedding_service,
 )
-from retrieval import (
+from rag.retrieval import (
     EmbeddedQuery,
     EmbeddedQuerySet,
     QueryEmbeddingService,

@@ -21,7 +21,7 @@ from rag.retrieval import (
     get_query_preprocessor as rag_get_query_preprocessor,
     preprocess_query as rag_preprocess_query,
 )
-from retrieval import (
+from rag.retrieval import (
     ProcessedQuery,
     QueryPreprocessingConfig,
     QueryPreprocessingService,

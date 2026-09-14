@@ -11,15 +11,15 @@ from exceptions.vector import (
     VectorStoreConnectionError,
     VectorStoreError,
 )
-from retrieval.config import KeywordSearchConfig
-from retrieval.keyword import (
+from rag.retrieval.config import KeywordSearchConfig
+from rag.retrieval.keyword import (
     KeywordSearchService,
     get_keyword_search_service,
     reset_keyword_search_service,
     search_keywords,
 )
-from retrieval.keyword.encoder.base import BaseSparseEncoder
-from retrieval.models import (
+from rag.retrieval.keyword.encoder.base import BaseSparseEncoder
+from rag.retrieval.models import (
     KeywordSearchCandidate,
     RetrievalQuerySet,
     SparseVector,

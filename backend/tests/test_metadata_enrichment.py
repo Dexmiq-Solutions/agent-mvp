@@ -2,21 +2,21 @@
 
 import pytest
 
-from acquisition.formats import DocumentType
-from chunking.models import (
+from rag.acquisition.formats import DocumentType
+from rag.chunking.models import (
     ChunkedDocument,
     ChunkingConfig,
     ChunkingReport,
     DocumentChunk,
 )
-from cleaning.models import CleaningReport
+from rag.cleaning.models import CleaningReport
 from exceptions.metadata_enrichment import (
     InvalidMetadataEnrichmentInputError,
     MetadataEnrichmentConfigurationError,
     MetadataEnrichmentError,
     MetadataEnrichmentProcessingError,
 )
-from metadata_enrichment import (
+from rag.metadata_enrichment import (
     BaseMetadataEnricher,
     ChunkContentType,
     ChunkMetadata,
@@ -30,8 +30,8 @@ from metadata_enrichment import (
     get_metadata_enrichment_service,
     reset_metadata_enrichment_service,
 )
-from normalization.models import NormalizationReport
-from parsing.models import ElementType
+from rag.normalization.models import NormalizationReport
+from rag.parsing.models import ElementType
 
 
 @pytest.fixture(autouse=True)
@@ -692,11 +692,11 @@ async def test_async_enrichment_and_batch_processing():
 
 def test_full_pipeline_indexing_integration():
     """Verify seamless end-to-end indexing flow through Metadata Enrichment."""
-    from cleaning import DocumentCleaningService
-    from chunking import DocumentChunkingService
-    from ingestion.models import IngestedDocument
-    from normalization import DocumentNormalizationService
-    from parsing.markdown import MarkdownParser
+    from rag.cleaning import DocumentCleaningService
+    from rag.chunking import DocumentChunkingService
+    from rag.ingestion.models import IngestedDocument
+    from rag.normalization import DocumentNormalizationService
+    from rag.parsing.markdown import MarkdownParser
 
     raw_markdown = (
         b"# BRD: User Notification Engine\n\n"

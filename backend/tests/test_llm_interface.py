@@ -29,18 +29,18 @@ from exceptions.generation import (
     LLMUnavailableError,
     LLMValidationError,
 )
-from generation.llm.adapters.openai import OpenAICompatibleLLMAdapter
-from generation.llm.config import LLMConfig
-from generation.llm.interface import BaseLLMInterface
-from generation.llm.models import LLMResult, LLMStreamEvent, LLMUsage
-from generation.llm.service import (
+from rag.generation.llm.adapters.openai import OpenAICompatibleLLMAdapter
+from rag.generation.llm.config import LLMConfig
+from rag.generation.llm.interface import BaseLLMInterface
+from rag.generation.llm.models import LLMResult, LLMStreamEvent, LLMUsage
+from rag.generation.llm.service import (
     LLMService,
     generate_async,
     generate_stream_async,
     get_llm_service,
     reset_llm_service,
 )
-from generation.prompt.models import ConstructedPrompt
+from rag.generation.prompt.models import ConstructedPrompt
 
 
 # ==============================================================================

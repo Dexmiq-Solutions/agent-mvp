@@ -3,7 +3,7 @@
 from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
-from acquisition import (
+from rag.acquisition import (
     AcquisitionConfigurationError,
     AcquisitionError,
     AcquisitionResult,
@@ -662,7 +662,7 @@ async def test_acquire_document_directory_target_raises(mock_storage):
 
 def test_get_acquisition_service_caching():
     """Verify get_acquisition_service returns cached singleton and reset clears it."""
-    with patch("acquisition.service.get_object_storage") as mock_get_storage:
+    with patch("rag.acquisition.service.get_object_storage") as mock_get_storage:
         mock_get_storage.return_value = MagicMock(spec=BaseObjectStorage)
 
         srv1 = get_acquisition_service()

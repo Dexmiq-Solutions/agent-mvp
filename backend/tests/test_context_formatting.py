@@ -8,7 +8,7 @@ from exceptions.generation import (
     ContextFormattingValidationError,
     GenerationError,
 )
-from generation import (
+from rag.generation import (
     DEFAULT_CONTEXT_FOOTER,
     DEFAULT_CONTEXT_HEADER,
     DEFAULT_EMPTY_CONTEXT_TEXT,
@@ -25,7 +25,7 @@ from generation import (
     reset_context_formatting_service,
     construct_prompt,
 )
-from generation.formatting import (
+from rag.generation.formatting import (
     ContextFormattingConfig as FormattingContextFormattingConfig,
     ContextFormattingService as FormattingContextFormattingService,
     FormattedContext as FormattingFormattedContext,
@@ -49,7 +49,7 @@ from rag.generation import (
     get_context_formatting_service as rag_get_context_formatting_service,
     reset_context_formatting_service as rag_reset_context_formatting_service,
 )
-from retrieval.models import (
+from rag.retrieval.models import (
     AssembledContext,
     AssembledContextItem,
 )
@@ -580,7 +580,7 @@ def test_singleton_get_and_reset():
 
 
 def test_reexports_across_packages():
-    """Verify components can be imported from generation, generation.formatting, and rag.generation."""
+    """Verify components can be imported from rag.generation, generation.formatting, and rag.generation."""
     assert FormattedContext is FormattingFormattedContext
     assert FormattedContext is RagFormattedContext
     assert FormattedContextItem is FormattingFormattedContextItem

@@ -6,10 +6,10 @@ import pytest
 import voyageai.error as voyage_errors
 
 from app.core.config import Settings
-from embeddings.base import BaseEmbeddingProvider
-from embeddings.client import get_async_voyage_client, reset_async_voyage_client
-from embeddings.models import EmbeddingBatchResult, EmbeddingResult
-from embeddings.voyage import VoyageEmbeddingProvider
+from rag.embeddings.base import BaseEmbeddingProvider
+from rag.embeddings.client import get_async_voyage_client, reset_async_voyage_client
+from rag.embeddings.models import EmbeddingBatchResult, EmbeddingResult
+from rag.embeddings.voyage import VoyageEmbeddingProvider
 from exceptions.embedding import (
     EmbeddingAuthenticationError,
     EmbeddingConfigurationError,
@@ -19,7 +19,7 @@ from exceptions.embedding import (
     EmbeddingRateLimitError,
     EmbeddingRequestError,
 )
-from embeddings import get_embedding_provider, reset_embedding_provider
+from rag.embeddings import get_embedding_provider, reset_embedding_provider
 
 
 @pytest.fixture(autouse=True)

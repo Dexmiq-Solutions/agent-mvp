@@ -2,8 +2,8 @@
 
 import pytest
 
-from acquisition.formats import DocumentType
-from chunking import (
+from rag.acquisition.formats import DocumentType
+from rag.chunking import (
     BaseChunkSizer,
     CharacterChunkSizer,
     Chunk,
@@ -24,13 +24,13 @@ from chunking import (
     get_chunking_service,
     reset_chunking_service,
 )
-from cleaning.models import CleanedDocument, CleaningReport
-from normalization.models import (
+from rag.cleaning.models import CleanedDocument, CleaningReport
+from rag.normalization.models import (
     NormalizationDecision,
     NormalizationReport,
     NormalizedDocument,
 )
-from parsing.models import ElementType, ParsedDocument, ParsedElement
+from rag.parsing.models import ElementType, ParsedDocument, ParsedElement
 
 
 @pytest.fixture(autouse=True)
@@ -659,10 +659,10 @@ async def test_async_chunking_and_batch_processing():
 
 def test_end_to_end_indexing_pipeline_integration():
     """Verify seamless end-to-end flow from raw document ingestion to chunking."""
-    from cleaning import DocumentCleaningService
-    from ingestion.models import IngestedDocument
-    from normalization import DocumentNormalizationService
-    from parsing.markdown import MarkdownParser
+    from rag.cleaning import DocumentCleaningService
+    from rag.ingestion.models import IngestedDocument
+    from rag.normalization import DocumentNormalizationService
+    from rag.parsing.markdown import MarkdownParser
 
     raw_markdown = (
         b"# BRD: User Notification Engine\n\n"

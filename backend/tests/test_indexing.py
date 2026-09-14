@@ -6,9 +6,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.core.config import Settings
-from acquisition.formats import DocumentType
-from chunking.models import DocumentChunk
-from embeddings.models import EmbeddingBatchResult, EmbeddingResult
+from rag.acquisition.formats import DocumentType
+from rag.chunking.models import DocumentChunk
+from rag.embeddings.models import EmbeddingBatchResult, EmbeddingResult
 from exceptions.indexing import (
     IndexingConfigurationError,
     IndexingConnectionError,
@@ -25,7 +25,7 @@ from exceptions.vector import (
     VectorStoreError,
     VectorUpsertError,
 )
-from indexing import (
+from rag.indexing import (
     DocumentIndexingService,
     IndexableRecord,
     IndexingBatchResult,
@@ -35,10 +35,10 @@ from indexing import (
     get_indexing_service,
     reset_indexing_service,
 )
-from metadata_enrichment.models import ChunkMetadata, EnrichedChunk, EnrichedDocument
+from rag.metadata_enrichment.models import ChunkMetadata, EnrichedChunk, EnrichedDocument
 from storage.vector import BaseVectorStore
 from storage.vector.models import SparseVector, VectorRecord
-from indexing.representations import (
+from rag.indexing.representations import (
     extract_representation_text,
     extract_representation_texts,
     generate_sparse_representations,
@@ -622,7 +622,7 @@ async def test_index_document_with_contextually_enriched_document(
     mock_vector_store, mock_indexing_settings, sample_enriched_chunk
 ):
     """Verify index_document seamlessly handles ContextuallyEnrichedDocument."""
-    from contextual_enrichment.models import (
+    from rag.contextual_enrichment.models import (
         ContextuallyEnrichedChunk,
         ContextuallyEnrichedDocument,
     )
@@ -888,7 +888,7 @@ async def test_index_document_with_both_dense_and_sparse_vectors(
 @pytest.mark.anyio
 async def test_representation_ready_text_used_for_both_dense_and_sparse(sample_enriched_chunk):
     """Verify that ContextuallyEnrichedChunk provides identical representation-ready text to both paths."""
-    from contextual_enrichment.models import ContextuallyEnrichedChunk, ContextuallyEnrichedDocument
+    from rag.contextual_enrichment.models import ContextuallyEnrichedChunk, ContextuallyEnrichedDocument
 
     ctx_chunk = ContextuallyEnrichedChunk(
         chunk_id=sample_enriched_chunk.chunk_id,
@@ -967,8 +967,8 @@ async def test_dual_representation_same_qdrant_point(mock_indexing_settings, sam
 
 def test_chunk_to_representation_text_polymorphism():
     """Verify DocumentChunk and ContextuallyEnrichedChunk both implement to_representation_text polymorphically."""
-    from chunking.models import DocumentChunk
-    from contextual_enrichment.models import ContextuallyEnrichedChunk
+    from rag.chunking.models import DocumentChunk
+    from rag.contextual_enrichment.models import ContextuallyEnrichedChunk
 
     plain_chunk = DocumentChunk(
         chunk_id="c1",

@@ -3,8 +3,8 @@
 from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
-from acquisition.formats import DocumentType
-from acquisition.models import SourceDocument, SourceReference
+from rag.acquisition.formats import DocumentType
+from rag.acquisition.models import SourceDocument, SourceReference
 from app.core.config import Settings
 from exceptions.ingestion import (
     DocumentRetrievalError,
@@ -19,7 +19,7 @@ from exceptions.storage import (
     StorageDownloadError,
     StorageError,
 )
-from ingestion import (
+from rag.ingestion import (
     BaseIngestionService,
     DocumentSourceReference,
     IngestedDocument,

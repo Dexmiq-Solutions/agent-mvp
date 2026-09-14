@@ -24,7 +24,7 @@ from rag.retrieval import (
     reset_query_transformation_service as rag_reset_query_transformation_service,
     transform_query as rag_transform_query,
 )
-from retrieval import (
+from rag.retrieval import (
     AdaptiveTransformationPolicy,
     BaseLLMClient,
     LLMQueryRewriteStrategy,

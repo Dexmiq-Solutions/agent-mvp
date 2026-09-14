@@ -12,11 +12,11 @@ from exceptions.generation import (
     PostProcessingValidationError,
     StructuredOutputError,
 )
-from generation.llm.models import LLMResult, LLMUsage
-from generation.postprocessing.base import BasePostProcessor
-from generation.postprocessing.config import PostProcessingConfig
-from generation.postprocessing.models import PostProcessedResponse, ProcessedResponse
-from generation.postprocessing.service import (
+from rag.generation.llm.models import LLMResult, LLMUsage
+from rag.generation.postprocessing.base import BasePostProcessor
+from rag.generation.postprocessing.config import PostProcessingConfig
+from rag.generation.postprocessing.models import PostProcessedResponse, ProcessedResponse
+from rag.generation.postprocessing.service import (
     PostProcessingService,
     get_post_processing_service,
     post_process,

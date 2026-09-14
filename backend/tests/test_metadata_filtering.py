@@ -30,7 +30,7 @@ from rag.retrieval import (
     to_qdrant_condition as rag_to_qdrant_condition,
     to_qdrant_filter as rag_to_qdrant_filter,
 )
-from retrieval import (
+from rag.retrieval import (
     BaseFilterCondition,
     BooleanCondition,
     CandidateMetadataResolver,

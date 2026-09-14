@@ -24,7 +24,7 @@ from rag.retrieval import (
     reset_vector_search_service as rag_reset_vector_search_service,
     search_vectors as rag_search_vectors,
 )
-from retrieval import (
+from rag.retrieval import (
     EmbeddedQuery,
     EmbeddedQuerySet,
     VectorRetrievalError,

@@ -28,7 +28,7 @@ from rag.retrieval import (
     rerank_candidates as rag_rerank_candidates,
     reset_reranking_service as rag_reset_reranking_service,
 )
-from retrieval import (
+from rag.retrieval import (
     BaseReranker,
     FusedCandidate,
     ProcessedQuery,

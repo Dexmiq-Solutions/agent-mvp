@@ -3,13 +3,13 @@
 import pytest
 
 from exceptions.retrieval import SparseEncodingError
-from retrieval.keyword.encoder import (
+from rag.retrieval.keyword.encoder import (
     BaseSparseEncoder,
     TechnicalSparseEncoder,
     get_sparse_encoder,
     reset_sparse_encoder,
 )
-from retrieval.models import SparseVector
+from rag.retrieval.models import SparseVector
 
 
 @pytest.fixture(autouse=True)

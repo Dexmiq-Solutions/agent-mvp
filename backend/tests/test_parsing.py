@@ -4,15 +4,15 @@ import io
 import docx
 import pytest
 
-from acquisition.formats import DocumentType
+from rag.acquisition.formats import DocumentType
 from exceptions.parsing import (
     DocumentExtractionError,
     InvalidParsingInputError,
     ParsingError,
     UnsupportedDocumentTypeError,
 )
-from ingestion.models import IngestedDocument
-from parsing import (
+from rag.ingestion.models import IngestedDocument
+from rag.parsing import (
     BaseParser,
     DOCXParser,
     DocumentParsingService,

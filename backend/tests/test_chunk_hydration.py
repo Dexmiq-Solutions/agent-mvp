@@ -34,7 +34,7 @@ from rag.retrieval import (
     reset_chunk_hydration_service as rag_reset_chunk_hydration_service,
     reset_chunk_repository as rag_reset_chunk_repository,
 )
-from retrieval import (
+from rag.retrieval import (
     BaseChunkRepository,
     ChunkHydrationConfig,
     ChunkHydrationService,

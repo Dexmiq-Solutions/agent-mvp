@@ -312,7 +312,7 @@ Extracted documents are returned as `ParsedDocument`:
   - `parent_id`: `element_id` of the immediate enclosing heading; `None` for root level.
   - `section_path`: Hierarchy breadcrumb tuple (e.g. `("Authentication", "Token Expiration")`).
   - `metadata`: Style names, code block languages, or element-specific attributes.
-- `source_metadata`: Metadata preserved from ingestion.
+- `source_metadata`: Metadata preserved from rag.ingestion.
 - `parser_metadata`: Extraction metrics (element counts, parser class, timings).
 
 ### Architecture & Service Execution
@@ -523,7 +523,7 @@ Data Sources ──► Acquisition ──► Ingestion ──► Parsing ──�
    - `project_id`: Multi-tenant project boundary (mandatory isolation key).
    - `document_id`: Unique source document identifier.
    - `chunk_id`: Deterministic chunk identifier (e.g., `brd-001_chunk_0`).
-   - `document_version_id`: Version or ETag reference preserved from ingestion.
+   - `document_version_id`: Version or ETag reference preserved from rag.ingestion.
    - `source_element_ids`: List of original element IDs forming the chunk.
    - `document_type`: Canonical document format (`markdown`, `docx`, `txt`, `pdf`).
    - `source_storage_path` & `original_filename`: Source coordinates in Supabase Storage.
@@ -539,7 +539,7 @@ Data Sources ──► Acquisition ──► Ingestion ──► Parsing ──�
    - `relative_position`: Float $0.0 \le \text{pos} \le 1.0$ indicating relative location in the document.
 
 3. **Source / Document Metadata**:
-   - Source MIME type, file format, and arbitrary custom metadata passed from acquisition and ingestion without inventing missing values.
+   - Source MIME type, file format, and arbitrary custom metadata passed from rag.acquisition and ingestion without inventing missing values.
 
 4. **Chunk Characteristics (Deterministic Derived Metadata)**:
    - `character_count`: Raw string length.
@@ -1558,7 +1558,7 @@ Relevance Check / Fallback
 
 ### Responsibility & Scope
 
-The **Context Formatting** stage is the dedicated in-memory transformation bridge between the authoritative **Final Context** (from retrieval, hydration, and assembly) and **Prompt Construction**.
+The **Context Formatting** stage is the dedicated in-memory transformation bridge between the authoritative **Final Context** (from rag.retrieval, hydration, and assembly) and **Prompt Construction**.
 
 ```
 Final Context (AssembledContext)

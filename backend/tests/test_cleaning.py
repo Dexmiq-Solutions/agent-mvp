@@ -2,8 +2,8 @@
 
 import pytest
 
-from acquisition.formats import DocumentType
-from cleaning import (
+from rag.acquisition.formats import DocumentType
+from rag.cleaning import (
     CleanedDocument,
     CleaningAction,
     CleaningCategory,
@@ -21,7 +21,7 @@ from cleaning import (
     get_cleaning_service,
     reset_cleaning_service,
 )
-from parsing.models import ElementType, ParsedDocument, ParsedElement
+from rag.parsing.models import ElementType, ParsedDocument, ParsedElement
 
 
 @pytest.fixture(autouse=True)
