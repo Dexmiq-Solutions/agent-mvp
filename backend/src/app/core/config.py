@@ -136,6 +136,11 @@ class Settings(BaseSettings):
     CONTEXT_ASSEMBLY_USE_CONTEXTUAL_ENRICHMENT: bool = True
     CONTEXT_ASSEMBLY_STRICT_PROJECT_VALIDATION: bool = False
 
+    # RAG Retrieval Orchestration Configuration
+    RETRIEVAL_TOP_K: int = 10
+    RETRIEVAL_RELEVANCE_CHECK_ENABLED: bool = False
+    RETRIEVAL_MAX_ATTEMPTS: int = 2
+
     # Context Formatting Configuration
     CONTEXT_FORMATTING_STRATEGY: str = "text"
     CONTEXT_FORMATTING_HEADER: str = "RETRIEVED CONTEXT"

@@ -11,6 +11,13 @@ from schemas.project import (
     ProjectResponse,
     ProjectUpdate,
 )
+from schemas.retrieval import (
+    RetrievalAttemptMetadataSchema,
+    RetrievalExecutionMetadataSchema,
+    RetrievalRequestSchema,
+    RetrievalResponseSchema,
+    RetrievedChunkSchema,
+)
 
 __all__ = [
     "ProjectCreate",
@@ -20,4 +27,9 @@ __all__ = [
     "DocumentDetailResponse",
     "DocumentUpdate",
     "DocumentVersionResponse",
+    "RetrievalRequestSchema",
+    "RetrievedChunkSchema",
+    "RetrievalAttemptMetadataSchema",
+    "RetrievalExecutionMetadataSchema",
+    "RetrievalResponseSchema",
 ]

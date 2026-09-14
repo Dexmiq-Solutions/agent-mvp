@@ -1,7 +1,7 @@
 """Configuration options for query preprocessing and query transformation."""
 
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, Optional
 
 from app.core.config import Settings, get_settings
 
@@ -239,5 +239,68 @@ class RerankingConfig:
             candidate_limit=getattr(resolved, "RERANKER_CANDIDATE_LIMIT", 50),
             result_limit=getattr(resolved, "RERANKER_RESULT_LIMIT", 10),
             timeout_seconds=getattr(resolved, "RERANKER_TIMEOUT", 10.0),
+        )
+
+
+@dataclass(frozen=True)
+class RetrievalConfig:
+    """Unified application-facing configuration for RAG retrieval orchestration.
+
+    Bundles stage-specific parameters and feature toggles with authoritative defaults
+    sourced from application Settings. Supports per-request operational overrides.
+    """
+
+    top_k: int = 10
+    dense_top_k: int = 10
+    sparse_top_k: int = 10
+    fusion_top_k: int = 10
+    rerank_candidate_limit: int = 50
+    rerank_result_limit: int = 10
+    enable_transformation: bool = True
+    enable_sparse: bool = True
+    enable_reranking: bool = True
+    enable_relevance_check: bool = False
+    max_attempts: int = 2
+    metadata_filters: Optional[dict[str, Any]] = None
+    use_contextual_enrichment: bool = True
+    score_threshold: Optional[float] = None
+
+    def __post_init__(self) -> None:
+        """Validate retrieval configuration parameters."""
+        if self.top_k <= 0:
+            raise ValueError(f"top_k must be a positive integer, got {self.top_k}.")
+        if self.dense_top_k <= 0:
+            raise ValueError(f"dense_top_k must be a positive integer, got {self.dense_top_k}.")
+        if self.sparse_top_k <= 0:
+            raise ValueError(f"sparse_top_k must be a positive integer, got {self.sparse_top_k}.")
+        if self.fusion_top_k <= 0:
+            raise ValueError(f"fusion_top_k must be a positive integer, got {self.fusion_top_k}.")
+        if self.rerank_candidate_limit <= 0:
+            raise ValueError(f"rerank_candidate_limit must be a positive integer, got {self.rerank_candidate_limit}.")
+        if self.rerank_result_limit <= 0:
+            raise ValueError(f"rerank_result_limit must be a positive integer, got {self.rerank_result_limit}.")
+        if self.max_attempts <= 0:
+            raise ValueError(f"max_attempts must be a positive integer, got {self.max_attempts}.")
+
+    @classmethod
+    def from_settings(cls, settings: Optional[Settings] = None) -> "RetrievalConfig":
+        """Construct RetrievalConfig from application Settings (Single Source of Truth)."""
+        resolved = settings or get_settings()
+        default_top_k = getattr(resolved, "RETRIEVAL_TOP_K", 10)
+        return cls(
+            top_k=default_top_k,
+            dense_top_k=getattr(resolved, "VECTOR_SEARCH_TOP_K", 10),
+            sparse_top_k=getattr(resolved, "KEYWORD_SEARCH_TOP_K", 10),
+            fusion_top_k=getattr(resolved, "FUSION_TOP_K", 10),
+            rerank_candidate_limit=getattr(resolved, "RERANKER_CANDIDATE_LIMIT", 50),
+            rerank_result_limit=getattr(resolved, "RERANKER_RESULT_LIMIT", default_top_k),
+            enable_transformation=getattr(resolved, "QUERY_TRANSFORMATION_ENABLED", True),
+            enable_sparse=getattr(resolved, "SPARSE_INDEXING_ENABLED", True),
+            enable_reranking=getattr(resolved, "RERANKING_ENABLED", True),
+            enable_relevance_check=getattr(resolved, "RETRIEVAL_RELEVANCE_CHECK_ENABLED", False),
+            max_attempts=getattr(resolved, "RETRIEVAL_MAX_ATTEMPTS", 2),
+            metadata_filters=None,
+            use_contextual_enrichment=getattr(resolved, "CONTEXT_ASSEMBLY_USE_CONTEXTUAL_ENRICHMENT", True),
+            score_threshold=getattr(resolved, "VECTOR_SEARCH_SCORE_THRESHOLD", None),
         )
 

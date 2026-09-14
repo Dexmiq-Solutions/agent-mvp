@@ -25,6 +25,13 @@ from exceptions.project import (
     InvalidProjectDataError,
     ProjectNotFoundError,
 )
+from exceptions.retrieval import (
+    EmptyQueryError,
+    InvalidQueryError,
+    ProjectBoundaryViolationError,
+    QueryLengthExceededError,
+    RetrievalError,
+)
 from exceptions.storage import StorageError
 from fastapi.responses import JSONResponse
 from fastapi import Request, status
@@ -149,6 +156,30 @@ def create_application() -> FastAPI:
         return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             content={"detail": "A database error occurred. Please try again later."},
+        )
+
+    @application.exception_handler(InvalidQueryError)
+    async def invalid_query_handler(request: Request, exc: InvalidQueryError) -> JSONResponse:
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content={"detail": str(exc)},
+        )
+
+    @application.exception_handler(ProjectBoundaryViolationError)
+    async def project_boundary_violation_handler(
+        request: Request, exc: ProjectBoundaryViolationError
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content={"detail": str(exc)},
+        )
+
+    @application.exception_handler(RetrievalError)
+    async def retrieval_error_handler(request: Request, exc: RetrievalError) -> JSONResponse:
+        logger.error("Retrieval pipeline failure: %s", exc, exc_info=True)
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={"detail": f"Retrieval pipeline failed: {exc.message}"},
         )
 
     # --------------------------------------------------------------------------

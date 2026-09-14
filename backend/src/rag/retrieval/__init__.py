@@ -52,6 +52,7 @@ from rag.retrieval.config import (
     QueryPreprocessingConfig,
     QueryTransformationConfig,
     RerankingConfig,
+    RetrievalConfig,
     VectorSearchConfig,
 )
 from rag.retrieval.hydration import (
@@ -139,6 +140,23 @@ from rag.retrieval.models import (
     RetrievalQuerySet,
     SparseVector,
     VectorSearchCandidate,
+    RetrievedChunk,
+    RetrievalAttemptMetadata,
+    RetrievalExecutionMetadata,
+    RetrievalResult,
+)
+from rag.retrieval.relevance import (
+    BaseRelevanceChecker,
+    HeuristicRelevanceChecker,
+    LLMRelevanceChecker,
+    get_relevance_checker,
+)
+from rag.retrieval.service import (
+    RAGRetrievalService,
+    RAGService,
+    get_rag_service,
+    reset_rag_service,
+    retrieve,
 )
 from rag.retrieval.preprocessing import (
     QueryPreprocessingService,
@@ -190,6 +208,10 @@ __all__ = [
     "AssembledContext",
     "RetrievalContext",
     "StructuredRetrievalContext",
+    "RetrievedChunk",
+    "RetrievalAttemptMetadata",
+    "RetrievalExecutionMetadata",
+    "RetrievalResult",
     # Configuration
     "QueryPreprocessingConfig",
     "QueryTransformationConfig",
@@ -199,6 +221,7 @@ __all__ = [
     "RerankingConfig",
     "ChunkHydrationConfig",
     "ContextAssemblyConfig",
+    "RetrievalConfig",
     # Preprocessing Service & Helpers
     "QueryPreprocessor",
     "QueryPreprocessingService",
@@ -288,6 +311,17 @@ __all__ = [
     "reset_context_assembly_service",
     "assemble_context",
     "assemble_context_async",
+    # Relevance Check Subsystem & Helpers
+    "BaseRelevanceChecker",
+    "HeuristicRelevanceChecker",
+    "LLMRelevanceChecker",
+    "get_relevance_checker",
+    # RAG Service Orchestrator & Helpers
+    "RAGService",
+    "RAGRetrievalService",
+    "get_rag_service",
+    "reset_rag_service",
+    "retrieve",
     # Domain Exceptions
     "RetrievalError",
     "QueryPreprocessingError",

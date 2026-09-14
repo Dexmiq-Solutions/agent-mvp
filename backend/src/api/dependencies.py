@@ -72,3 +72,10 @@ def get_document_service(
     )
 
 
+def get_rag_service_dependency() -> "RAGService":
+    """Dependency provider returning configured RAGService singleton instance."""
+    from services.rag_service import get_rag_service
+
+    return get_rag_service()
+
+

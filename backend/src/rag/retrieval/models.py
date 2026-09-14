@@ -734,4 +734,217 @@ RetrievalContext = AssembledContext
 StructuredRetrievalContext = AssembledContext
 
 
+@dataclass(frozen=True)
+class RetrievedChunk:
+    """Application-facing representation of a retrieved, hydrated, and reranked chunk.
+
+    Provides a clean, provider-agnostic domain model exposing authoritative stored
+    content, relevance score, ranking, provenance, and hierarchy coordinates.
+    """
+
+    chunk_id: str
+    document_id: str
+    project_id: str
+    content: str
+    rank: int
+    score: float
+    document_version_id: str | None = None
+    heading: str | None = None
+    section_path: tuple[str, ...] = ()
+    contextual_content: str | None = None
+    chunk_index: int = 0
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def from_hydrated_candidate(cls, candidate: Any) -> "RetrievedChunk":
+        """Construct a RetrievedChunk from a HydratedCandidate or compatible candidate."""
+        sec_path = getattr(candidate, "section_path", ()) or ()
+        if isinstance(sec_path, (list, set)):
+            sec_path = tuple(sec_path)
+
+        cand_meta = dict(getattr(candidate, "metadata", None) or {})
+
+        return cls(
+            chunk_id=str(getattr(candidate, "chunk_id")),
+            document_id=str(getattr(candidate, "document_id")),
+            project_id=str(getattr(candidate, "project_id")),
+            content=str(getattr(candidate, "content", getattr(candidate, "text", ""))),
+            rank=int(getattr(candidate, "rank", 1)),
+            score=float(getattr(candidate, "score", getattr(candidate, "rerank_score", getattr(candidate, "fusion_score", 0.0))) or 0.0),
+            document_version_id=getattr(candidate, "document_version_id", None),
+            heading=getattr(candidate, "heading", None),
+            section_path=sec_path,
+            contextual_content=getattr(candidate, "contextual_content", None),
+            chunk_index=int(getattr(candidate, "chunk_index", getattr(candidate, "index", 0)) or 0),
+            metadata=cand_meta,
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize retrieved chunk to a dictionary."""
+        data: dict[str, Any] = {
+            "chunk_id": self.chunk_id,
+            "document_id": self.document_id,
+            "project_id": self.project_id,
+            "content": self.content,
+            "rank": self.rank,
+            "score": self.score,
+            "document_version_id": self.document_version_id,
+            "heading": self.heading,
+            "section_path": list(self.section_path),
+            "contextual_content": self.contextual_content,
+            "chunk_index": self.chunk_index,
+        }
+        if self.metadata:
+            data["metadata"] = dict(self.metadata)
+        return data
+
+
+@dataclass(frozen=True)
+class RetrievalAttemptMetadata:
+    """Detailed observability and metrics for an individual retrieval attempt."""
+
+    attempt: int
+    query: str
+    is_transformed: bool = False
+    transformed_query: str | None = None
+    strategy_used: str | None = None
+    dense_candidates_count: int = 0
+    sparse_candidates_count: int = 0
+    fused_candidates_count: int = 0
+    filtered_candidates_count: int = 0
+    reranked_candidates_count: int = 0
+    hydrated_candidates_count: int = 0
+    is_relevant: bool | None = None
+    relevance_reason: str | None = None
+    latency_ms: float = 0.0
+    stage_latencies_ms: dict[str, float] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize attempt metadata to a dictionary."""
+        return {
+            "attempt": self.attempt,
+            "query": self.query,
+            "is_transformed": self.is_transformed,
+            "transformed_query": self.transformed_query,
+            "strategy_used": self.strategy_used,
+            "dense_candidates_count": self.dense_candidates_count,
+            "sparse_candidates_count": self.sparse_candidates_count,
+            "fused_candidates_count": self.fused_candidates_count,
+            "filtered_candidates_count": self.filtered_candidates_count,
+            "reranked_candidates_count": self.reranked_candidates_count,
+            "hydrated_candidates_count": self.hydrated_candidates_count,
+            "is_relevant": self.is_relevant,
+            "relevance_reason": self.relevance_reason,
+            "latency_ms": self.latency_ms,
+            "stage_latencies_ms": dict(self.stage_latencies_ms),
+        }
+
+
+@dataclass(frozen=True)
+class RetrievalExecutionMetadata:
+    """Execution telemetry and observability summary for the complete retrieval operation."""
+
+    total_duration_ms: float
+    attempts_count: int = 1
+    fallback_triggered: bool = False
+    attempts: tuple[RetrievalAttemptMetadata, ...] = ()
+    stage_latencies_ms: dict[str, float] = field(default_factory=dict)
+    additional_metadata: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize execution metadata to a dictionary."""
+        data: dict[str, Any] = {
+            "total_duration_ms": self.total_duration_ms,
+            "attempts_count": self.attempts_count,
+            "fallback_triggered": self.fallback_triggered,
+            "attempts": [a.to_dict() for a in self.attempts],
+            "stage_latencies_ms": dict(self.stage_latencies_ms),
+        }
+        if self.additional_metadata:
+            data["additional_metadata"] = dict(self.additional_metadata)
+        return data
+
+
+@dataclass(frozen=True)
+class RetrievalResult:
+    """Comprehensive, application-facing result produced by RAG retrieval orchestration.
+
+    Contains the authoritative retrieved chunks, the assembled and formatted context ready
+    for downstream generation, execution telemetry, and query representations.
+    """
+
+    project_id: str
+    original_query: str
+    retrieval_query: str
+    chunks: tuple[RetrievedChunk, ...]
+    assembled_context: AssembledContext
+    formatted_context: Any
+    execution_metadata: RetrievalExecutionMetadata
+
+    @property
+    def is_empty(self) -> bool:
+        """Return True if zero chunks were retrieved."""
+        return len(self.chunks) == 0
+
+    @property
+    def chunk_ids(self) -> tuple[str, ...]:
+        """Return distinct chunk IDs in retrieved order."""
+        return tuple(chunk.chunk_id for chunk in self.chunks)
+
+    @property
+    def document_ids(self) -> tuple[str, ...]:
+        """Return distinct document IDs in order of first appearance."""
+        return tuple(dict.fromkeys(chunk.document_id for chunk in self.chunks))
+
+    @property
+    def formatted_text(self) -> str:
+        """Return string representation of formatted context."""
+        if hasattr(self.formatted_context, "text"):
+            return str(self.formatted_context.text)
+        return str(self.formatted_context or "")
+
+    @property
+    def total_tokens(self) -> int | None:
+        """Return total tokens calculated during context formatting or assembly if available."""
+        if hasattr(self.formatted_context, "total_tokens"):
+            return getattr(self.formatted_context, "total_tokens")
+        if self.assembled_context is not None:
+            return self.assembled_context.total_tokens
+        return None
+
+    def __len__(self) -> int:
+        """Return number of retrieved chunks."""
+        return len(self.chunks)
+
+    def __iter__(self):
+        """Iterate over retrieved chunks."""
+        return iter(self.chunks)
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize retrieval result to a standard dictionary."""
+        formatted_dict = (
+            self.formatted_context.to_dict()
+            if hasattr(self.formatted_context, "to_dict")
+            else {"text": str(self.formatted_context or "")}
+        )
+        return {
+            "project_id": self.project_id,
+            "original_query": self.original_query,
+            "retrieval_query": self.retrieval_query,
+            "chunk_count": len(self.chunks),
+            "chunks": [c.to_dict() for c in self.chunks],
+            "assembled_context": self.assembled_context.to_dict(),
+            "formatted_context": formatted_dict,
+            "execution_metadata": self.execution_metadata.to_dict(),
+        }
+
+    def __repr__(self) -> str:
+        """Safe string representation."""
+        return (
+            f"RetrievalResult(project_id={self.project_id!r}, "
+            f"chunks_count={len(self.chunks)}, "
+            f"query={self.original_query!r})"
+        )
+
+
 
