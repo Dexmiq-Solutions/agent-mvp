@@ -4,6 +4,15 @@ from exceptions.generation import (
     ContextFormattingError,
     ContextFormattingValidationError,
     GenerationError,
+    LLMAuthenticationError,
+    LLMConfigurationError,
+    LLMError,
+    LLMProviderError,
+    LLMRateLimitError,
+    LLMStreamError,
+    LLMTimeoutError,
+    LLMUnavailableError,
+    LLMValidationError,
     PromptConstructionError,
     PromptConstructionValidationError,
 )
@@ -34,6 +43,19 @@ from generation.prompt import (
     construct_prompt_async,
     get_prompt_construction_service,
     reset_prompt_construction_service,
+)
+from generation.llm import (
+    BaseLLMInterface,
+    LLMConfig,
+    LLMResult,
+    LLMService,
+    LLMStreamEvent,
+    LLMUsage,
+    OpenAICompatibleLLMAdapter,
+    generate_async,
+    generate_stream_async,
+    get_llm_service,
+    reset_llm_service,
 )
 
 __all__ = [
@@ -68,11 +90,36 @@ __all__ = [
     "reset_prompt_construction_service",
     "construct_prompt",
     "construct_prompt_async",
+    # LLM Interface Domain Models
+    "LLMResult",
+    "LLMStreamEvent",
+    "LLMUsage",
+    # LLM Interface Configuration
+    "LLMConfig",
+    # LLM Interfaces & Adapters
+    "BaseLLMInterface",
+    "OpenAICompatibleLLMAdapter",
+    # LLM Service & Entrypoints
+    "LLMService",
+    "get_llm_service",
+    "reset_llm_service",
+    "generate_async",
+    "generate_stream_async",
     # Domain Exceptions
     "GenerationError",
     "ContextFormattingError",
     "ContextFormattingValidationError",
     "PromptConstructionError",
     "PromptConstructionValidationError",
+    "LLMError",
+    "LLMConfigurationError",
+    "LLMValidationError",
+    "LLMProviderError",
+    "LLMTimeoutError",
+    "LLMUnavailableError",
+    "LLMRateLimitError",
+    "LLMAuthenticationError",
+    "LLMStreamError",
 ]
+
 

@@ -83,9 +83,19 @@ class Settings(BaseSettings):
     REDIS_URL: str | None = None
     EMBEDDING_CACHE_ENABLED: bool = True
 
-    # LLM Provider
+    # LLM Provider & Generation Stage
     OPENAI_API_KEY: str | None = None
+    LLM_BASE_URL: str | None = None
     LLM_MODEL: str = "gpt-4o"
+    LLM_TIMEOUT: float = 30.0
+    LLM_MAX_RETRIES: int = 2
+    LLM_RETRY_DELAY: float = 0.5
+    LLM_RETRY_BACKOFF: float = 2.0
+    LLM_TEMPERATURE: float = 0.0
+    LLM_MAX_TOKENS: int | None = None
+    LLM_TOP_P: float | None = None
+    LLM_STOP_SEQUENCES: list[str] | None = None
+    LLM_STREAMING_ENABLED: bool = False
 
     # Chunking Configuration
     CHUNK_MAX_SIZE: int = 1000

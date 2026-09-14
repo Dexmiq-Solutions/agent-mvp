@@ -123,7 +123,18 @@ from exceptions.retrieval import (
     ContextAssemblyValidationError,
 )
 from exceptions.generation import (
+    ContextFormattingError,
+    ContextFormattingValidationError,
     GenerationError,
+    LLMAuthenticationError,
+    LLMConfigurationError,
+    LLMError,
+    LLMProviderError,
+    LLMRateLimitError,
+    LLMStreamError,
+    LLMTimeoutError,
+    LLMUnavailableError,
+    LLMValidationError,
     PromptConstructionError,
     PromptConstructionValidationError,
 )
@@ -239,7 +250,19 @@ __all__ = [
     "ContextAssemblyValidationError",
     # Generation & Prompt Construction Exceptions
     "GenerationError",
+    "ContextFormattingError",
+    "ContextFormattingValidationError",
     "PromptConstructionError",
     "PromptConstructionValidationError",
+    # LLM Interface Exceptions
+    "LLMError",
+    "LLMConfigurationError",
+    "LLMValidationError",
+    "LLMProviderError",
+    "LLMTimeoutError",
+    "LLMUnavailableError",
+    "LLMRateLimitError",
+    "LLMAuthenticationError",
+    "LLMStreamError",
 ]
 

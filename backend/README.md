@@ -1666,6 +1666,71 @@ LLM / Agent Inference
 
 ---
 
+## LLM Interface (Generation Stage)
+
+### Responsibility & Scope
+
+The **LLM Interface** is the dedicated generation execution layer responsible for executing the structured `ConstructedPrompt` output against a configured language model provider and returning a normalized `LLMResult`.
+
+```
+Constructed Prompt (ConstructedPrompt)
+        │
+        ▼
+LLM Interface (LLMService / BaseLLMInterface)
+        │
+        ▼
+OpenAI-Compatible Adapter (OpenAICompatibleLLMAdapter)
+        │  (Asynchronous I/O, Bounded Retries, Bounded Timeout, Observability)
+        ▼
+Configured Model (OpenAI / OpenRouter / vLLM / Ollama)
+        │
+        ▼
+Normalized LLM Result (LLMResult / LLMStreamEvent)
+```
+
+> [!IMPORTANT]
+> **Key Invariants**:
+> - **Provider Independence**: Application and RAG pipeline code depend strictly on `BaseLLMInterface`, not on concrete vendor SDKs. Provider-specific behavior remains encapsulated inside the adapter layer.
+> - **Future Deep Agent / LangGraph Transition**: The core RAG retrieval boundary strictly terminates at `ConstructedPrompt`. The LLM execution layer is removable and can be substituted with an Agent Interface / Deep Agent without modifying retrieval, hydration, context assembly, context formatting, or prompt construction.
+> - **Environment-Driven Sensitive Data**: API keys (`OPENAI_API_KEY`) and custom endpoint URLs (`LLM_BASE_URL`) are never hard-coded or defaulted in source config files. They reside strictly in `.env` (documented in `.env.example`) and are loaded dynamically by `LLMConfig.from_settings()`.
+> - **Input Contract Preservation**: Consumes `ConstructedPrompt` directly via `prompt.to_messages()`, faithfully preserving system instruction and user prompt separation without altering, summarizing, or reconstructing retrieval context.
+> - **Normalized Output**: Translates provider responses into an application-level `LLMResult` containing `content`, `finish_reason`, `usage` (`LLMUsage`), and execution `metadata` without semantic post-processing (no citations, summarization, or BRD transformation).
+> - **Bounded Retries & Timeouts**: Implements bounded exponential backoff retries for transient errors (429 RateLimit, 500/502/503/504 server errors, connection drops, timeouts) and immediate failure without retries for permanent errors (401 Auth, 400 Bad Request, 404 Model Not Found).
+> - **Streaming & Non-Streaming**: First-class async non-streaming (`generate`) and token streaming (`generate_stream` yielding `LLMStreamEvent`).
+> - **Secret Protection**: API keys and sensitive tokens are masked in object representations and never exposed in logs or exception messages.
+
+### Core Components
+
+- **`LLMResult` (`generation.llm.models`)**: Normalized model completion output containing `content`, `finish_reason`, `usage` (`LLMUsage`), and execution `metadata`.
+- **`LLMStreamEvent` (`generation.llm.models`)**: Normalized event yielded during streaming token generation, containing `delta`, `finish_reason`, and `usage`.
+- **`LLMUsage` (`generation.llm.models`)**: Normalized token metrics (`input_tokens`, `output_tokens`, `total_tokens`). Preserves `None` when omitted by provider without fabricating values.
+- **`LLMConfig` (`generation.llm.config`)**: Configuration governing model selection, timeout, retry policy, temperature, and generation parameters. Dynamically fetches sensitive API keys and base URLs from environment settings.
+- **`BaseLLMInterface` (`generation.llm.interface`)**: Abstract interface defining asynchronous `generate()` and `generate_stream()` contracts.
+- **`OpenAICompatibleLLMAdapter` (`generation.llm.adapters.openai`)**: Asynchronous adapter powered by `AsyncOpenAI`, handling client lifecycle reuse, bounded retries, timeout enforcement, exception translation, and token streaming.
+- **`LLMService` (`generation.llm.service`)**: High-level application service orchestrating model execution with dependency injection support.
+- **`generate_async` / `generate_stream_async` (`generation.llm`)**: Functional convenience entrypoints for non-streaming and streaming generation.
+- **Domain Exceptions (`exceptions.generation`)**: `LLMError`, `LLMConfigurationError`, `LLMValidationError`, `LLMProviderError`, `LLMTimeoutError`, `LLMUnavailableError`, `LLMRateLimitError`, `LLMAuthenticationError`, `LLMStreamError`.
+
+### Configuration Reference
+
+`LLMConfig` parameters and environment variables:
+
+| Variable / Parameter | Default | Description |
+| :--- | :--- | :--- |
+| `OPENAI_API_KEY` / `api_key` | `None` (Loaded from `.env`) | API key for OpenAI or OpenAI-compatible provider (strictly from environment) |
+| `LLM_BASE_URL` / `base_url` | `None` (Loaded from `.env`) | Custom endpoint URL for OpenRouter, vLLM, Ollama, etc. (strictly from environment) |
+| `LLM_MODEL` / `model` | `"gpt-4o"` | Model identifier used for generation |
+| `LLM_TIMEOUT` / `timeout` | `30.0` | Maximum timeout in seconds per inference request |
+| `LLM_MAX_RETRIES` / `max_retries` | `2` | Maximum retry attempts for transient failures |
+| `LLM_RETRY_DELAY` / `retry_delay` | `0.5` | Base delay in seconds before first retry |
+| `LLM_RETRY_BACKOFF` / `retry_backoff` | `2.0` | Exponential backoff multiplier for subsequent retries |
+| `LLM_TEMPERATURE` / `temperature` | `0.0` | Sampling temperature for generation |
+| `LLM_MAX_TOKENS` / `max_tokens` | `None` | Optional upper bound on generated output tokens |
+| `LLM_TOP_P` / `top_p` | `None` | Optional nucleus sampling probability threshold |
+| `LLM_STREAMING_ENABLED` / `streaming_enabled` | `false` | Global flag indicating if streaming is enabled |
+
+---
+
 ## Development
 
 
@@ -1690,7 +1755,7 @@ uv run uvicorn app.main:app --reload
 uv run pytest
 
 # Run retrieval and generation pipeline tests
-uv run pytest tests/test_indexing.py tests/test_vector_search.py tests/test_keyword_search.py tests/test_keyword_encoder.py tests/test_keyword_qdrant.py tests/test_fusion.py tests/test_metadata_filtering.py tests/test_reranking.py tests/test_chunk_hydration.py tests/test_context_assembly.py tests/test_context_formatting.py tests/test_prompt_construction.py
+uv run pytest tests/test_indexing.py tests/test_vector_search.py tests/test_keyword_search.py tests/test_keyword_encoder.py tests/test_keyword_qdrant.py tests/test_fusion.py tests/test_metadata_filtering.py tests/test_reranking.py tests/test_chunk_hydration.py tests/test_context_assembly.py tests/test_context_formatting.py tests/test_prompt_construction.py tests/test_llm_interface.py
 ```
 
 
