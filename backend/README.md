@@ -1731,6 +1731,60 @@ Normalized LLM Result (LLMResult / LLMStreamEvent)
 
 ---
 
+## Post-Processing (Generation Stage)
+
+### Responsibility & Scope
+
+The **Post-processing stage** is a small, deterministic, provider-independent application-layer stage positioned immediately following the **LLM Interface** and immediately preceding downstream **Groundedness / Safety Checks**.
+
+```
+Model Generation Result (LLMResult / Dict / Duck-typed)
+        │
+        ▼
+Post-Processing Stage (PostProcessingService / BasePostProcessor)
+        │  (Extract content, deterministic normalization, finish reason mapping, usage preservation)
+        ▼
+Normalized Application Response (ProcessedResponse / PostProcessedResponse)
+        │
+        ▼
+Downstream Groundedness / Safety Checks (Future evaluation boundary)
+        │
+        ▼
+Final API Response
+```
+
+> [!IMPORTANT]
+> **Key Invariants**:
+> - **Deterministic & Local**: Pure CPU-local execution. Post-processing never invokes an LLM, never performs semantic rewriting, never summarizes or corrects factual errors, never queries databases or vector stores, and never executes external I/O.
+> - **Provider Independence**: Operates on application-level results (`LLMResult`, dictionaries, or duck-typed response containers) rather than vendor SDK objects. No vendor-specific SDK classes or responses are leaked.
+> - **Groundedness & Safety Boundary**: Post-processing prepares and normalizes the response representation. It does NOT decide whether a response is grounded or safe, and does NOT execute regeneration logic (which remains owned by downstream orchestration).
+> - **Future Deep Agent / LangGraph Compatibility**: Small, modular, and replaceable. Can accept outputs from future Deep Agent / LangGraph execution layers without altering RAG retrieval or prompt boundaries.
+> - **Single Source of Truth**: Reuses `LLMUsage` and application settings contracts without fabricating token metrics.
+> - **Observability & Secret Protection**: Records execution duration, content length, and success metrics while strictly prohibiting the logging of sensitive tokens, keys, prompts, or unbounded outputs.
+
+### Core Components
+
+- **`ProcessedResponse` / `PostProcessedResponse` (`generation.postprocessing.models`)**: Immutable application-level container encapsulating normalized `content`, `finish_reason`, `usage` (`LLMUsage`), `model`, `structured_output`, `raw_content`, and execution `metadata`.
+- **`PostProcessingConfig` (`generation.postprocessing.config`)**: Configuration governing whitespace stripping, line ending normalization, finish reason mapping, empty content tolerance, and structured JSON parsing.
+- **`BasePostProcessor` (`generation.postprocessing.base`)**: Abstract base strategy interface for post-processing implementations.
+- **`PostProcessingService` (`generation.postprocessing.service`)**: Core service executing input extraction, deterministic normalization, finish reason mapping, optional structured JSON extraction, and observability tracking.
+- **`post_process` / `post_process_async` (`generation.postprocessing`)**: Functional convenience entrypoints for synchronous and asynchronous generation pipelines.
+- **Domain Exceptions (`exceptions.generation`)**: `PostProcessingError`, `PostProcessingValidationError`, `StructuredOutputError`.
+
+### Configuration Reference
+
+`PostProcessingConfig` parameters and application settings:
+
+| Variable / Parameter | Default | Description |
+| :--- | :--- | :--- |
+| `POST_PROCESSING_STRIP_WHITESPACE` / `strip_whitespace` | `true` | If `true`, strips outer leading and trailing whitespace while preserving internal indentation |
+| `POST_PROCESSING_NORMALIZE_LINE_ENDINGS` / `normalize_line_endings` | `true` | If `true`, normalizes CRLF (`\r\n`) and CR (`\r`) to standard LF (`\n`) |
+| `POST_PROCESSING_NORMALIZE_FINISH_REASON` / `normalize_finish_reason` | `true` | If `true`, normalizes vendor finish reasons (e.g. `end_turn`, `complete` -> `stop`, `max_tokens` -> `length`) |
+| `POST_PROCESSING_ALLOW_EMPTY_CONTENT` / `allow_empty_content` | `false` | If `false`, raises `PostProcessingValidationError` on empty/missing content; if `true`, returns empty string |
+| `POST_PROCESSING_PARSE_JSON` / `parse_json` | `false` | If `true`, extracts and parses structured JSON output from markdown code blocks or raw text |
+
+---
+
 ## Development
 
 

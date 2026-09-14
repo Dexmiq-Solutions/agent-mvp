@@ -70,3 +70,15 @@ class LLMAuthenticationError(LLMProviderError):
 class LLMStreamError(LLMError):
     """Raised when an error occurs during streaming LLM response generation."""
 
+
+class PostProcessingError(GenerationError):
+    """Base exception for all post-processing stage failures."""
+
+
+class PostProcessingValidationError(PostProcessingError):
+    """Raised when post-processing inputs (result, content) fail validation or contract invariants."""
+
+
+class StructuredOutputError(PostProcessingError):
+    """Raised when structured output parsing or schema validation fails."""
+

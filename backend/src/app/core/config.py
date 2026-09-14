@@ -155,6 +155,13 @@ class Settings(BaseSettings):
     PROMPT_CONSTRUCTION_INCLUDE_PROVENANCE: bool = True
     PROMPT_CONSTRUCTION_ALLOW_EMPTY_CONTEXT: bool = True
 
+    # Post-Processing Configuration
+    POST_PROCESSING_STRIP_WHITESPACE: bool = True
+    POST_PROCESSING_NORMALIZE_LINE_ENDINGS: bool = True
+    POST_PROCESSING_NORMALIZE_FINISH_REASON: bool = True
+    POST_PROCESSING_ALLOW_EMPTY_CONTENT: bool = False
+    POST_PROCESSING_PARSE_JSON: bool = False
+
     @field_validator("LOG_LEVEL", mode="before")
     @classmethod
     def validate_log_level(cls, v: str) -> str:

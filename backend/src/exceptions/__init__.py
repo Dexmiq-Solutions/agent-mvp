@@ -137,6 +137,9 @@ from exceptions.generation import (
     LLMValidationError,
     PromptConstructionError,
     PromptConstructionValidationError,
+    PostProcessingError,
+    PostProcessingValidationError,
+    StructuredOutputError,
 )
 
 __all__ = [
@@ -264,5 +267,9 @@ __all__ = [
     "LLMRateLimitError",
     "LLMAuthenticationError",
     "LLMStreamError",
+    # Post-processing Exceptions
+    "PostProcessingError",
+    "PostProcessingValidationError",
+    "StructuredOutputError",
 ]
 

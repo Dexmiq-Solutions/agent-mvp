@@ -15,6 +15,9 @@ from exceptions.generation import (
     LLMValidationError,
     PromptConstructionError,
     PromptConstructionValidationError,
+    PostProcessingError,
+    PostProcessingValidationError,
+    StructuredOutputError,
 )
 from generation.formatting import (
     DEFAULT_CONTEXT_FOOTER,
@@ -56,6 +59,17 @@ from generation.llm import (
     generate_stream_async,
     get_llm_service,
     reset_llm_service,
+)
+from generation.postprocessing import (
+    BasePostProcessor,
+    PostProcessedResponse,
+    PostProcessingConfig,
+    PostProcessingService,
+    ProcessedResponse,
+    get_post_processing_service,
+    post_process,
+    post_process_async,
+    reset_post_processing_service,
 )
 
 __all__ = [
@@ -105,6 +119,19 @@ __all__ = [
     "reset_llm_service",
     "generate_async",
     "generate_stream_async",
+    # Post-processing Domain Models
+    "ProcessedResponse",
+    "PostProcessedResponse",
+    # Post-processing Configuration
+    "PostProcessingConfig",
+    # Post-processing Interfaces & Implementations
+    "BasePostProcessor",
+    # Post-processing Service & Entrypoints
+    "PostProcessingService",
+    "get_post_processing_service",
+    "reset_post_processing_service",
+    "post_process",
+    "post_process_async",
     # Domain Exceptions
     "GenerationError",
     "ContextFormattingError",
@@ -120,6 +147,9 @@ __all__ = [
     "LLMRateLimitError",
     "LLMAuthenticationError",
     "LLMStreamError",
+    "PostProcessingError",
+    "PostProcessingValidationError",
+    "StructuredOutputError",
 ]
 
 
