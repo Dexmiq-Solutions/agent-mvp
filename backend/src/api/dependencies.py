@@ -32,6 +32,24 @@ def get_project_service(
     return ProjectService(session=session, storage=storage)
 
 
+def get_conversation_service(
+    session: AsyncSession = Depends(get_db_session),
+    project_service: ProjectService = Depends(get_project_service),
+) -> "ConversationService":
+    """Dependency provider for ConversationService.
+
+    Args:
+        session: Injected asynchronous SQLAlchemy session.
+        project_service: Injected ProjectService instance.
+
+    Returns:
+        Configured ConversationService instance.
+    """
+    from services.conversation_service import ConversationService
+
+    return ConversationService(session=session, project_service=project_service)
+
+
 def get_document_processing_service(
     session: AsyncSession = Depends(get_db_session),
     storage: BaseObjectStorage = Depends(get_storage),

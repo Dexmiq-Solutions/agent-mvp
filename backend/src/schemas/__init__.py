@@ -1,5 +1,12 @@
-"""Pydantic schemas package exports."""
-
+from schemas.conversation import (
+    ConversationCreate,
+    ConversationDetailResponse,
+    ConversationResponse,
+    ConversationUpdate,
+    MessageCreate,
+    MessageResponse,
+    MessageRole,
+)
 from schemas.document import (
     DocumentDetailResponse,
     DocumentResponse,
@@ -23,6 +30,13 @@ __all__ = [
     "ProjectCreate",
     "ProjectUpdate",
     "ProjectResponse",
+    "ConversationCreate",
+    "ConversationUpdate",
+    "ConversationResponse",
+    "ConversationDetailResponse",
+    "MessageCreate",
+    "MessageResponse",
+    "MessageRole",
     "DocumentResponse",
     "DocumentDetailResponse",
     "DocumentUpdate",
@@ -33,3 +47,4 @@ __all__ = [
     "RetrievalExecutionMetadataSchema",
     "RetrievalResponseSchema",
 ]
+

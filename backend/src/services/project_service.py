@@ -83,6 +83,10 @@ class ProjectService:
 
         return project
 
+    async def get_project_by_id(self, project_id: str) -> ProjectModel:
+        """Alias for get_project to maintain naming compatibility across callers."""
+        return await self.get_project(project_id)
+
     async def list_projects(
         self,
         limit: int = 100,

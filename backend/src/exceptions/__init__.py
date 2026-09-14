@@ -18,6 +18,16 @@ from exceptions.project import (
     ProjectError,
     ProjectNotFoundError,
 )
+from exceptions.conversation import (
+    ConversationError,
+    ConversationMessageMismatchError,
+    ConversationNotFoundError,
+    InvalidConversationDataError,
+    InvalidMessageDataError,
+    InvalidMessageRoleError,
+    MessageNotFoundError,
+    ProjectConversationMismatchError,
+)
 from exceptions.document import (
     DocumentAlreadyProcessingError,
     DocumentError,
@@ -316,5 +326,14 @@ __all__ = [
     "EvaluationTimeoutError",
     "EvaluationOutputError",
     "RegenerationExhaustedError",
+    # Conversation & Message Exceptions
+    "ConversationError",
+    "ConversationNotFoundError",
+    "ProjectConversationMismatchError",
+    "InvalidConversationDataError",
+    "MessageNotFoundError",
+    "ConversationMessageMismatchError",
+    "InvalidMessageDataError",
+    "InvalidMessageRoleError",
 ]
 

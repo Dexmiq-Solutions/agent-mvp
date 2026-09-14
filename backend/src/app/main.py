@@ -25,6 +25,17 @@ from exceptions.project import (
     InvalidProjectDataError,
     ProjectNotFoundError,
 )
+from exceptions.conversation import (
+    ConversationError,
+    ConversationMessageMismatchError,
+    ConversationNotFoundError,
+    InvalidConversationDataError,
+    InvalidMessageDataError,
+    InvalidMessageRoleError,
+    MessageNotFoundError,
+    ProjectConversationMismatchError,
+)
+
 from exceptions.retrieval import (
     EmptyQueryError,
     InvalidQueryError,
@@ -99,6 +110,70 @@ def create_application() -> FastAPI:
             status_code=status.HTTP_404_NOT_FOUND,
             content={"detail": f"Document '{exc.document_id}' not found in project '{exc.expected_project_id}'."},
         )
+
+    @application.exception_handler(ConversationNotFoundError)
+    async def conversation_not_found_handler(
+        request: Request, exc: ConversationNotFoundError
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=status.HTTP_404_NOT_FOUND,
+            content={"detail": str(exc)},
+        )
+
+    @application.exception_handler(ProjectConversationMismatchError)
+    async def project_conversation_mismatch_handler(
+        request: Request, exc: ProjectConversationMismatchError
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=status.HTTP_404_NOT_FOUND,
+            content={"detail": f"Conversation '{exc.conversation_id}' not found in project '{exc.expected_project_id}'."},
+        )
+
+    @application.exception_handler(MessageNotFoundError)
+    async def message_not_found_handler(
+        request: Request, exc: MessageNotFoundError
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=status.HTTP_404_NOT_FOUND,
+            content={"detail": str(exc)},
+        )
+
+    @application.exception_handler(ConversationMessageMismatchError)
+    async def conversation_message_mismatch_handler(
+        request: Request, exc: ConversationMessageMismatchError
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=status.HTTP_404_NOT_FOUND,
+            content={"detail": f"Message '{exc.message_id}' not found in conversation '{exc.expected_conversation_id}'."},
+        )
+
+    @application.exception_handler(InvalidConversationDataError)
+    async def invalid_conversation_data_handler(
+        request: Request, exc: InvalidConversationDataError
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content={"detail": str(exc)},
+        )
+
+    @application.exception_handler(InvalidMessageDataError)
+    async def invalid_message_data_handler(
+        request: Request, exc: InvalidMessageDataError
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content={"detail": str(exc)},
+        )
+
+    @application.exception_handler(InvalidMessageRoleError)
+    async def invalid_message_role_handler(
+        request: Request, exc: InvalidMessageRoleError
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content={"detail": str(exc)},
+        )
+
 
     @application.exception_handler(InvalidProjectDataError)
     async def invalid_project_data_handler(request: Request, exc: InvalidProjectDataError) -> JSONResponse:
