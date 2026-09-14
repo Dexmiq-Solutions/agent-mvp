@@ -11,9 +11,14 @@ from api import api_router
 from db.session import dispose_engine
 from exceptions.database import DatabaseError
 from exceptions.document import (
+    DocumentAlreadyProcessingError,
     DocumentNotFoundError,
+    DocumentProcessingError,
+    DocumentStorageSourceError,
+    DocumentVersionMismatchError,
     DocumentVersionNotFoundError,
     InvalidDocumentDataError,
+    InvalidDocumentStateTransitionError,
     ProjectDocumentMismatchError,
 )
 from exceptions.project import (
@@ -97,6 +102,34 @@ def create_application() -> FastAPI:
 
     @application.exception_handler(InvalidDocumentDataError)
     async def invalid_document_data_handler(request: Request, exc: InvalidDocumentDataError) -> JSONResponse:
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content={"detail": str(exc)},
+        )
+
+    @application.exception_handler(InvalidDocumentStateTransitionError)
+    async def invalid_document_state_transition_handler(
+        request: Request, exc: InvalidDocumentStateTransitionError
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=status.HTTP_409_CONFLICT,
+            content={"detail": str(exc)},
+        )
+
+    @application.exception_handler(DocumentVersionMismatchError)
+    async def document_version_mismatch_handler(
+        request: Request, exc: DocumentVersionMismatchError
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=status.HTTP_404_NOT_FOUND,
+            content={"detail": str(exc)},
+        )
+
+    @application.exception_handler(DocumentProcessingError)
+    async def document_processing_error_handler(
+        request: Request, exc: DocumentProcessingError
+    ) -> JSONResponse:
+        logger.error("Document processing error: %s", exc)
         return JSONResponse(
             status_code=status.HTTP_400_BAD_REQUEST,
             content={"detail": str(exc)},

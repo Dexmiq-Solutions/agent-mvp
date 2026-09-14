@@ -2,7 +2,7 @@
 
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 import uuid
 
 import sqlalchemy as sa
@@ -21,6 +21,9 @@ from models.document import DocumentModel, DocumentVersionModel, DocumentVersion
 from models.project import ProjectModel
 from storage.object.base import BaseObjectStorage
 
+if TYPE_CHECKING:
+    from services.document_processing_service import DocumentProcessingService
+
 logger = get_logger(__name__)
 
 
@@ -31,15 +34,21 @@ class DocumentService:
         self,
         session: AsyncSession,
         storage: BaseObjectStorage,
+        processing_service: Optional["DocumentProcessingService"] = None,
+        auto_process: bool = False,
     ) -> None:
         """Initialize DocumentService with database session and object storage client.
         
         Args:
             session: Active asynchronous SQLAlchemy database session.
             storage: BaseObjectStorage client for managing binary file objects.
+            processing_service: Optional DocumentProcessingService for lifecycle processing.
+            auto_process: If True, automatically triggers the processing lifecycle upon upload.
         """
         self._session = session
         self._storage = storage
+        self._processing_service = processing_service
+        self._auto_process = auto_process
 
     async def _verify_project_exists(self, project_id: str) -> None:
         """Verify that the owning project exists before executing child operations.
@@ -162,6 +171,13 @@ class DocumentService:
             document.id,
             project_id,
         )
+        if self._auto_process and self._processing_service is not None:
+            await self._processing_service.trigger_processing(
+                project_id=project_id,
+                document_id=doc_id,
+                document_version_id=version_id,
+                background=False,
+            )
         return await self.get_document(project_id=project_id, document_id=doc_id)
 
     async def create_document_version(
@@ -251,6 +267,15 @@ class DocumentService:
             document_id,
             project_id,
         )
+        if self._auto_process and self._processing_service is not None:
+            processed = await self._processing_service.trigger_processing(
+                project_id=project_id,
+                document_id=document_id,
+                document_version_id=version.id,
+                background=False,
+            )
+            if isinstance(processed, DocumentVersionModel):
+                version = processed
         return version
 
     async def list_documents(
@@ -438,6 +463,43 @@ class DocumentService:
                 document_id=document_id,
                 version_number=version_number,
                 project_id=project_id,
+            )
+
+        return version
+
+    async def get_version_by_id(
+        self,
+        project_id: str,
+        document_id: str,
+        document_version_id: str,
+    ) -> DocumentVersionModel:
+        """Retrieve a specific physical version of a document by version ID.
+        
+        Args:
+            project_id: Owning project identifier.
+            document_id: Document identifier.
+            document_version_id: Version primary key identifier.
+            
+        Returns:
+            DocumentVersionModel instance.
+            
+        Raises:
+            DocumentVersionNotFoundError: If specific version does not exist.
+        """
+        stmt = select(DocumentVersionModel).where(
+            DocumentVersionModel.id == document_version_id,
+            DocumentVersionModel.document_id == document_id,
+            DocumentVersionModel.project_id == project_id,
+        )
+        result = await self._session.execute(stmt)
+        version = result.scalar_one_or_none()
+
+        if version is None:
+            raise DocumentVersionNotFoundError(
+                document_id=document_id,
+                version_number=0,
+                project_id=project_id,
+                message=f"Document version '{document_version_id}' not found for document '{document_id}' in project '{project_id}'.",
             )
 
         return version

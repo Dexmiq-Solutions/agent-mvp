@@ -63,3 +63,68 @@ class ProjectDocumentMismatchError(DocumentError):
 
 class InvalidDocumentDataError(DocumentError):
     """Raised when document, version, or file payload fails validation."""
+
+
+class DocumentProcessingError(DocumentError):
+    """Base exception for all document processing lifecycle errors."""
+
+
+class InvalidDocumentStateTransitionError(DocumentProcessingError):
+    """Raised when an invalid lifecycle state transition is attempted on a document version."""
+
+    def __init__(
+        self,
+        version_id: str,
+        current_status: str,
+        target_status: str,
+        message: Optional[str] = None,
+    ) -> None:
+        msg = (
+            message
+            or f"Invalid state transition for document version '{version_id}': cannot transition from '{current_status}' to '{target_status}'."
+        )
+        super().__init__(msg)
+        self.version_id = version_id
+        self.current_status = current_status
+        self.target_status = target_status
+
+
+class DocumentAlreadyProcessingError(InvalidDocumentStateTransitionError):
+    """Raised when processing is initiated for a document version already actively in indexing state."""
+
+    def __init__(self, version_id: str, message: Optional[str] = None) -> None:
+        msg = message or f"Document version '{version_id}' is already actively processing (indexing)."
+        super().__init__(
+            version_id=version_id,
+            current_status="indexing",
+            target_status="indexing",
+            message=msg,
+        )
+
+
+class DocumentStorageSourceError(DocumentProcessingError):
+    """Raised when required object storage source metadata or coordinates are missing or corrupt."""
+
+    def __init__(self, version_id: str, message: Optional[str] = None) -> None:
+        msg = message or f"Missing or invalid object storage coordinates for document version '{version_id}'."
+        super().__init__(msg)
+        self.version_id = version_id
+
+
+class DocumentVersionMismatchError(DocumentProcessingError):
+    """Raised when a document version does not belong to the claimed project or document hierarchy."""
+
+    def __init__(
+        self,
+        version_id: str,
+        expected_parent: str,
+        actual_parent: str,
+        entity_type: str = "document",
+    ) -> None:
+        super().__init__(
+            f"Document version '{version_id}' belongs to {entity_type} '{actual_parent}', not '{expected_parent}'."
+        )
+        self.version_id = version_id
+        self.expected_parent = expected_parent
+        self.actual_parent = actual_parent
+

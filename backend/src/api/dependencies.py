@@ -3,7 +3,9 @@
 from fastapi import Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import get_settings
 from db.session import get_db_session
+from services.document_processing_service import DocumentProcessingService
 from services.document_service import DocumentService
 from services.project_service import ProjectService
 from storage.object import BaseObjectStorage, get_object_storage
@@ -30,17 +32,43 @@ def get_project_service(
     return ProjectService(session=session, storage=storage)
 
 
-def get_document_service(
+def get_document_processing_service(
     session: AsyncSession = Depends(get_db_session),
     storage: BaseObjectStorage = Depends(get_storage),
-) -> DocumentService:
-    """Dependency provider for DocumentService.
+) -> DocumentProcessingService:
+    """Dependency provider for DocumentProcessingService.
     
     Args:
         session: Injected asynchronous SQLAlchemy session.
         storage: Injected BaseObjectStorage client.
         
     Returns:
+        Configured DocumentProcessingService instance.
+    """
+    return DocumentProcessingService(session=session, storage=storage)
+
+
+def get_document_service(
+    session: AsyncSession = Depends(get_db_session),
+    storage: BaseObjectStorage = Depends(get_storage),
+    processing_service: DocumentProcessingService = Depends(get_document_processing_service),
+) -> DocumentService:
+    """Dependency provider for DocumentService.
+    
+    Args:
+        session: Injected asynchronous SQLAlchemy session.
+        storage: Injected BaseObjectStorage client.
+        processing_service: Injected DocumentProcessingService instance.
+        
+    Returns:
         Configured DocumentService instance.
     """
-    return DocumentService(session=session, storage=storage)
+    settings = get_settings()
+    return DocumentService(
+        session=session,
+        storage=storage,
+        processing_service=processing_service,
+        auto_process=settings.AUTO_PROCESS_DOCUMENTS,
+    )
+
+

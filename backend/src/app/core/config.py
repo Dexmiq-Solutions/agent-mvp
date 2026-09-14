@@ -170,6 +170,10 @@ class Settings(BaseSettings):
     EVALUATION_TEMPERATURE: float = 0.0
     EVALUATION_MAX_REGENERATION_ATTEMPTS: int = 2
 
+    # Document Processing Lifecycle Configuration
+    AUTO_PROCESS_DOCUMENTS: bool = False
+
+
     @field_validator("LOG_LEVEL", mode="before")
     @classmethod
     def validate_log_level(cls, v: str) -> str:

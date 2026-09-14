@@ -19,10 +19,15 @@ from exceptions.project import (
     ProjectNotFoundError,
 )
 from exceptions.document import (
+    DocumentAlreadyProcessingError,
     DocumentError,
     DocumentNotFoundError,
+    DocumentProcessingError,
+    DocumentStorageSourceError,
+    DocumentVersionMismatchError,
     DocumentVersionNotFoundError,
     InvalidDocumentDataError,
+    InvalidDocumentStateTransitionError,
     ProjectDocumentMismatchError,
 )
 from exceptions.embedding import (
@@ -199,6 +204,11 @@ __all__ = [
     "DocumentVersionNotFoundError",
     "ProjectDocumentMismatchError",
     "InvalidDocumentDataError",
+    "DocumentProcessingError",
+    "InvalidDocumentStateTransitionError",
+    "DocumentAlreadyProcessingError",
+    "DocumentStorageSourceError",
+    "DocumentVersionMismatchError",
     # Embedding Exceptions
     "EmbeddingError",
     "EmbeddingConfigurationError",

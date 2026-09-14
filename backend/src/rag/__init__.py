@@ -17,5 +17,6 @@ __all__ = [
     "metadata_enrichment",
     "normalization",
     "parsing",
+    "pipeline",
     "retrieval",
 ]
