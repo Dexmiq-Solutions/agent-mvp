@@ -2,7 +2,7 @@
 
 from fastapi import APIRouter, Depends, Query, Response, status
 
-from api.dependencies import get_conversation_service
+from api.dependencies import get_conversation_service, get_generation_service
 from schemas.conversation import (
     ConversationCreate,
     ConversationDetailResponse,
@@ -12,6 +12,8 @@ from schemas.conversation import (
     MessageResponse,
 )
 from services.conversation_service import ConversationService
+from services.generation_service import GenerationService
+
 
 router = APIRouter(prefix="/projects/{project_id}/conversations", tags=["Conversations"])
 
@@ -161,9 +163,30 @@ async def create_message(
     project_id: str,
     conversation_id: str,
     payload: MessageCreate,
+    generate: bool = Query(
+        default=False,
+        description="Whether to execute RAG retrieval and LLM response generation for a user message.",
+    ),
     service: ConversationService = Depends(get_conversation_service),
+    generation_service: GenerationService = Depends(get_generation_service),
 ) -> MessageResponse:
-    """Persist a message turn within a conversation under project boundary isolation."""
+    """Persist a message turn within a conversation under project boundary isolation.
+
+    If role == 'user' and generate is True:
+        Persists the user message, invokes the RAG-backed LLM generation workflow,
+        persists the resulting assistant turn, and returns the assistant MessageResponse.
+    Otherwise:
+        Persists the message turn directly and returns its MessageResponse.
+    """
+    if payload.role == "user" and generate:
+        result = await generation_service.generate_response(
+            project_id=project_id,
+            conversation_id=conversation_id,
+            user_message=payload.content,
+            metadata=payload.metadata,
+        )
+        return MessageResponse.from_model(result.assistant_message)
+
     message = await service.create_message(
         project_id=project_id,
         conversation_id=conversation_id,
@@ -172,6 +195,7 @@ async def create_message(
         metadata=payload.metadata,
     )
     return MessageResponse.from_model(message)
+
 
 
 @router.get(

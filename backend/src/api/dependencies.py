@@ -97,3 +97,28 @@ def get_rag_service_dependency() -> "RAGService":
     return get_rag_service()
 
 
+def get_generation_service(
+    session: AsyncSession = Depends(get_db_session),
+    conversation_service: "ConversationService" = Depends(get_conversation_service),
+    rag_service: "RAGService" = Depends(get_rag_service_dependency),
+) -> "GenerationService":
+    """Dependency provider for GenerationService.
+
+    Args:
+        session: Injected asynchronous SQLAlchemy session.
+        conversation_service: Injected ConversationService instance.
+        rag_service: Injected RAGService instance.
+
+    Returns:
+        Configured GenerationService instance.
+    """
+    from services.generation_service import GenerationService
+
+    return GenerationService(
+        session=session,
+        conversation_service=conversation_service,
+        rag_service=rag_service,
+    )
+
+
+

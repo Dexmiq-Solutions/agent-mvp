@@ -27,9 +27,9 @@ It establishes an isolated, auditable record of multi-turn user dialogues within
                   └──────────┬────────────┘
                              │
                              ▼
-                  ┌───────────────────────┐
-                  │   Generation Service  │  (Future Phase: LLM Response)
-                  └───────────────────────┘
+                   ┌───────────────────────┐
+                   │   Generation Service  │  (RAG-Backed LLM Generation)
+                   └───────────────────────┘
 ```
 
 ---
@@ -170,7 +170,7 @@ The Conversation layer sits directly between the application API and the RAG/Gen
 [Retrieved Context & Chunks]
        │
        ▼
-[Future: GenerationService.generate()]
+[GenerationService.generate_response()]
        │
        ▼
 [ConversationService.create_message(role='assistant')]
