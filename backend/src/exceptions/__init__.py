@@ -13,6 +13,18 @@ from exceptions.database import (
     DatabaseError,
     DatabaseSessionError,
 )
+from exceptions.project import (
+    InvalidProjectDataError,
+    ProjectError,
+    ProjectNotFoundError,
+)
+from exceptions.document import (
+    DocumentError,
+    DocumentNotFoundError,
+    DocumentVersionNotFoundError,
+    InvalidDocumentDataError,
+    ProjectDocumentMismatchError,
+)
 from exceptions.embedding import (
     EmbeddingAuthenticationError,
     EmbeddingConfigurationError,
@@ -177,6 +189,16 @@ __all__ = [
     "DatabaseConfigurationError",
     "DatabaseConnectionError",
     "DatabaseSessionError",
+    # Project Exceptions
+    "ProjectError",
+    "ProjectNotFoundError",
+    "InvalidProjectDataError",
+    # Document Exceptions
+    "DocumentError",
+    "DocumentNotFoundError",
+    "DocumentVersionNotFoundError",
+    "ProjectDocumentMismatchError",
+    "InvalidDocumentDataError",
     # Embedding Exceptions
     "EmbeddingError",
     "EmbeddingConfigurationError",

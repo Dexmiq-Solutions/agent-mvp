@@ -2,6 +2,59 @@
 
 FastAPI backend service for the AI Agent and RAG platform.
 
+## Project & Document Management (Application Layer)
+
+### Responsibility & Scope
+
+The **Project & Document Management** layer manages the application-level tenant hierarchy, logical source identities, physical document versions, and object storage coordination:
+
+```
+Project
+    ↓
+Document (Logical Source Identity: document_id)
+    ↓
+DocumentVersion (Physical File Revision: document_version_id, status: "pending")
+    ↓
+Supabase Storage (Original File: storage_bucket + storage_path)
+```
+
+> [!IMPORTANT]
+> **Boundary & Non-Responsibilities**:
+> This layer establishes tenant and document persistence. It does **NOT** perform parsing, chunking, embedding generation, Qdrant indexing, background queueing, or Agent execution. New versions are initialized with status `"pending"` (not `"ready"`), ready for the subsequent Document Processing Lifecycle.
+
+### Features & Architectural Invariants
+
+- **Product Terminology vs. Relational Entity**: The product-facing API exposes `/projects/{project_id}/sources` ("sources"), mapped internally to `DocumentModel` (`documents`) and `DocumentVersionModel` (`document_versions`).
+- **Strict Project Isolation**: Every query boundary enforces `project_id` in SQL (`where(DocumentModel.project_id == project_id, ...)`). Requests targeting a document from another project return `404 Not Found` without leaking cross-tenant metadata.
+- **Stable Logical Identity**: `document_id` remains stable across document versions. When a document is revised, a new sequential `DocumentVersionModel` (`v2`, `v3`, etc.) is appended with a distinct `document_version_id`.
+- **Supabase Storage Integration**: Original uploaded files are placed in Supabase Storage using the path convention `{project_id}/{document_id}/v{version_number}/{original_filename}`. Relational models store the authoritative coordinates and checksum metadata (`storage_bucket`, `storage_path`, `etag`, `size_bytes`).
+- **Relational Cascades & Cleanup**: Deleting a project cascades in PostgreSQL to documents, versions, chunks, and conversations, accompanied by best-effort cleanup of project objects in Supabase Storage.
+
+### API Endpoints
+
+#### Project Endpoints
+
+| Method | Path | Status | Description |
+| :--- | :--- | :--- | :--- |
+| `POST` | `/projects` | `201 Created` | Create a new project tenant boundary |
+| `GET` | `/projects` | `200 OK` | List projects ordered descending by `created_at` |
+| `GET` | `/projects/{project_id}` | `200 OK` | Get project details by ID |
+| `PATCH` | `/projects/{project_id}` | `200 OK` | Update project display name or description |
+| `DELETE` | `/projects/{project_id}` | `204 No Content` | Delete project and cascade child records & storage |
+
+#### Document (Source) Endpoints
+
+| Method | Path | Status | Description |
+| :--- | :--- | :--- | :--- |
+| `POST` | `/projects/{project_id}/sources` | `201 Created` | Upload a new source file (creates Document + Version 1) |
+| `GET` | `/projects/{project_id}/sources` | `200 OK` | List all documents belonging to project |
+| `GET` | `/projects/{project_id}/sources/{document_id}` | `200 OK` | Get document detail including all physical versions |
+| `PATCH` | `/projects/{project_id}/sources/{document_id}` | `200 OK` | Update mutable document metadata (display name) |
+| `DELETE` | `/projects/{project_id}/sources/{document_id}` | `204 No Content` | Delete document, DB cascade records, and storage objects |
+| `POST` | `/projects/{project_id}/sources/{document_id}/versions` | `201 Created` | Upload a new sequential physical version for existing source |
+
+---
+
 ## Vector Storage (Qdrant)
 
 ### Responsibility & Scope
