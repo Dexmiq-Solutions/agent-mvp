@@ -1554,6 +1554,68 @@ Relevance Check / Fallback
 
 ---
 
+## Context Formatting
+
+### Responsibility & Scope
+
+The **Context Formatting** stage is the dedicated in-memory transformation bridge between the authoritative **Final Context** (from retrieval, hydration, and assembly) and **Prompt Construction**.
+
+```
+Final Context (AssembledContext)
+        │
+        ▼
+Context Formatting (ContextFormattingService)
+        │  (In-memory, deterministic, metadata-aware textual transformation)
+        ▼
+Formatted Context (FormattedContext)
+        │
+        │        Original User Query
+        │                 │
+        └────────┬────────┘
+                 ▼
+        Prompt Construction (PromptConstructionService)
+                 ▼
+        Constructed Prompt (ConstructedPrompt)
+                 ▼
+        LLM / Agent Inference
+```
+
+> [!IMPORTANT]
+> **Key Invariants**:
+> - **In-Memory & Deterministic ($O(N)$)**: Pure in-memory transformation with zero database queries, zero Qdrant calls, and zero external LLM/API calls.
+> - **Strict Order Preservation**: Faithfully retains the exact ordering established by Context Assembly ($[0, 1, 2, ...]$). It never re-sorts or groups chunks by document or section.
+> - **Representation, Not Evidence**: Preserves retrieved evidence verbatim without summarization, rewriting, paraphrasing, semantic compression, or conflict resolution. Conflicting statements across retrieved sources are both preserved.
+> - **Metadata-Aware Model Representation**: Exposes relevant model-facing metadata (document title/ID, version, source, page, section hierarchy) while omitting internal retrieval plumbing (`fusion_score`, `rerank_score`, `dense_rank`, internal database rows).
+> - **Clear Context Boundaries**: Renders explicit delimiters (`RETRIEVED CONTEXT` ... `END RETRIEVED CONTEXT`) and distinct item boundaries (`[Context 1]`, `[Context 2]`, ...).
+> - **Strict Stage Separation**: Context Formatting never touches or injects the original user query or system instructions (those belong exclusively to Prompt Construction).
+> - **Extensible Strategy Pattern**: Pluggable formatting architecture (`BaseContextFormatter`, `TextContextFormatter`) ready for future representation variants.
+
+### Core Components
+
+- **`FormattedContext` (`generation.formatting.models`)**: Immutable structured container holding the formatted model-readable text, ordered `FormattedContextItem` elements, tenant ID, and execution metrics.
+- **`FormattedContextItem` (`generation.formatting.models`)**: Immutable representation of an individual formatted item containing verbatim content, display index, and semantic metadata coordinates.
+- **`ContextFormattingConfig` (`generation.formatting.config`)**: Configuration governing strategy, delimiters, item label templates, metadata/provenance inclusion, and empty context handling.
+- **`BaseContextFormatter` / `TextContextFormatter` (`generation.formatting.base`, `generation.formatting.text`)**: Strategy interface and default structured text formatter.
+- **`ContextFormattingService` (`generation.formatting.service`)**: Service executing input validation, tenant isolation filtering, and formatter strategy execution.
+- **`format_context` / `format_context_async` (`generation.formatting`)**: Functional convenience entrypoints for synchronous and async generation pipelines.
+
+### Configuration Reference
+
+`ContextFormattingConfig` parameters:
+
+| Variable / Parameter | Default | Description |
+| :--- | :--- | :--- |
+| `CONTEXT_FORMATTING_STRATEGY` / `strategy` | `"text"` | Formatting strategy identifier (extensible for future formatters) |
+| `CONTEXT_FORMATTING_HEADER` / `context_header` | `"RETRIEVED CONTEXT"` | Boundary header preceding the formatted context block |
+| `CONTEXT_FORMATTING_FOOTER` / `context_footer` | `"END RETRIEVED CONTEXT"` | Boundary footer concluding the formatted context block |
+| `CONTEXT_FORMATTING_ITEM_TEMPLATE` / `item_label_template` | `"[Context {index}]"` | Template for item boundary labels |
+| `CONTEXT_FORMATTING_INCLUDE_METADATA` / `include_metadata` | `true` | If `true`, formats document and chunk identity coordinates |
+| `CONTEXT_FORMATTING_INCLUDE_PROVENANCE` / `include_provenance` | `true` | If `true`, formats source filenames, page numbers, and section hierarchy |
+| `CONTEXT_FORMATTING_ALLOW_EMPTY_CONTEXT` / `allow_empty_context` | `true` | If `true`, returns empty placeholder; if `false`, raises validation error |
+| `CONTEXT_FORMATTING_EMPTY_TEXT` / `empty_context_text` | `"[No retrieved context provided]"` | Placeholder text when context contains zero items |
+
+---
+
 ## Prompt Construction
 
 ### Responsibility & Scope
@@ -1563,7 +1625,7 @@ The **Prompt Construction** stage is the dedicated boundary between authoritativ
 ```
 Original User Query
         +
-Final Context (AssembledContext)
+Final Context (AssembledContext / FormattedContext)
         │
         ▼
 Prompt Construction (PromptConstructionService)
@@ -1628,7 +1690,8 @@ uv run uvicorn app.main:app --reload
 uv run pytest
 
 # Run retrieval and generation pipeline tests
-uv run pytest tests/test_indexing.py tests/test_vector_search.py tests/test_keyword_search.py tests/test_keyword_encoder.py tests/test_keyword_qdrant.py tests/test_fusion.py tests/test_metadata_filtering.py tests/test_reranking.py tests/test_chunk_hydration.py tests/test_context_assembly.py tests/test_prompt_construction.py
+uv run pytest tests/test_indexing.py tests/test_vector_search.py tests/test_keyword_search.py tests/test_keyword_encoder.py tests/test_keyword_qdrant.py tests/test_fusion.py tests/test_metadata_filtering.py tests/test_reranking.py tests/test_chunk_hydration.py tests/test_context_assembly.py tests/test_context_formatting.py tests/test_prompt_construction.py
 ```
+
 
 

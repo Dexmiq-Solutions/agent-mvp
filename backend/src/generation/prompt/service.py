@@ -269,7 +269,10 @@ class PromptConstructionService:
         )
 
         # 5. Format Retrieved Context Faithfully Preserving Order and Content
-        if len(raw_items) == 0:
+        if hasattr(context, "text") and hasattr(context, "items") and not hasattr(context, "chunk_id"):
+            # Directly reuse pre-formatted FormattedContext produced upstream by Context Formatting
+            formatted_context = str(context.text)
+        elif len(raw_items) == 0:
             formatted_context = self._config.empty_context_text
         else:
             formatted_items: list[str] = []

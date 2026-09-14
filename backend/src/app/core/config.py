@@ -126,6 +126,16 @@ class Settings(BaseSettings):
     CONTEXT_ASSEMBLY_USE_CONTEXTUAL_ENRICHMENT: bool = True
     CONTEXT_ASSEMBLY_STRICT_PROJECT_VALIDATION: bool = False
 
+    # Context Formatting Configuration
+    CONTEXT_FORMATTING_STRATEGY: str = "text"
+    CONTEXT_FORMATTING_HEADER: str = "RETRIEVED CONTEXT"
+    CONTEXT_FORMATTING_FOOTER: str = "END RETRIEVED CONTEXT"
+    CONTEXT_FORMATTING_ITEM_TEMPLATE: str = "[Context {index}]"
+    CONTEXT_FORMATTING_INCLUDE_METADATA: bool = True
+    CONTEXT_FORMATTING_INCLUDE_PROVENANCE: bool = True
+    CONTEXT_FORMATTING_ALLOW_EMPTY_CONTEXT: bool = True
+    CONTEXT_FORMATTING_EMPTY_TEXT: str = "[No retrieved context provided]"
+
     # Prompt Construction / Generation Configuration
     PROMPT_CONSTRUCTION_DEFAULT_SYSTEM_INSTRUCTION: str = (
         "You are a helpful and precise assistant. Answer the user's query using only the provided retrieved context. "

@@ -1,8 +1,19 @@
 """RAG Generation package alias re-exporting from generation."""
 
 from generation import (
+    DEFAULT_CONTEXT_FOOTER,
+    DEFAULT_CONTEXT_HEADER,
+    DEFAULT_EMPTY_CONTEXT_TEXT,
+    DEFAULT_ITEM_TEMPLATE,
     DEFAULT_SYSTEM_INSTRUCTION,
+    BaseContextFormatter,
     ConstructedPrompt,
+    ContextFormattingConfig,
+    ContextFormattingError,
+    ContextFormattingService,
+    ContextFormattingValidationError,
+    FormattedContext,
+    FormattedContextItem,
     GenerationError,
     GenerationPrompt,
     PromptConstructionConfig,
@@ -10,21 +21,44 @@ from generation import (
     PromptConstructionService,
     PromptConstructionValidationError,
     StructuredPrompt,
+    TextContextFormatter,
     construct_prompt,
     construct_prompt_async,
+    format_context,
+    format_context_async,
+    get_context_formatting_service,
     get_prompt_construction_service,
+    reset_context_formatting_service,
     reset_prompt_construction_service,
 )
 
 __all__ = [
-    # Domain Models
+    # Context Formatting Domain Models
+    "FormattedContext",
+    "FormattedContextItem",
+    # Context Formatting Configuration
+    "ContextFormattingConfig",
+    "DEFAULT_CONTEXT_HEADER",
+    "DEFAULT_CONTEXT_FOOTER",
+    "DEFAULT_EMPTY_CONTEXT_TEXT",
+    "DEFAULT_ITEM_TEMPLATE",
+    # Context Formatters
+    "BaseContextFormatter",
+    "TextContextFormatter",
+    # Context Formatting Service & Entrypoints
+    "ContextFormattingService",
+    "get_context_formatting_service",
+    "reset_context_formatting_service",
+    "format_context",
+    "format_context_async",
+    # Prompt Construction Domain Models
     "ConstructedPrompt",
     "GenerationPrompt",
     "StructuredPrompt",
-    # Configuration
+    # Prompt Construction Configuration
     "PromptConstructionConfig",
     "DEFAULT_SYSTEM_INSTRUCTION",
-    # Service & Functional Entrypoints
+    # Prompt Construction Service & Entrypoints
     "PromptConstructionService",
     "get_prompt_construction_service",
     "reset_prompt_construction_service",
@@ -32,6 +66,9 @@ __all__ = [
     "construct_prompt_async",
     # Domain Exceptions
     "GenerationError",
+    "ContextFormattingError",
+    "ContextFormattingValidationError",
     "PromptConstructionError",
     "PromptConstructionValidationError",
 ]
+

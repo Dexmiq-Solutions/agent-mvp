@@ -10,6 +10,14 @@ class GenerationError(Exception):
         self.original_error = original_error
 
 
+class ContextFormattingError(GenerationError):
+    """Base exception for context formatting stage failures."""
+
+
+class ContextFormattingValidationError(ContextFormattingError):
+    """Raised when context formatting inputs fail validation or contract invariants."""
+
+
 class PromptConstructionError(GenerationError):
     """Base exception for prompt construction stage failures."""
 
