@@ -34,6 +34,16 @@ from exceptions.retrieval import (
     ChunkNotFoundError,
     DatabaseRetrievalError,
     ProjectBoundaryViolationError,
+    ContextAssemblyError,
+    ContextAssemblyValidationError,
+)
+from retrieval.assembly import (
+    ContextAssemblyConfig,
+    ContextAssemblyService,
+    assemble_context,
+    assemble_context_async,
+    get_context_assembly_service,
+    reset_context_assembly_service,
 )
 from retrieval.config import (
     FusionConfig,
@@ -121,6 +131,11 @@ from retrieval.models import (
     HydratedCandidate,
     HydratedSearchCandidate,
     HydratedChunk,
+    AssembledContextItem,
+    ContextItem,
+    AssembledContext,
+    RetrievalContext,
+    StructuredRetrievalContext,
     RetrievalQuerySet,
     SparseVector,
     VectorSearchCandidate,
@@ -170,6 +185,11 @@ __all__ = [
     "HydratedCandidate",
     "HydratedSearchCandidate",
     "HydratedChunk",
+    "AssembledContextItem",
+    "ContextItem",
+    "AssembledContext",
+    "RetrievalContext",
+    "StructuredRetrievalContext",
     # Configuration
     "QueryPreprocessingConfig",
     "QueryTransformationConfig",
@@ -178,6 +198,7 @@ __all__ = [
     "FusionConfig",
     "RerankingConfig",
     "ChunkHydrationConfig",
+    "ContextAssemblyConfig",
     # Preprocessing Service & Helpers
     "QueryPreprocessor",
     "QueryPreprocessingService",
@@ -260,6 +281,13 @@ __all__ = [
     "get_chunk_hydration_service",
     "reset_chunk_hydration_service",
     "hydrate_candidates",
+    # Context Assembly Subsystem & Helpers
+    "ContextAssemblyConfig",
+    "ContextAssemblyService",
+    "get_context_assembly_service",
+    "reset_context_assembly_service",
+    "assemble_context",
+    "assemble_context_async",
     # Domain Exceptions
     "RetrievalError",
     "QueryPreprocessingError",
@@ -290,5 +318,7 @@ __all__ = [
     "ChunkNotFoundError",
     "DatabaseRetrievalError",
     "ProjectBoundaryViolationError",
+    "ContextAssemblyError",
+    "ContextAssemblyValidationError",
 ]
 

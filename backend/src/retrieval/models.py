@@ -501,4 +501,237 @@ HydratedSearchCandidate = HydratedCandidate
 HydratedChunk = HydratedCandidate
 
 
+@dataclass(frozen=True)
+class AssembledContextItem:
+    """Represents an individual structured context item in the assembled retrieval context.
+
+    Preserves exact retrieval order, identity coordinates, source provenance,
+    relational and structural hierarchy, scoring provenance, and the authoritative
+    stored content representation for downstream relevance check and generation.
+    """
+
+    chunk_id: str
+    document_id: str
+    project_id: str
+    content: str
+    rank: int
+    text: str
+    document_version_id: str | None = None
+    contextual_content: str | None = None
+    chunk_index: int = 0
+    heading: str | None = None
+    heading_level: int | None = None
+    section_path: tuple[str, ...] = ()
+    parent_element_id: str | None = None
+    parent_chunk_id: str | None = None
+    element_types: tuple[str, ...] = ()
+    rerank_score: float | None = None
+    fusion_score: float | None = None
+    dense_rank: int | None = None
+    sparse_rank: int | None = None
+    dense_score: float | None = None
+    sparse_score: float | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def score(self) -> float:
+        """Convenience property returning primary relevance score."""
+        if self.rerank_score is not None:
+            return self.rerank_score
+        if self.fusion_score is not None:
+            return self.fusion_score
+        return 0.0
+
+    @property
+    def chunk_text(self) -> str:
+        """Convenience alias returning authoritative chunk text."""
+        return self.content
+
+    @property
+    def index(self) -> int:
+        """Convenience property returning chunk_index."""
+        return self.chunk_index
+
+    @property
+    def source(self) -> str | None:
+        """Convenience property extracting source identifier from metadata."""
+        return (
+            self.metadata.get("source")
+            or self.metadata.get("file_name")
+            or self.metadata.get("title")
+        )
+
+    @classmethod
+    def from_hydrated_candidate(
+        cls,
+        candidate: Any,
+        use_contextual_enrichment: bool = True,
+        rank_override: int | None = None,
+    ) -> "AssembledContextItem":
+        """Construct an AssembledContextItem from a HydratedCandidate or duck-typed record.
+
+        Args:
+            candidate: HydratedCandidate or compatible candidate object.
+            use_contextual_enrichment: If True and contextual_content is present,
+                uses contextual_content as the downstream `text`. Otherwise uses `content`.
+            rank_override: Optional explicit rank override preserving pipeline ordering.
+
+        Returns:
+            AssembledContextItem: Structured context item.
+        """
+        raw_content = (
+            getattr(candidate, "content", None)
+            or getattr(candidate, "chunk_text", None)
+            or getattr(candidate, "text", "")
+            or ""
+        )
+        contextual = getattr(candidate, "contextual_content", None)
+
+        if use_contextual_enrichment and contextual and str(contextual).strip():
+            effective_text = str(contextual)
+        else:
+            effective_text = str(raw_content)
+
+        rank = rank_override if rank_override is not None else getattr(candidate, "rank", 1)
+
+        section_path = getattr(candidate, "section_path", ()) or ()
+        if isinstance(section_path, (list, set)):
+            section_path = tuple(section_path)
+
+        element_types = getattr(candidate, "element_types", ()) or ()
+        if isinstance(element_types, (list, set)):
+            element_types = tuple(str(et) for et in element_types)
+
+        cand_metadata = dict(getattr(candidate, "metadata", None) or {})
+
+        return cls(
+            chunk_id=str(getattr(candidate, "chunk_id")),
+            document_id=str(getattr(candidate, "document_id")),
+            project_id=str(getattr(candidate, "project_id")),
+            content=str(raw_content),
+            rank=int(rank),
+            text=effective_text,
+            document_version_id=getattr(candidate, "document_version_id", None),
+            contextual_content=str(contextual) if contextual else None,
+            chunk_index=int(getattr(candidate, "chunk_index", getattr(candidate, "index", 0)) or 0),
+            heading=getattr(candidate, "heading", None),
+            heading_level=getattr(candidate, "heading_level", None),
+            section_path=section_path,
+            parent_element_id=getattr(candidate, "parent_element_id", None),
+            parent_chunk_id=getattr(candidate, "parent_chunk_id", None),
+            element_types=element_types,
+            rerank_score=getattr(candidate, "rerank_score", None),
+            fusion_score=getattr(candidate, "fusion_score", None),
+            dense_rank=getattr(candidate, "dense_rank", None),
+            sparse_rank=getattr(candidate, "sparse_rank", None),
+            dense_score=getattr(candidate, "dense_score", None),
+            sparse_score=getattr(candidate, "sparse_score", None),
+            metadata=cand_metadata,
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize assembled context item to a standard dictionary."""
+        data: dict[str, Any] = {
+            "chunk_id": self.chunk_id,
+            "document_id": self.document_id,
+            "project_id": self.project_id,
+            "content": self.content,
+            "chunk_text": self.content,
+            "rank": self.rank,
+            "text": self.text,
+            "document_version_id": self.document_version_id,
+            "contextual_content": self.contextual_content,
+            "chunk_index": self.chunk_index,
+            "index": self.chunk_index,
+            "heading": self.heading,
+            "heading_level": self.heading_level,
+            "section_path": list(self.section_path),
+            "parent_element_id": self.parent_element_id,
+            "parent_chunk_id": self.parent_chunk_id,
+            "element_types": list(self.element_types),
+            "rerank_score": self.rerank_score,
+            "fusion_score": self.fusion_score,
+            "score": self.score,
+            "dense_rank": self.dense_rank,
+            "sparse_rank": self.sparse_rank,
+            "dense_score": self.dense_score,
+            "sparse_score": self.sparse_score,
+        }
+        if self.source:
+            data["source"] = self.source
+        if self.metadata:
+            data["metadata"] = dict(self.metadata)
+        return data
+
+
+ContextItem = AssembledContextItem
+
+
+@dataclass(frozen=True)
+class AssembledContext:
+    """Structured retrieval context containing ordered context items and execution metadata.
+
+    Provides the clean, structured retrieval context contract between Context Assembly
+    and downstream Relevance Check / Fallback.
+    """
+
+    items: tuple[AssembledContextItem, ...]
+    project_id: str
+    query: str | None = None
+    total_tokens: int | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def is_empty(self) -> bool:
+        """Return True if the assembled context contains zero items."""
+        return len(self.items) == 0
+
+    @property
+    def chunk_ids(self) -> tuple[str, ...]:
+        """Return all chunk identifiers in preserved retrieval order."""
+        return tuple(item.chunk_id for item in self.items)
+
+    @property
+    def document_ids(self) -> tuple[str, ...]:
+        """Return distinct document identifiers in order of first encounter."""
+        return tuple(dict.fromkeys(item.document_id for item in self.items))
+
+    def __len__(self) -> int:
+        """Return the number of assembled context items."""
+        return len(self.items)
+
+    def __iter__(self):
+        """Iterate over assembled context items in preserved order."""
+        return iter(self.items)
+
+    def __getitem__(self, idx: int) -> AssembledContextItem:
+        """Access context item by 0-based index."""
+        return self.items[idx]
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize assembled context to a dictionary."""
+        return {
+            "project_id": self.project_id,
+            "query": self.query,
+            "item_count": len(self.items),
+            "total_tokens": self.total_tokens,
+            "items": [item.to_dict() for item in self.items],
+            "chunk_ids": list(self.chunk_ids),
+            "document_ids": list(self.document_ids),
+            "metadata": dict(self.metadata),
+        }
+
+    def __repr__(self) -> str:
+        """Safe string representation."""
+        return (
+            f"AssembledContext(project_id={self.project_id!r}, "
+            f"items_count={len(self.items)}, "
+            f"query={self.query!r})"
+        )
+
+
+RetrievalContext = AssembledContext
+StructuredRetrievalContext = AssembledContext
+
+
 

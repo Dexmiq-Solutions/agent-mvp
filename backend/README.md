@@ -1506,6 +1506,54 @@ Context Assembly
 
 ---
 
+## Context Assembly
+
+### Responsibility & Scope
+
+The **Context Assembly** stage is the deterministic transformation bridge between Chunk Fetching / Hydration and the downstream Relevance Check / Fallback stage.
+
+```
+Chunk Fetching / Hydration
+    │  (Hydrated chunk records: HydratedCandidate)
+    ▼
+Context Assembly (ContextAssemblyService)
+    │  (In-memory, deterministic order & provenance-preserving transformation)
+    ▼
+Structured Retrieval Context (AssembledContext)
+    │  (Ordered AssembledContextItem collection, resolved content representation, metadata)
+    ▼
+Relevance Check / Fallback
+```
+
+> [!IMPORTANT]
+> **Key Invariants**:
+> - **In-Memory & Deterministic**: Context Assembly does not perform database queries, Qdrant lookups, LLM calls, embedding generation, or semantic reasoning.
+> - **Strict Order Preservation**: Preserves the exact retrieval/reranking ordering established upstream (e.g. $[A, C, B]$ remains $[A, C, B]$). It does not introduce document grouping or sorting.
+> - **Full Identity & Provenance Retention**: Retains all relational coordinates (`chunk_id`, `document_id`, `document_version_id`, `project_id`, `chunk_index`), hierarchy (`heading`, `heading_level`, `section_path`, `element_types`), and retrieval scores (`rerank_score`, `fusion_score`, dense/sparse ranks and scores).
+> - **Stored Content Representation**: Uses the stored representation (`contextual_content` if present and enabled; otherwise verbatim `content`). It strictly avoids duplicate concatenation.
+> - **Strict Project Isolation**: Enforces tenant boundaries, rejecting or discarding candidates with mismatched `project_id`.
+> - **Source Boundary Preservation**: Chunks remain individual, structured context items and are not merged into an unstructured string at this stage.
+
+### Core Components
+
+- **`AssembledContextItem` / `ContextItem` (`retrieval.models`)**: Immutable representation of an individual assembled context item with resolved text, verbatim content, hierarchy, retrieval scores, and source metadata.
+- **`AssembledContext` / `RetrievalContext` (`retrieval.models`)**: Immutable structured container holding ordered context items, tenant ID, query string, and execution metadata.
+- **`ContextAssemblyConfig` (`retrieval.assembly.config`)**: Configuration governing context limits, contextual enrichment usage, and validation strictness.
+- **`ContextAssemblyService` (`retrieval.assembly.service`)**: Service executing input validation, tenant isolation filtering, rank-preserving deduplication, context bounding, and candidate-to-context transformation.
+- **`assemble_context` / `assemble_context_async` (`retrieval.assembly`)**: Functional entrypoints for synchronous and async retrieval pipelines.
+
+### Configuration Reference
+
+`ContextAssemblyConfig` parameters:
+
+| Variable / Parameter | Default | Description |
+| :--- | :--- | :--- |
+| `CONTEXT_ASSEMBLY_MAX_ITEMS` / `max_context_items` | `None` | Upper bound for assembled context items in the final context. If `None`, retains all valid hydrated candidates |
+| `CONTEXT_ASSEMBLY_USE_CONTEXTUAL_ENRICHMENT` / `use_contextual_enrichment` | `true` | If `true`, resolves item text using stored `contextual_content` when present; if `false`, uses verbatim `content` |
+| `CONTEXT_ASSEMBLY_STRICT_PROJECT_VALIDATION` / `strict_project_validation` | `false` | If `true`, raises `ContextAssemblyValidationError` on cross-tenant candidates; if `false`, discards them with a warning |
+
+---
+
 ## Development
 
 
@@ -1529,8 +1577,8 @@ uv run uvicorn app.main:app --reload
 # Run full test suite
 uv run pytest
 
-# Run retrieval pipeline tests (indexing, search, fusion, filtering, reranking, hydration)
-uv run pytest tests/test_indexing.py tests/test_vector_search.py tests/test_keyword_search.py tests/test_keyword_encoder.py tests/test_keyword_qdrant.py tests/test_fusion.py tests/test_metadata_filtering.py tests/test_reranking.py tests/test_chunk_hydration.py
+# Run retrieval pipeline tests (indexing, search, fusion, filtering, reranking, hydration, assembly)
+uv run pytest tests/test_indexing.py tests/test_vector_search.py tests/test_keyword_search.py tests/test_keyword_encoder.py tests/test_keyword_qdrant.py tests/test_fusion.py tests/test_metadata_filtering.py tests/test_reranking.py tests/test_chunk_hydration.py tests/test_context_assembly.py
 ```
 
 

@@ -143,3 +143,11 @@ class DatabaseRetrievalError(ChunkHydrationError):
 class ProjectBoundaryViolationError(ChunkHydrationError):
     """Raised when candidate retrieval references violate project boundary constraints."""
 
+
+class ContextAssemblyError(RetrievalError):
+    """Base exception for context assembly stage failures."""
+
+
+class ContextAssemblyValidationError(ContextAssemblyError):
+    """Raised when context assembly input arguments or candidates fail validation."""
+
