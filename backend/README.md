@@ -1554,6 +1554,56 @@ Relevance Check / Fallback
 
 ---
 
+## Prompt Construction
+
+### Responsibility & Scope
+
+The **Prompt Construction** stage is the dedicated boundary between authoritative retrieval results (**Final Context**) and downstream **LLM / Agent Inference**.
+
+```
+Original User Query
+        +
+Final Context (AssembledContext)
+        │
+        ▼
+Prompt Construction (PromptConstructionService)
+        │  (In-memory, deterministic structured formatting)
+        ▼
+Constructed Prompt (ConstructedPrompt)
+        │  (Separated Instructions, Retrieved Context, Original Query)
+        ▼
+LLM / Agent Inference
+```
+
+> [!IMPORTANT]
+> **Key Invariants**:
+> - **In-Memory & Deterministic**: Prompt Construction does not execute LLMs, query databases, invoke Qdrant, perform network calls, or calculate embeddings.
+> - **Strict Generation Boundary**: It does not perform retrieval, relevance checking, context selection, chunk rewriting, summarization, semantic compression, or context pruning.
+> - **Original Query Preservation**: The original user query is faithfully preserved and formatted without substitution by transformed/rewritten queries.
+> - **Context Integrity & Order**: Retrieved context items are rendered in exact retrieval rank order with identities (`chunk_id`, `document_id`, `document_version_id`), provenance (`heading`, `section_path`, `source`), and verbatim content preserved.
+> - **Logical Separation**: Instructions, Retrieved Context, and the Original Query are logically separated and packaged into provider-independent representations (including standard chat `messages`).
+> - **Provider Independence**: Output is decoupled from specific providers (OpenAI, OpenRouter, Anthropic) or agent frameworks.
+
+### Core Components
+
+- **`ConstructedPrompt` / `GenerationPrompt` (`generation.prompt.models`)**: Structured, immutable representation holding `system_instruction`, `user_query`, `context_text`, composite `user_prompt`, `messages` (`tuple[dict[str, str], ...]`), tenant ID, and execution metrics.
+- **`PromptConstructionConfig` (`generation.prompt.config`)**: Configuration governing default system instructions, headers, metadata/provenance inclusion, and empty context handling.
+- **`PromptConstructionService` (`generation.prompt.service`)**: Service executing input validation, query extraction, context formatting, and prompt assembly.
+- **`construct_prompt` / `construct_prompt_async` (`generation.prompt`)**: Functional convenience entrypoints for synchronous and async generation pipelines.
+
+### Configuration Reference
+
+`PromptConstructionConfig` parameters:
+
+| Variable / Parameter | Default | Description |
+| :--- | :--- | :--- |
+| `PROMPT_CONSTRUCTION_DEFAULT_SYSTEM_INSTRUCTION` / `default_system_instruction` | Standard assistant instruction | Default system instructions guiding model generation |
+| `PROMPT_CONSTRUCTION_INCLUDE_METADATA` / `include_metadata` | `true` | If `true`, formats document and chunk identity coordinates into each item |
+| `PROMPT_CONSTRUCTION_INCLUDE_PROVENANCE` / `include_provenance` | `true` | If `true`, formats source filenames, headings, and section paths |
+| `PROMPT_CONSTRUCTION_ALLOW_EMPTY_CONTEXT` / `allow_empty_context` | `true` | If `true`, formats prompt with empty context indicator; if `false`, raises validation error |
+
+---
+
 ## Development
 
 
@@ -1577,8 +1627,8 @@ uv run uvicorn app.main:app --reload
 # Run full test suite
 uv run pytest
 
-# Run retrieval pipeline tests (indexing, search, fusion, filtering, reranking, hydration, assembly)
-uv run pytest tests/test_indexing.py tests/test_vector_search.py tests/test_keyword_search.py tests/test_keyword_encoder.py tests/test_keyword_qdrant.py tests/test_fusion.py tests/test_metadata_filtering.py tests/test_reranking.py tests/test_chunk_hydration.py tests/test_context_assembly.py
+# Run retrieval and generation pipeline tests
+uv run pytest tests/test_indexing.py tests/test_vector_search.py tests/test_keyword_search.py tests/test_keyword_encoder.py tests/test_keyword_qdrant.py tests/test_fusion.py tests/test_metadata_filtering.py tests/test_reranking.py tests/test_chunk_hydration.py tests/test_context_assembly.py tests/test_prompt_construction.py
 ```
 
 

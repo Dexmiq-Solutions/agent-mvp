@@ -122,6 +122,18 @@ class Settings(BaseSettings):
     RERANKER_TIMEOUT: float = 10.0
     RERANKER_CANDIDATE_LIMIT: int = 50
     RERANKER_RESULT_LIMIT: int = 10
+    CONTEXT_ASSEMBLY_MAX_ITEMS: int | None = None
+    CONTEXT_ASSEMBLY_USE_CONTEXTUAL_ENRICHMENT: bool = True
+    CONTEXT_ASSEMBLY_STRICT_PROJECT_VALIDATION: bool = False
+
+    # Prompt Construction / Generation Configuration
+    PROMPT_CONSTRUCTION_DEFAULT_SYSTEM_INSTRUCTION: str = (
+        "You are a helpful and precise assistant. Answer the user's query using only the provided retrieved context. "
+        "If the context does not contain sufficient information to answer the query, clearly state that you do not have enough information."
+    )
+    PROMPT_CONSTRUCTION_INCLUDE_METADATA: bool = True
+    PROMPT_CONSTRUCTION_INCLUDE_PROVENANCE: bool = True
+    PROMPT_CONSTRUCTION_ALLOW_EMPTY_CONTEXT: bool = True
 
     @field_validator("LOG_LEVEL", mode="before")
     @classmethod

@@ -119,6 +119,13 @@ from exceptions.retrieval import (
     MetadataFilteringError,
     InvalidFilterError,
     FilterEvaluationError,
+    ContextAssemblyError,
+    ContextAssemblyValidationError,
+)
+from exceptions.generation import (
+    GenerationError,
+    PromptConstructionError,
+    PromptConstructionValidationError,
 )
 
 __all__ = [
@@ -228,5 +235,11 @@ __all__ = [
     "MetadataFilteringError",
     "InvalidFilterError",
     "FilterEvaluationError",
+    "ContextAssemblyError",
+    "ContextAssemblyValidationError",
+    # Generation & Prompt Construction Exceptions
+    "GenerationError",
+    "PromptConstructionError",
+    "PromptConstructionValidationError",
 ]
 
