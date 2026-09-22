@@ -176,7 +176,7 @@ class Settings(BaseSettings):
     EVALUATION_MAX_REGENERATION_ATTEMPTS: int = 2
 
     # Document Processing Lifecycle Configuration
-    AUTO_PROCESS_DOCUMENTS: bool = False
+    AUTO_PROCESS_DOCUMENTS: bool = True
 
 
     @field_validator("LOG_LEVEL", mode="before")

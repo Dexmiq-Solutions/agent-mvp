@@ -12,7 +12,6 @@ logger = get_logger(__name__)
 
 _qdrant_async_client: Optional[AsyncQdrantClient] = None
 
-
 def get_async_qdrant_client(settings: Optional[Settings] = None) -> AsyncQdrantClient:
     """Get or create the singleton asynchronous Qdrant client.
     

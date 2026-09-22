@@ -8,7 +8,7 @@ from core.config import Settings, get_settings
 
 def test_default_settings():
     """Verify default settings load cleanly without any external credentials."""
-    settings = Settings()
+    settings = Settings(_env_file=None)
     assert settings.APP_NAME == "Agent MVP"
     assert settings.ENVIRONMENT == "development"
     assert settings.LOG_LEVEL == "INFO"
@@ -42,7 +42,7 @@ def test_custom_environment_settings(monkeypatch):
     monkeypatch.setenv("CONTEXTUAL_ENRICHMENT_ENABLED", "true")
     monkeypatch.setenv("CONTEXTUAL_ENRICHMENT_STRATEGY", "custom")
 
-    settings = Settings()
+    settings = Settings(_env_file=None)
     assert settings.APP_NAME == "Custom Agent"
     assert settings.ENVIRONMENT == "production"
     assert settings.LOG_LEVEL == "DEBUG"
@@ -54,11 +54,12 @@ def test_custom_environment_settings(monkeypatch):
 def test_supabase_storage_key_resolution(monkeypatch):
     """Verify supabase_storage_key prefers service role key over client key."""
     monkeypatch.setenv("SUPABASE_KEY", "anon_key")
-    settings = Settings()
+    monkeypatch.delenv("SUPABASE_SERVICE_ROLE_KEY", raising=False)
+    settings = Settings(_env_file=None)
     assert settings.supabase_storage_key == "anon_key"
 
     monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", "service_role_secret")
-    settings = Settings()
+    settings = Settings(_env_file=None)
     assert settings.supabase_storage_key == "service_role_secret"
 
 
