@@ -8,6 +8,7 @@ Usage:
     uv run python scripts/run_agent.py
 """
 
+import asyncio
 import sys
 from pathlib import Path
 from typing import Any, Callable, Optional, Sequence
@@ -25,7 +26,7 @@ from exceptions.agent import AgentConfigurationError, AgentError
 from tools.diagnostic import echo_diagnostic_tool
 from tools.rag import search_project_knowledge
 
-DEFAULT_DEVELOPMENT_PROJECT_ID = "development-test"
+DEFAULT_DEVELOPMENT_PROJECT_ID = "7b155ced-728d-4569-b660-6c223167f295"
 
 
 def build_developer_runtime(
@@ -67,7 +68,7 @@ def execute_prompt(
     prompt: str,
     project_id: str = DEFAULT_DEVELOPMENT_PROJECT_ID,
 ) -> AgentRunResponse:
-    """Execute a single prompt against the Agent runtime within the development project context.
+    """Execute a single prompt synchronously against the Agent runtime.
 
     Args:
         runtime: The active AgentRuntime instance.
@@ -81,13 +82,32 @@ def execute_prompt(
     return runtime.execute(prompt, context=context)
 
 
-def interactive_loop(
+async def execute_prompt_async(
+    runtime: AgentRuntime,
+    prompt: str,
+    project_id: str = DEFAULT_DEVELOPMENT_PROJECT_ID,
+) -> AgentRunResponse:
+    """Execute a single prompt asynchronously against the Agent runtime.
+
+    Args:
+        runtime: The active AgentRuntime instance.
+        prompt: The user prompt string.
+        project_id: Explicit project identifier for project isolation.
+
+    Returns:
+        AgentRunResponse: The normalized response from the Agent.
+    """
+    context = AgentContext(project_id=project_id)
+    return await runtime.execute_async(prompt, context=context)
+
+
+async def interactive_loop(
     runtime: AgentRuntime,
     project_id: str = DEFAULT_DEVELOPMENT_PROJECT_ID,
-    input_func: Callable[[str], str] = input,
+    input_func: Callable[[str], Any] = input,
     print_func: Callable[..., None] = print,
 ) -> None:
-    """Run an interactive prompt-response loop with the developer.
+    """Run an interactive prompt-response loop asynchronously with the developer.
 
     Args:
         runtime: The active AgentRuntime instance.
@@ -114,7 +134,7 @@ def interactive_loop(
             print_func("\n\nExiting development runner. Goodbye!")
             break
 
-        cleaned_input = user_input.strip()
+        cleaned_input = str(user_input).strip() if user_input is not None else ""
         if not cleaned_input:
             continue
 
@@ -124,7 +144,7 @@ def interactive_loop(
 
         print_func("\nExecuting request...")
         try:
-            response = execute_prompt(runtime, cleaned_input, project_id=project_id)
+            response = await execute_prompt_async(runtime, cleaned_input, project_id=project_id)
 
             if response.tool_calls:
                 for tc in response.tool_calls:
@@ -141,8 +161,8 @@ def interactive_loop(
             print_func(f"\n[Execution Error]: {exc}\n")
 
 
-def main(argv: Optional[Sequence[str]] = None) -> int:
-    """Entry point for the development runner."""
+async def main_async(argv: Optional[Sequence[str]] = None) -> int:
+    """Core asynchronous execution entry point for the development runner."""
     import argparse
 
     parser = argparse.ArgumentParser(description="Agent MVP Development Runner")
@@ -173,27 +193,40 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print(f"\n[Initialization Error]: {exc}\n")
         return 1
 
-    if args.prompt:
-        print(f"Executing prompt for project '{args.project_id}'...")
-        try:
-            response = execute_prompt(runtime, args.prompt, project_id=args.project_id)
-            if response.tool_calls:
-                for tc in response.tool_calls:
-                    name = tc.get("name", "unknown")
-                    tc_args = tc.get("args", {})
-                    print(f"  [Tool Invocation: {name}({tc_args})]")
-            print("\nAgent:")
-            print(response.output_text)
-            return 0
-        except AgentError as exc:
-            print(f"\n[Agent Error]: {exc.message}\n")
-            return 1
-        except Exception as exc:
-            print(f"\n[Execution Error]: {exc}\n")
-            return 1
+    try:
+        if args.prompt:
+            print(f"Executing prompt for project '{args.project_id}'...")
+            try:
+                response = await execute_prompt_async(runtime, args.prompt, project_id=args.project_id)
+                if response.tool_calls:
+                    for tc in response.tool_calls:
+                        name = tc.get("name", "unknown")
+                        tc_args = tc.get("args", {})
+                        print(f"  [Tool Invocation: {name}({tc_args})]")
+                print("\nAgent:")
+                print(response.output_text)
+                return 0
+            except AgentError as exc:
+                print(f"\n[Agent Error]: {exc.message}\n")
+                return 1
+            except Exception as exc:
+                print(f"\n[Execution Error]: {exc}\n")
+                return 1
 
-    interactive_loop(runtime, project_id=args.project_id)
-    return 0
+        await interactive_loop(runtime, project_id=args.project_id)
+        return 0
+    finally:
+        from storage.vector.client import close_async_qdrant_client
+        await close_async_qdrant_client()
+
+
+def main(argv: Optional[Sequence[str]] = None) -> int:
+    """Entry point for the development runner."""
+    try:
+        return asyncio.run(main_async(argv))
+    except KeyboardInterrupt:
+        print("\n\nExiting development runner. Goodbye!")
+        return 0
 
 
 if __name__ == "__main__":

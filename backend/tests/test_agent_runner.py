@@ -2,7 +2,7 @@
 
 from pathlib import Path
 import sys
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 # Ensure scripts directory is on sys.path for test imports
@@ -15,6 +15,7 @@ from run_agent import (
     DEFAULT_DEVELOPMENT_PROJECT_ID,
     build_developer_runtime,
     execute_prompt,
+    execute_prompt_async,
     interactive_loop,
     main,
 )
@@ -58,7 +59,26 @@ def test_execute_prompt_passes_development_context():
     assert context.project_id == "custom-dev-id"
 
 
-def test_interactive_loop_handles_prompts_and_exits():
+@pytest.mark.asyncio
+async def test_execute_prompt_async_passes_development_context():
+    """Verify execute_prompt_async forwards prompt and project_id to runtime execute_async."""
+    mock_runtime = MagicMock()
+    mock_response = AgentRunResponse(output_text="Async answer", success=True)
+    mock_runtime.execute_async = AsyncMock(return_value=mock_response)
+
+    response = await execute_prompt_async(mock_runtime, "Hello async developer", project_id="custom-async-dev-id")
+
+    assert response == mock_response
+    mock_runtime.execute_async.assert_awaited_once()
+    called_prompt, kwargs = mock_runtime.execute_async.call_args
+    assert called_prompt[0] == "Hello async developer"
+    context = kwargs["context"]
+    assert isinstance(context, AgentContext)
+    assert context.project_id == "custom-async-dev-id"
+
+
+@pytest.mark.asyncio
+async def test_interactive_loop_handles_prompts_and_exits():
     """Verify interactive_loop executes prompts, reports tool calls, and exits cleanly on 'exit'."""
     mock_runtime = MagicMock()
     mock_runtime.config.model = "test-model"
@@ -71,13 +91,13 @@ def test_interactive_loop_handles_prompts_and_exits():
         tool_calls=[{"name": "echo_diagnostic_tool", "args": {"message": "ping"}}],
         success=True,
     )
-    mock_runtime.execute.return_value = mock_response
+    mock_runtime.execute_async = AsyncMock(return_value=mock_response)
 
     inputs = ["Run diagnostic test", "exit"]
     input_generator = iter(inputs)
     outputs = []
 
-    interactive_loop(
+    await interactive_loop(
         mock_runtime,
         project_id="development-test",
         input_func=lambda _: next(input_generator),
@@ -93,7 +113,8 @@ def test_interactive_loop_handles_prompts_and_exits():
     assert "Exiting development runner. Goodbye!" in combined_output
 
 
-def test_interactive_loop_handles_keyboard_interrupt():
+@pytest.mark.asyncio
+async def test_interactive_loop_handles_keyboard_interrupt():
     """Verify interactive_loop catches KeyboardInterrupt and exits without crashing."""
     mock_runtime = MagicMock()
     mock_runtime.config.model = "test-model"
@@ -104,7 +125,7 @@ def test_interactive_loop_handles_keyboard_interrupt():
     def mock_input(_):
         raise KeyboardInterrupt()
 
-    interactive_loop(
+    await interactive_loop(
         mock_runtime,
         input_func=mock_input,
         print_func=lambda msg="": outputs.append(str(msg)),
@@ -114,18 +135,19 @@ def test_interactive_loop_handles_keyboard_interrupt():
     assert "Exiting development runner. Goodbye!" in combined_output
 
 
-def test_interactive_loop_handles_agent_errors_gracefully():
+@pytest.mark.asyncio
+async def test_interactive_loop_handles_agent_errors_gracefully():
     """Verify interactive_loop catches AgentError, displays message, and allows continuing."""
     mock_runtime = MagicMock()
     mock_runtime.config.model = "test-model"
     mock_runtime.tools = []
-    mock_runtime.execute.side_effect = AgentExecutionError("Upstream timeout")
+    mock_runtime.execute_async = AsyncMock(side_effect=AgentExecutionError("Upstream timeout"))
 
     inputs = ["Faulty prompt", "quit"]
     input_generator = iter(inputs)
     outputs = []
 
-    interactive_loop(
+    await interactive_loop(
         mock_runtime,
         input_func=lambda _: next(input_generator),
         print_func=lambda msg="": outputs.append(str(msg)),

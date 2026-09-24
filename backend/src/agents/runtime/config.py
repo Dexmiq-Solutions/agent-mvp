@@ -19,7 +19,7 @@ class AgentConfig:
     - String representations (__repr__) mask sensitive credentials.
     """
 
-    model: str = "gpt-4o"
+    model: str = "gemini-2.5-flash"
     api_key: Optional[str] = None
     base_url: Optional[str] = None
     temperature: float = 0.0
