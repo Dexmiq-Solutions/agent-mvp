@@ -97,6 +97,15 @@ class Settings(BaseSettings):
     LLM_STOP_SEQUENCES: list[str] | None = None
     LLM_STREAMING_ENABLED: bool = False
 
+    # Agent Runtime & OpenRouter Configuration (Phase 2)
+    AGENT_MODEL: str | None = None
+    OPENROUTER_API_KEY: str | None = None
+    OPENROUTER_BASE_URL: str | None = None
+    AGENT_TEMPERATURE: float = 0.0
+    AGENT_MAX_TOKENS: int | None = None
+    AGENT_TIMEOUT: float = 60.0
+    AGENT_MAX_RETRIES: int = 2
+
     # Chunking Configuration
     CHUNK_MAX_SIZE: int = 1000
     CHUNK_MIN_SIZE: int = 50

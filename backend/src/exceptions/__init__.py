@@ -162,6 +162,14 @@ from exceptions.llm import (
     LLMUnavailableError,
     LLMValidationError,
 )
+from exceptions.agent import (
+    AgentError,
+    AgentConfigurationError,
+    AgentExecutionError,
+    AgentInitializationError,
+    AgentModelError,
+    AgentToolExecutionError,
+)
 
 __all__ = [
     # Acquisition Exceptions
@@ -308,5 +316,12 @@ __all__ = [
     "ConversationMessageMismatchError",
     "InvalidMessageDataError",
     "InvalidMessageRoleError",
+    # Agent Runtime Exceptions
+    "AgentError",
+    "AgentConfigurationError",
+    "AgentInitializationError",
+    "AgentModelError",
+    "AgentToolExecutionError",
+    "AgentExecutionError",
 ]
 

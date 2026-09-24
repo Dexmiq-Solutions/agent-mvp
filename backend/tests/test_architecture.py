@@ -197,3 +197,72 @@ def test_canonical_observability_exports():
     assert get_logger is LoggingGetLogger
     logger = get_logger("test_arch_logger")
     assert logger.name == "test_arch_logger"
+
+
+def test_agents_does_not_import_rag():
+    """Verify that src/agents/ does not import from rag (Agent/RAG boundary preserved in Phase 2)."""
+    agents_dir = SRC_ROOT / "agents"
+    assert agents_dir.is_dir(), "src/agents/ directory must exist"
+
+    violations = []
+    for py_file in agents_dir.rglob("*.py"):
+        imported = get_imported_modules(py_file)
+        if "rag" in imported:
+            violations.append(str(py_file.relative_to(SRC_ROOT)))
+
+    assert not violations, f"Architectural violation: src/agents/ files import 'rag': {violations}"
+
+
+def test_agents_does_not_import_app():
+    """Verify that src/agents/ does not import from app."""
+    agents_dir = SRC_ROOT / "agents"
+    violations = []
+    for py_file in agents_dir.rglob("*.py"):
+        imported = get_imported_modules(py_file)
+        if "app" in imported:
+            violations.append(str(py_file.relative_to(SRC_ROOT)))
+
+    assert not violations, f"Architectural violation: src/agents/ files import 'app': {violations}"
+
+
+def test_rag_does_not_import_agents():
+    """Verify that src/rag/ does not import from agents (RAG remains decoupled)."""
+    rag_dir = SRC_ROOT / "rag"
+    violations = []
+    for py_file in rag_dir.rglob("*.py"):
+        imported = get_imported_modules(py_file)
+        if "agents" in imported:
+            violations.append(str(py_file.relative_to(SRC_ROOT)))
+
+    assert not violations, f"Architectural violation: src/rag/ files import 'agents': {violations}"
+
+
+def test_canonical_agent_exports():
+    """Verify that src/agents exposes canonical public interfaces."""
+    import agents
+    from agents import (
+        AgentConfig,
+        AgentContext,
+        AgentRunRequest,
+        AgentRunResponse,
+        AgentRuntime,
+        create_agent_model,
+        create_runtime_agent,
+    )
+
+    assert AgentConfig is not None
+    assert AgentRuntime is not None
+    assert AgentContext is not None
+    assert AgentRunRequest is not None
+    assert AgentRunResponse is not None
+    assert callable(create_agent_model)
+    assert callable(create_runtime_agent)
+
+
+def test_canonical_tools_exports():
+    """Verify that src/tools exposes deterministic tools."""
+    import tools
+    from tools import echo_diagnostic_tool
+
+    assert echo_diagnostic_tool is not None
+    assert callable(echo_diagnostic_tool.invoke)
