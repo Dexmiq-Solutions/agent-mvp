@@ -1,4 +1,4 @@
-"""Domain models for the Context Formatting stage of the RAG generation pipeline."""
+"""Domain models for the Context Formatting stage of the RAG retrieval pipeline."""
 
 from dataclasses import dataclass, field
 from typing import Any
@@ -9,8 +9,7 @@ class FormattedContextItem:
     """Represents an individual formatted context item.
 
     Captures the verbatim retrieved content alongside structured, model-facing
-    metadata and hierarchy, cleanly formatted for downstream prompt construction
-    and LLM inference.
+    metadata and hierarchy, cleanly formatted for downstream consumption.
     """
 
     index: int
@@ -44,7 +43,7 @@ class FormattedContextItem:
 class FormattedContext:
     """Structured, model-readable representation of retrieved context.
 
-    Positioned between Final Context (retrieval) and Prompt Construction (generation).
+    Positioned between Final Context Assembly (retrieval) and the application/Agent boundary.
     Preserves exact retrieval ordering, source provenance, and content integrity,
     while cleanly transforming raw context items into an unambiguous, model-readable
     textual format.

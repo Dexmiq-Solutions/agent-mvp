@@ -148,6 +148,8 @@ from exceptions.retrieval import (
     FilterEvaluationError,
     ContextAssemblyError,
     ContextAssemblyValidationError,
+    ContextFormattingError,
+    ContextFormattingValidationError,
 )
 from exceptions.llm import (
     LLMAuthenticationError,
@@ -159,22 +161,6 @@ from exceptions.llm import (
     LLMTimeoutError,
     LLMUnavailableError,
     LLMValidationError,
-)
-from exceptions.generation import (
-    ContextFormattingError,
-    ContextFormattingValidationError,
-    EvaluationError,
-    EvaluationOutputError,
-    EvaluationProviderError,
-    EvaluationTimeoutError,
-    EvaluationValidationError,
-    GenerationError,
-    PostProcessingError,
-    PostProcessingValidationError,
-    PromptConstructionError,
-    PromptConstructionValidationError,
-    RegenerationExhaustedError,
-    StructuredOutputError,
 )
 
 __all__ = [
@@ -301,12 +287,8 @@ __all__ = [
     "FilterEvaluationError",
     "ContextAssemblyError",
     "ContextAssemblyValidationError",
-    # Generation & Prompt Construction Exceptions
-    "GenerationError",
     "ContextFormattingError",
     "ContextFormattingValidationError",
-    "PromptConstructionError",
-    "PromptConstructionValidationError",
     # LLM Interface Exceptions
     "LLMError",
     "LLMConfigurationError",
@@ -317,17 +299,6 @@ __all__ = [
     "LLMRateLimitError",
     "LLMAuthenticationError",
     "LLMStreamError",
-    # Post-processing Exceptions
-    "PostProcessingError",
-    "PostProcessingValidationError",
-    "StructuredOutputError",
-    # Evaluation Exceptions
-    "EvaluationError",
-    "EvaluationValidationError",
-    "EvaluationProviderError",
-    "EvaluationTimeoutError",
-    "EvaluationOutputError",
-    "RegenerationExhaustedError",
     # Conversation & Message Exceptions
     "ConversationError",
     "ConversationNotFoundError",

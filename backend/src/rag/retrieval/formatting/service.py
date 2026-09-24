@@ -5,11 +5,11 @@ from typing import Any, Optional, Sequence
 
 from core.config import Settings, get_settings
 from observability.logging import get_logger
-from exceptions.generation import ContextFormattingValidationError
-from rag.generation.formatting.base import BaseContextFormatter
-from rag.generation.formatting.config import ContextFormattingConfig
-from rag.generation.formatting.models import FormattedContext
-from rag.generation.formatting.text import TextContextFormatter
+from exceptions.retrieval import ContextFormattingValidationError
+from rag.retrieval.formatting.base import BaseContextFormatter
+from rag.retrieval.formatting.config import ContextFormattingConfig
+from rag.retrieval.formatting.models import FormattedContext
+from rag.retrieval.formatting.text import TextContextFormatter
 
 logger = get_logger(__name__)
 
@@ -19,8 +19,7 @@ _context_formatting_service: Optional["ContextFormattingService"] = None
 class ContextFormattingService:
     """Service responsible for formatting authoritative retrieval contexts into model representations.
 
-    Positions at the generation boundary directly following Context Assembly and Relevance Check,
-    and directly preceding Prompt Construction.
+    Positions at the retrieval boundary directly following Context Assembly and Relevance Check.
     Transforms raw structured context items into a clean, model-readable, metadata-aware representation
     while strictly preserving retrieval ordering, source coordinates, and evidence integrity.
     """

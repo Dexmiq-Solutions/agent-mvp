@@ -5,8 +5,8 @@ Validates that:
 2. Core is foundational and does not import application, domain, or delivery layers.
 3. Observability is foundational and does not import RAG, LLM, or App.
 4. Storage, DB, and RAG do not import App (no lower-level -> delivery layer coupling).
-5. RAG generation cleanly consumes LLM.
-6. No stale import paths (app.core, rag.generation.llm) exist across the codebase.
+5. RAG focuses strictly on knowledge retrieval and returns RetrievalResult without generation coupling.
+6. No stale import paths (app.core, rag.generation) exist across the codebase.
 """
 
 import ast
@@ -136,8 +136,8 @@ def test_lower_layers_do_not_import_app():
 
 
 def test_no_stale_import_paths_in_src_and_alembic():
-    """Verify that no code in src/ or alembic/ imports from 'app.core' or 'rag.generation.llm'."""
-    pattern = re.compile(r"\b(app\.core|rag\.generation\.llm)\b")
+    """Verify that no code in src/ or alembic/ imports from retired generation modules or app.core."""
+    pattern = re.compile(r"\b(app\.core|rag\.generation|services\.generation_service|schemas\.generation|exceptions\.generation)\b")
     violations = []
     for target_dir in [SRC_ROOT, ALEMBIC_ROOT]:
         for py_file in target_dir.rglob("*.py"):
@@ -147,6 +147,13 @@ def test_no_stale_import_paths_in_src_and_alembic():
                         violations.append(f"{py_file}:{idx}: {line.strip()}")
 
     assert not violations, f"Found stale import paths: {violations}"
+
+
+def test_rag_generation_directory_retired():
+    """Verify that obsolete RAG generation package has been completely removed."""
+    gen_dir = SRC_ROOT / "rag" / "generation"
+    assert not gen_dir.exists(), "src/rag/generation/ directory must be completely retired"
+
 
 
 def test_canonical_llm_exports():

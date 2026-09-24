@@ -1116,26 +1116,18 @@ curl -X DELETE "http://localhost:8000/projects/b7e6c5a1-4321-4def-9876-543210abc
 
 ---
 
-## Messages & Generation
+## Messages API (Multi-turn History)
 
-The Messages API powers multi-turn dialogue within a conversation and provides the gateway to the backend's end-to-end RAG retrieval + LLM synthesis pipeline.
+The Messages API powers multi-turn dialogue within a conversation by persisting and listing message turns (`user` or `assistant`).
+
+> **Architectural Boundary Notice (Phase 1 — RAG Generation Layer Retired)**:
+> In earlier versions, `POST .../messages` supported a query parameter `generate=true` that ran an end-to-end RAG retrieval + LLM synthesis + groundedness evaluation pipeline within RAG. In Phase 1 of the BRD Agent architecture, this RAG-owned generation layer has been retired. RAG is strictly responsible for document processing, indexing, and retrieval (`POST /projects/{project_id}/retrieval`), returning a clean `RetrievalResult`. Multi-turn dialogue generation, evaluation, reasoning, and document synthesis will be owned by the future BRD Agent.
 
 ---
 
-### Send Message / Generate AI Response
+### Create Message Turn
 
-- **Purpose**: This endpoint supports two primary operational modes controlled by the `generate` query parameter:
-  1. **Standard Mode (`generate=false`, default)**: Appends and persists a single message turn (`user` or `assistant`) into the conversation history. Returns the created `MessageResponse`.
-  2. **Generation Mode (`generate=true`, role="user")**:
-     - Persists the user's message turn to PostgreSQL/SQLite.
-     - Executes the project-isolated RAG retrieval pipeline (dense vector search, sparse keyword search, RRF fusion, cross-encoder reranking, database chunk hydration).
-     - Formats retrieved knowledge context.
-     - Constructs a prompt containing the default system instructions, context items, and the user's query.
-     - Executes LLM inference via the configured LLM provider (e.g. OpenAI GPT-4o).
-     - Post-processes and normalizes response text.
-     - Evaluates groundedness against context and safety compliance through an independent LLM evaluation quality gate (triggering bounded regeneration if ungrounded).
-     - Persists the resulting assistant turn with complete execution telemetry in its `metadata`.
-     - Returns the assistant's `MessageResponse`.
+- **Purpose**: Appends and persists a single message turn (`user` or `assistant`) into the conversation history. Returns the created `MessageResponse`.
 - **HTTP Method**: `POST`
 - **Endpoint**: `/projects/{project_id}/conversations/{conversation_id}/messages`
 - **Required Path Parameters**:
@@ -1143,13 +1135,10 @@ The Messages API powers multi-turn dialogue within a conversation and provides t
   | :--- | :--- | :--- |
   | `project_id` | string (UUID) | Owning project identifier |
   | `conversation_id` | string (UUID) | Target conversation identifier |
-- **Query Parameters**:
-  | Parameter | Type | Default | Description |
-  | :--- | :--- | :--- | :--- |
-  | `generate` | boolean | `false` | When `true` (and `role="user"`), executes the complete RAG + LLM workflow and returns the generated assistant message turn |
+- **Query Parameters**: None
 - **Required Headers**: `Content-Type: application/json`
 - **Authentication**: None
-- **Prerequisites**: Obtain `project_id` and `conversation_id`. For generation mode, ensure documents have been uploaded and indexed in the project.
+- **Prerequisites**: Obtain `project_id` and `conversation_id`.
 
 #### Request Body Structure
 | Field | Type | Required | Description |
@@ -1168,55 +1157,23 @@ The Messages API powers multi-turn dialogue within a conversation and provides t
 }
 ```
 
-#### Response Structure (201 Created) — When `generate=true`
+#### Response Structure (201 Created)
 ```json
 {
-  "id": "77777777-8888-9999-aaaa-bbbbbbbbbbbb",
+  "id": "66666666-5555-4444-3333-222222222222",
   "conversation_id": "c3d2e1f0-1234-5678-9abc-def012345678",
-  "role": "assistant",
-  "content": "Under Section 11.1 of the agreement, the aggregate liability of either party is capped at twelve (12) months of fees paid immediately preceding the claim.",
+  "role": "user",
+  "content": "What is the maximum liability cap specified in the agreement?",
   "metadata": {
-    "user_message_id": "66666666-5555-4444-3333-222222222222",
-    "finish_reason": "stop",
-    "model": "gpt-4o",
-    "usage": {
-      "input_tokens": 850,
-      "output_tokens": 42,
-      "total_tokens": 892
-    },
-    "retrieval": {
-      "chunks_count": 3,
-      "duration_ms": 38.2,
-      "attempts_count": 1,
-      "retrieval_query": "What is the maximum liability cap specified in the agreement?",
-      "fallback_triggered": false
-    },
-    "evaluation": {
-      "grounded": true,
-      "safe": true,
-      "reason": "Directly supported by Section 11.1 cited in context."
-    },
-    "evaluation_passed": true,
-    "generation_attempts": 1,
-    "total_duration_ms": 1150.45
+    "client_session": "web-client-v1"
   },
   "created_at": "2026-09-14T12:12:00.000000Z"
 }
 ```
 
-#### cURL (Mode 1: Standard Message Persistence, `generate=false`)
+#### cURL (Message Persistence)
 ```bash
 curl -X POST "http://localhost:8000/projects/b7e6c5a1-4321-4def-9876-543210abcdef/conversations/c3d2e1f0-1234-5678-9abc-def012345678/messages" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "content": "Hello, I have questions about this contract.",
-    "role": "user"
-  }'
-```
-
-#### cURL (Mode 2: RAG Retrieval + LLM Generation, `generate=true`)
-```bash
-curl -X POST "http://localhost:8000/projects/b7e6c5a1-4321-4def-9876-543210abcdef/conversations/c3d2e1f0-1234-5678-9abc-def012345678/messages?generate=true" \
   -H "Content-Type: application/json" \
   -d '{
     "content": "What is the maximum liability cap specified in the agreement?",
@@ -1230,7 +1187,6 @@ curl -X POST "http://localhost:8000/projects/b7e6c5a1-4321-4def-9876-543210abcde
 - **Params**:
   - `project_id`: `b7e6c5a1-4321-4def-9876-543210abcdef`
   - `conversation_id`: `c3d2e1f0-1234-5678-9abc-def012345678`
-  - `generate`: `true` *(set to `true` for AI generation, or `false` for manual turn)*
 - **Headers**:
   - `Content-Type`: `application/json`
 - **Body** (`raw` - `JSON`):
@@ -1484,9 +1440,9 @@ The following observations, gaps, and design inconsistencies were identified dur
 - **Current Situation**: `DocumentProcessingService` implements parsing, cleaning, chunking, embedding generation, and vector indexing. However, there is **no public API endpoint** (e.g. `POST /projects/{project_id}/sources/{document_id}/process` or `POST .../versions/{version_id}/index`) to trigger or retry indexing.
 - **Impact**: In the default configuration (`AUTO_PROCESS_DOCUMENTS=false`), uploaded files remain in `"status": "pending"` indefinitely unless an external worker or custom test script invokes `DocumentProcessingService.trigger_processing()`.
 
-### 3. Orphaned Generation Request/Response Schemas
-- **Current Situation**: `GenerationRequestSchema` and `GenerationResponseSchema` are defined in `schemas/generation.py` and exported in `schemas/__init__.py`. However, no standalone router endpoint (such as `POST /projects/{project_id}/conversations/{conversation_id}/generate`) utilizes them.
-- **Impact**: Generation is solely triggered via `POST /projects/{project_id}/conversations/{conversation_id}/messages?generate=true`, which accepts `MessageCreate` and returns a standard `MessageResponse` (with generation telemetry embedded into the `metadata` dictionary) instead of returning `GenerationResponseSchema`.
+### 3. Retired RAG Generation Layer (Phase 1)
+- **Current Situation**: In Phase 1 of the BRD Agent transition, the RAG-owned generation layer (`GenerationService`, `schemas/generation.py`, `rag/generation/`, and the `generate=true` parameter on the messages endpoint) has been formally retired.
+- **Architectural Shift**: RAG strictly retrieves knowledge evidence (`RetrievalResult`), while reasoning, LLM generation, validation, and multi-turn response synthesis will be owned by the future BRD Agent in subsequent phases.
 
 ### 4. Unimplemented Individual Message Modification & Deletion
 - **Current Situation**: FastAPI exception handlers in `app/main.py` explicitly handle `MessageNotFoundError` and `ConversationMessageMismatchError`. However, `api/conversations.py` only defines endpoints to create and list messages. There are no endpoints to update (`PATCH .../messages/{message_id}`) or delete (`DELETE .../messages/{message_id}`) an individual message.

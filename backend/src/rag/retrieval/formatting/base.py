@@ -1,10 +1,10 @@
-"""Abstract base class defining the strategy interface for Context Formatters."""
+"""Abstract base class defining the strategy interface for Context Formatters in the RAG retrieval pipeline."""
 
 from abc import ABC, abstractmethod
 from typing import Any, Optional, Sequence
 
-from rag.generation.formatting.config import ContextFormattingConfig
-from rag.generation.formatting.models import FormattedContext
+from rag.retrieval.formatting.config import ContextFormattingConfig
+from rag.retrieval.formatting.models import FormattedContext
 
 
 class BaseContextFormatter(ABC):
@@ -12,7 +12,7 @@ class BaseContextFormatter(ABC):
 
     Follows the Strategy Pattern to allow plugging in diverse representation
     approaches (e.g. structured text, XML, JSON, citation-annotated) without
-    altering the retrieval pipeline or Prompt Construction contracts.
+    altering the retrieval pipeline contracts.
     """
 
     def __init__(self, config: Optional[ContextFormattingConfig] = None) -> None:

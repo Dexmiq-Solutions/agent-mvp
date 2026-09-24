@@ -1,12 +1,12 @@
-"""TextContextFormatter implementing the structured, metadata-aware textual representation."""
+"""TextContextFormatter implementing the structured, metadata-aware textual representation for RAG retrieval."""
 
 import time
 from typing import Any, Optional, Sequence
 
-from exceptions.generation import ContextFormattingValidationError
-from rag.generation.formatting.base import BaseContextFormatter
-from rag.generation.formatting.config import ContextFormattingConfig
-from rag.generation.formatting.models import FormattedContext, FormattedContextItem
+from exceptions.retrieval import ContextFormattingValidationError
+from rag.retrieval.formatting.base import BaseContextFormatter
+from rag.retrieval.formatting.config import ContextFormattingConfig
+from rag.retrieval.formatting.models import FormattedContext, FormattedContextItem
 
 
 class TextContextFormatter(BaseContextFormatter):

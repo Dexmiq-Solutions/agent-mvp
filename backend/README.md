@@ -1607,30 +1607,26 @@ Relevance Check / Fallback
 
 ---
 
-## Context Formatting
+## Context Formatting (Stage 11 of Retrieval Pipeline)
 
 ### Responsibility & Scope
 
-The **Context Formatting** stage is the dedicated in-memory transformation bridge between the authoritative **Final Context** (from rag.retrieval, hydration, and assembly) and **Prompt Construction**.
+The **Context Formatting** stage is the dedicated in-memory transformation stage (Stage 11 of the RAG retrieval pipeline in `rag.retrieval.formatting`) that converts the authoritative **Final Context** (`AssembledContext`) into a structured, model-ready `FormattedContext` encapsulated within `RetrievalResult`:
 
 ```
 Final Context (AssembledContext)
         │
         ▼
-Context Formatting (ContextFormattingService)
+Context Formatting (ContextFormattingService - Stage 11 of RAG)
         │  (In-memory, deterministic, metadata-aware textual transformation)
         ▼
 Formatted Context (FormattedContext)
         │
-        │        Original User Query
-        │                 │
-        └────────┬────────┘
-                 ▼
-        Prompt Construction (PromptConstructionService)
-                 ▼
-        Constructed Prompt (ConstructedPrompt)
-                 ▼
-        LLM / Agent Inference
+        ▼
+Authoritative Retrieval Result (RetrievalResult.formatted_context / formatted_text)
+        │
+        ▼
+Consuming Application / Future BRD Agent
 ```
 
 > [!IMPORTANT]
@@ -1640,17 +1636,16 @@ Formatted Context (FormattedContext)
 > - **Representation, Not Evidence**: Preserves retrieved evidence verbatim without summarization, rewriting, paraphrasing, semantic compression, or conflict resolution. Conflicting statements across retrieved sources are both preserved.
 > - **Metadata-Aware Model Representation**: Exposes relevant model-facing metadata (document title/ID, version, source, page, section hierarchy) while omitting internal retrieval plumbing (`fusion_score`, `rerank_score`, `dense_rank`, internal database rows).
 > - **Clear Context Boundaries**: Renders explicit delimiters (`RETRIEVED CONTEXT` ... `END RETRIEVED CONTEXT`) and distinct item boundaries (`[Context 1]`, `[Context 2]`, ...).
-> - **Strict Stage Separation**: Context Formatting never touches or injects the original user query or system instructions (those belong exclusively to Prompt Construction).
-> - **Extensible Strategy Pattern**: Pluggable formatting architecture (`BaseContextFormatter`, `TextContextFormatter`) ready for future representation variants.
+> - **Extensible Strategy Pattern**: Pluggable formatting architecture (`BaseContextFormatter`, `TextContextFormatter`).
 
 ### Core Components
 
-- **`FormattedContext` (`generation.formatting.models`)**: Immutable structured container holding the formatted model-readable text, ordered `FormattedContextItem` elements, tenant ID, and execution metrics.
-- **`FormattedContextItem` (`generation.formatting.models`)**: Immutable representation of an individual formatted item containing verbatim content, display index, and semantic metadata coordinates.
-- **`ContextFormattingConfig` (`generation.formatting.config`)**: Configuration governing strategy, delimiters, item label templates, metadata/provenance inclusion, and empty context handling.
-- **`BaseContextFormatter` / `TextContextFormatter` (`generation.formatting.base`, `generation.formatting.text`)**: Strategy interface and default structured text formatter.
-- **`ContextFormattingService` (`generation.formatting.service`)**: Service executing input validation, tenant isolation filtering, and formatter strategy execution.
-- **`format_context` / `format_context_async` (`generation.formatting`)**: Functional convenience entrypoints for synchronous and async generation pipelines.
+- **`FormattedContext` (`rag.retrieval.formatting.models`)**: Immutable structured container holding the formatted model-readable text, ordered `FormattedContextItem` elements, tenant ID, and execution metrics.
+- **`FormattedContextItem` (`rag.retrieval.formatting.models`)**: Immutable representation of an individual formatted item containing verbatim content, display index, and semantic metadata coordinates.
+- **`ContextFormattingConfig` (`rag.retrieval.formatting.config`)**: Configuration governing strategy, delimiters, item label templates, metadata/provenance inclusion, and empty context handling.
+- **`BaseContextFormatter` / `TextContextFormatter` (`rag.retrieval.formatting.base`, `rag.retrieval.formatting.text`)**: Strategy interface and default structured text formatter.
+- **`ContextFormattingService` (`rag.retrieval.formatting.service`)**: Service executing input validation, tenant isolation filtering, and formatter strategy execution.
+- **Domain Exceptions (`exceptions.retrieval`)**: `ContextFormattingError`, `ContextFormattingValidationError` (both inherit from `RetrievalError`).
 
 ### Configuration Reference
 
@@ -1669,64 +1664,18 @@ Formatted Context (FormattedContext)
 
 ---
 
-## Prompt Construction
+## Shared LLM Infrastructure (`src/llm/`)
 
 ### Responsibility & Scope
 
-The **Prompt Construction** stage is the dedicated boundary between authoritative retrieval results (**Final Context**) and downstream **LLM / Agent Inference**.
+The **LLM Infrastructure** (`src/llm/`) provides a provider-independent asynchronous client layer for interacting with OpenAI and OpenAI-compatible providers (such as OpenRouter, vLLM, and Ollama).
+
+In Phase 1:
+- The legacy RAG-owned answer generation, prompt construction, post-processing, and groundedness evaluation layers have been retired.
+- `src/llm/` is retained as a generic shared capability, currently used by RAG for query transformation and query expansion, and positioned as the foundation for the future BRD Agent.
 
 ```
-Original User Query
-        +
-Final Context (AssembledContext / FormattedContext)
-        │
-        ▼
-Prompt Construction (PromptConstructionService)
-        │  (In-memory, deterministic structured formatting)
-        ▼
-Constructed Prompt (ConstructedPrompt)
-        │  (Separated Instructions, Retrieved Context, Original Query)
-        ▼
-LLM / Agent Inference
-```
-
-> [!IMPORTANT]
-> **Key Invariants**:
-> - **In-Memory & Deterministic**: Prompt Construction does not execute LLMs, query databases, invoke Qdrant, perform network calls, or calculate embeddings.
-> - **Strict Generation Boundary**: It does not perform retrieval, relevance checking, context selection, chunk rewriting, summarization, semantic compression, or context pruning.
-> - **Original Query Preservation**: The original user query is faithfully preserved and formatted without substitution by transformed/rewritten queries.
-> - **Context Integrity & Order**: Retrieved context items are rendered in exact retrieval rank order with identities (`chunk_id`, `document_id`, `document_version_id`), provenance (`heading`, `section_path`, `source`), and verbatim content preserved.
-> - **Logical Separation**: Instructions, Retrieved Context, and the Original Query are logically separated and packaged into provider-independent representations (including standard chat `messages`).
-> - **Provider Independence**: Output is decoupled from specific providers (OpenAI, OpenRouter, Anthropic) or agent frameworks.
-
-### Core Components
-
-- **`ConstructedPrompt` / `GenerationPrompt` (`generation.prompt.models`)**: Structured, immutable representation holding `system_instruction`, `user_query`, `context_text`, composite `user_prompt`, `messages` (`tuple[dict[str, str], ...]`), tenant ID, and execution metrics.
-- **`PromptConstructionConfig` (`generation.prompt.config`)**: Configuration governing default system instructions, headers, metadata/provenance inclusion, and empty context handling.
-- **`PromptConstructionService` (`generation.prompt.service`)**: Service executing input validation, query extraction, context formatting, and prompt assembly.
-- **`construct_prompt` / `construct_prompt_async` (`generation.prompt`)**: Functional convenience entrypoints for synchronous and async generation pipelines.
-
-### Configuration Reference
-
-`PromptConstructionConfig` parameters:
-
-| Variable / Parameter | Default | Description |
-| :--- | :--- | :--- |
-| `PROMPT_CONSTRUCTION_DEFAULT_SYSTEM_INSTRUCTION` / `default_system_instruction` | Standard assistant instruction | Default system instructions guiding model generation |
-| `PROMPT_CONSTRUCTION_INCLUDE_METADATA` / `include_metadata` | `true` | If `true`, formats document and chunk identity coordinates into each item |
-| `PROMPT_CONSTRUCTION_INCLUDE_PROVENANCE` / `include_provenance` | `true` | If `true`, formats source filenames, headings, and section paths |
-| `PROMPT_CONSTRUCTION_ALLOW_EMPTY_CONTEXT` / `allow_empty_context` | `true` | If `true`, formats prompt with empty context indicator; if `false`, raises validation error |
-
----
-
-## LLM Interface (Generation Stage)
-
-### Responsibility & Scope
-
-The **LLM Interface** is the dedicated generation execution layer responsible for executing the structured `ConstructedPrompt` output against a configured language model provider and returning a normalized `LLMResult`.
-
-```
-Constructed Prompt (ConstructedPrompt)
+Caller (RAG Query Transformation / Future BRD Agent)
         │
         ▼
 LLM Interface (LLMService / BaseLLMInterface)
@@ -1735,7 +1684,7 @@ LLM Interface (LLMService / BaseLLMInterface)
 OpenAI-Compatible Adapter (OpenAICompatibleLLMAdapter)
         │  (Asynchronous I/O, Bounded Retries, Bounded Timeout, Observability)
         ▼
-Configured Model (OpenAI / OpenRouter / vLLM / Ollama)
+Configured Provider (OpenAI / OpenRouter / vLLM / Ollama)
         │
         ▼
 Normalized LLM Result (LLMResult / LLMStreamEvent)
@@ -1743,26 +1692,21 @@ Normalized LLM Result (LLMResult / LLMStreamEvent)
 
 > [!IMPORTANT]
 > **Key Invariants**:
-> - **Provider Independence**: Application and RAG pipeline code depend strictly on `BaseLLMInterface`, not on concrete vendor SDKs. Provider-specific behavior remains encapsulated inside the adapter layer.
-> - **Future Deep Agent / LangGraph Transition**: The core RAG retrieval boundary strictly terminates at `ConstructedPrompt`. The LLM execution layer is removable and can be substituted with an Agent Interface / Deep Agent without modifying retrieval, hydration, context assembly, context formatting, or prompt construction.
-> - **Environment-Driven Sensitive Data**: API keys (`OPENAI_API_KEY`) and custom endpoint URLs (`LLM_BASE_URL`) are never hard-coded or defaulted in source config files. They reside strictly in `.env` (documented in `.env.example`) and are loaded dynamically by `LLMConfig.from_settings()`.
-> - **Input Contract Preservation**: Consumes `ConstructedPrompt` directly via `prompt.to_messages()`, faithfully preserving system instruction and user prompt separation without altering, summarizing, or reconstructing retrieval context.
-> - **Normalized Output**: Translates provider responses into an application-level `LLMResult` containing `content`, `finish_reason`, `usage` (`LLMUsage`), and execution `metadata` without semantic post-processing (no citations, summarization, or BRD transformation).
-> - **Bounded Retries & Timeouts**: Implements bounded exponential backoff retries for transient errors (429 RateLimit, 500/502/503/504 server errors, connection drops, timeouts) and immediate failure without retries for permanent errors (401 Auth, 400 Bad Request, 404 Model Not Found).
-> - **Streaming & Non-Streaming**: First-class async non-streaming (`generate`) and token streaming (`generate_stream` yielding `LLMStreamEvent`).
-> - **Secret Protection**: API keys and sensitive tokens are masked in object representations and never exposed in logs or exception messages.
+> - **Provider Independence**: Callers depend strictly on `BaseLLMInterface`, never on concrete vendor SDKs.
+> - **Environment-Driven Sensitive Data**: API keys (`OPENAI_API_KEY`) and custom endpoint URLs (`LLM_BASE_URL`) reside strictly in `.env` and are loaded dynamically by `LLMConfig.from_settings()`.
+> - **Bounded Retries & Timeouts**: Implements bounded exponential backoff retries for transient errors (429 RateLimit, 5xx server errors, network drops) and fast failure for permanent errors.
+> - **Streaming & Non-Streaming**: Supports both `generate()` and `generate_stream()`.
 
 ### Core Components
 
-- **`LLMResult` (`generation.llm.models`)**: Normalized model completion output containing `content`, `finish_reason`, `usage` (`LLMUsage`), and execution `metadata`.
-- **`LLMStreamEvent` (`generation.llm.models`)**: Normalized event yielded during streaming token generation, containing `delta`, `finish_reason`, and `usage`.
-- **`LLMUsage` (`generation.llm.models`)**: Normalized token metrics (`input_tokens`, `output_tokens`, `total_tokens`). Preserves `None` when omitted by provider without fabricating values.
-- **`LLMConfig` (`generation.llm.config`)**: Configuration governing model selection, timeout, retry policy, temperature, and generation parameters. Dynamically fetches sensitive API keys and base URLs from environment settings.
-- **`BaseLLMInterface` (`generation.llm.interface`)**: Abstract interface defining asynchronous `generate()` and `generate_stream()` contracts.
-- **`OpenAICompatibleLLMAdapter` (`generation.llm.adapters.openai`)**: Asynchronous adapter powered by `AsyncOpenAI`, handling client lifecycle reuse, bounded retries, timeout enforcement, exception translation, and token streaming.
-- **`LLMService` (`generation.llm.service`)**: High-level application service orchestrating model execution with dependency injection support.
-- **`generate_async` / `generate_stream_async` (`generation.llm`)**: Functional convenience entrypoints for non-streaming and streaming generation.
-- **Domain Exceptions (`exceptions.generation`)**: `LLMError`, `LLMConfigurationError`, `LLMValidationError`, `LLMProviderError`, `LLMTimeoutError`, `LLMUnavailableError`, `LLMRateLimitError`, `LLMAuthenticationError`, `LLMStreamError`.
+- **`LLMResult` (`llm.models`)**: Normalized model completion output containing `content`, `finish_reason`, `usage` (`LLMUsage`), and execution `metadata`.
+- **`LLMStreamEvent` (`llm.models`)**: Normalized event yielded during streaming token generation.
+- **`LLMUsage` (`llm.models`)**: Normalized token metrics (`input_tokens`, `output_tokens`, `total_tokens`).
+- **`LLMConfig` (`llm.config`)**: Configuration governing model selection, timeout, retry policy, temperature, and generation parameters.
+- **`BaseLLMInterface` (`llm.interface`)**: Abstract interface defining asynchronous `generate()` and `generate_stream()` contracts.
+- **`OpenAICompatibleLLMAdapter` (`llm.adapters.openai`)**: Asynchronous adapter powered by `AsyncOpenAI`.
+- **`LLMService` (`llm.service`)**: High-level application service.
+- **Domain Exceptions (`exceptions.llm`)**: `LLMError`, `LLMConfigurationError`, `LLMValidationError`, `LLMProviderError`, `LLMTimeoutError`, `LLMUnavailableError`, `LLMRateLimitError`, `LLMAuthenticationError`, `LLMStreamError`.
 
 ### Configuration Reference
 
@@ -1770,159 +1714,26 @@ Normalized LLM Result (LLMResult / LLMStreamEvent)
 
 | Variable / Parameter | Default | Description |
 | :--- | :--- | :--- |
-| `OPENAI_API_KEY` / `api_key` | `None` (Loaded from `.env`) | API key for OpenAI or OpenAI-compatible provider (strictly from environment) |
-| `LLM_BASE_URL` / `base_url` | `None` (Loaded from `.env`) | Custom endpoint URL for OpenRouter, vLLM, Ollama, etc. (strictly from environment) |
-| `LLM_MODEL` / `model` | `"gpt-4o"` | Model identifier used for generation |
+| `OPENAI_API_KEY` / `api_key` | `None` (Loaded from `.env`) | API key for OpenAI or OpenAI-compatible provider |
+| `LLM_BASE_URL` / `base_url` | `None` (Loaded from `.env`) | Custom endpoint URL for OpenRouter, vLLM, Ollama, etc. |
+| `LLM_MODEL` / `model` | `"gpt-4o"` | Model identifier |
 | `LLM_TIMEOUT` / `timeout` | `30.0` | Maximum timeout in seconds per inference request |
 | `LLM_MAX_RETRIES` / `max_retries` | `2` | Maximum retry attempts for transient failures |
 | `LLM_RETRY_DELAY` / `retry_delay` | `0.5` | Base delay in seconds before first retry |
 | `LLM_RETRY_BACKOFF` / `retry_backoff` | `2.0` | Exponential backoff multiplier for subsequent retries |
-| `LLM_TEMPERATURE` / `temperature` | `0.0` | Sampling temperature for generation |
+| `LLM_TEMPERATURE` / `temperature` | `0.0` | Sampling temperature |
 | `LLM_MAX_TOKENS` / `max_tokens` | `None` | Optional upper bound on generated output tokens |
 | `LLM_TOP_P` / `top_p` | `None` | Optional nucleus sampling probability threshold |
 | `LLM_STREAMING_ENABLED` / `streaming_enabled` | `false` | Global flag indicating if streaming is enabled |
 
 ---
 
-## Post-Processing (Generation Stage)
+## Architectural Boundary (Phase 1 — Generation Layer Retired)
 
-### Responsibility & Scope
-
-The **Post-processing stage** is a small, deterministic, provider-independent application-layer stage positioned immediately following the **LLM Interface** and immediately preceding downstream **Groundedness / Safety Checks**.
-
-```
-Model Generation Result (LLMResult / Dict / Duck-typed)
-        │
-        ▼
-Post-Processing Stage (PostProcessingService / BasePostProcessor)
-        │  (Extract content, deterministic normalization, finish reason mapping, usage preservation)
-        ▼
-Normalized Application Response (ProcessedResponse / PostProcessedResponse)
-        │
-        ▼
-Downstream Groundedness / Safety Checks (Future evaluation boundary)
-        │
-        ▼
-Final API Response
-```
-
-> [!IMPORTANT]
-> **Key Invariants**:
-> - **Deterministic & Local**: Pure CPU-local execution. Post-processing never invokes an LLM, never performs semantic rewriting, never summarizes or corrects factual errors, never queries databases or vector stores, and never executes external I/O.
-> - **Provider Independence**: Operates on application-level results (`LLMResult`, dictionaries, or duck-typed response containers) rather than vendor SDK objects. No vendor-specific SDK classes or responses are leaked.
-> - **Groundedness & Safety Boundary**: Post-processing prepares and normalizes the response representation. It does NOT decide whether a response is grounded or safe, and does NOT execute regeneration logic (which remains owned by downstream orchestration).
-> - **Future Deep Agent / LangGraph Compatibility**: Small, modular, and replaceable. Can accept outputs from future Deep Agent / LangGraph execution layers without altering RAG retrieval or prompt boundaries.
-> - **Single Source of Truth**: Reuses `LLMUsage` and application settings contracts without fabricating token metrics.
-> - **Observability & Secret Protection**: Records execution duration, content length, and success metrics while strictly prohibiting the logging of sensitive tokens, keys, prompts, or unbounded outputs.
-
-### Core Components
-
-- **`ProcessedResponse` / `PostProcessedResponse` (`generation.postprocessing.models`)**: Immutable application-level container encapsulating normalized `content`, `finish_reason`, `usage` (`LLMUsage`), `model`, `structured_output`, `raw_content`, and execution `metadata`.
-- **`PostProcessingConfig` (`generation.postprocessing.config`)**: Configuration governing whitespace stripping, line ending normalization, finish reason mapping, empty content tolerance, and structured JSON parsing.
-- **`BasePostProcessor` (`generation.postprocessing.base`)**: Abstract base strategy interface for post-processing implementations.
-- **`PostProcessingService` (`generation.postprocessing.service`)**: Core service executing input extraction, deterministic normalization, finish reason mapping, optional structured JSON extraction, and observability tracking.
-- **`post_process` / `post_process_async` (`generation.postprocessing`)**: Functional convenience entrypoints for synchronous and asynchronous generation pipelines.
-- **Domain Exceptions (`exceptions.generation`)**: `PostProcessingError`, `PostProcessingValidationError`, `StructuredOutputError`.
-
-### Configuration Reference
-
-`PostProcessingConfig` parameters and application settings:
-
-| Variable / Parameter | Default | Description |
-| :--- | :--- | :--- |
-| `POST_PROCESSING_STRIP_WHITESPACE` / `strip_whitespace` | `true` | If `true`, strips outer leading and trailing whitespace while preserving internal indentation |
-| `POST_PROCESSING_NORMALIZE_LINE_ENDINGS` / `normalize_line_endings` | `true` | If `true`, normalizes CRLF (`\r\n`) and CR (`\r`) to standard LF (`\n`) |
-| `POST_PROCESSING_NORMALIZE_FINISH_REASON` / `normalize_finish_reason` | `true` | If `true`, normalizes vendor finish reasons (e.g. `end_turn`, `complete` -> `stop`, `max_tokens` -> `length`) |
-| `POST_PROCESSING_ALLOW_EMPTY_CONTENT` / `allow_empty_content` | `false` | If `false`, raises `PostProcessingValidationError` on empty/missing content; if `true`, returns empty string |
-| `POST_PROCESSING_PARSE_JSON` / `parse_json` | `false` | If `true`, extracts and parses structured JSON output from markdown code blocks or raw text |
-
----
-
-## Groundedness & Safety Evaluation (Generation Stage)
-
-### Responsibility & Scope
-
-The **Groundedness / Safety Check** stage serves as the authoritative **quality gate** in the RAG generation pipeline, positioned immediately downstream of Post-processing:
-
-```
-User Query
-    │
-    ▼
-RAG Retrieval (Context Assembly)
-    │
-    ▼
-Context Formatting (FormattedContext)
-    │
-    ▼
-Prompt Construction (ConstructedPrompt)
-    │
-    ▼
-LLM Interface (OpenAI-compatible inference)
-    │
-    ▼
-Post-processing (ProcessedResponse)
-    │
-    ▼
-Groundedness / Safety Check (EvaluationService)
-    │
-    ├─────────────────────────────┐
-    │ [Passed: grounded & safe]   │ [Failed: ungrounded or unsafe]
-    ▼                             ▼
-Final Accepted Response    Bounded Regeneration / Fallback
-    │                             │
-    ▼                             ▼
-Downstream API / User      Prompt Construction (with Feedback)
-                                  │
-                                  ▼
-                                 LLM
-                                  │
-                                  ▼
-                           Post-processing
-                                  │
-                                  ▼
-                     Groundedness / Safety Check
-                                  │
-                                 ...
-```
-
-> [!IMPORTANT]
-> **Key Architectural Invariants**:
-> - **Strict Quality Gate**: Evaluates candidate responses without generating replacement content, without rewriting responses, and without querying databases or vector stores.
-> - **Evaluation Dimensions**:
->   1. **Groundedness**: All claims must be directly supported by supplied project context. Semantic similarity alone is not sufficient.
->   2. **Relevance**: The response must directly address the user's original query.
->   3. **Answerability / Coverage**: If context contains insufficient information, the response must truthfully decline rather than hallucinate.
->   4. **Specificity**: Claims must not exceed the degree of precision warranted by the evidence.
->   5. **Evidence Quality**: Statements must derive from actual context evidence rather than generic assumptions.
->   6. **Safety**: Responses must be free from harmful instructions, prompt injection exploits, and confidential system instruction leaks.
-> - **Quality Gate Acceptance Rule**: A response passes **only** if both `grounded == True` AND `safe == True`. Under no circumstance can evaluator timeouts, provider errors, or malformed outputs default to a passing evaluation.
-> - **Bounded Regeneration**: Regeneration attempts are strictly bounded by `max_regeneration_attempts` (default: 2 retries, 3 total attempts). Evaluator reasons are passed to Prompt Construction as corrective feedback.
-> - **Exhaustion Behavior**: If all allowed attempts fail evaluation, the pipeline raises `RegenerationExhaustedError` containing the final failure reason. It never fabricates an answer or returns a rejected response as successful.
-> - **Future Deep Agent / LangGraph Compatibility**: Cleanly modular and replaceable. Can easily serve as a validation node in future LangGraph or Deep Agent workflows without altering RAG retrieval or prompt boundaries.
-
-### Core Components
-
-- **`EvaluationResult` (`generation.evaluation.models`)**: Structured quality gate decision capturing `grounded`, `safe`, `reason`, `score`, and `metadata`, with `passed` (`grounded and safe`) and `is_acceptable`.
-- **`EvaluationRequest` (`generation.evaluation.models`)**: Encapsulates validated original query, context, response, and project ID.
-- **`EvaluationConfig` (`generation.evaluation.config`)**: Configuration governing model selection, bounded timeouts, retries, temperature, and regeneration limits.
-- **`BaseEvaluator` (`generation.evaluation.base`)**: Abstract base interface for evaluation implementations.
-- **`EvaluationService` (`generation.evaluation.service`)**: Core evaluator service enforcing original query validation, project tenant isolation, fast-path rejection of empty responses, evaluator prompt construction, asynchronous LLM invocation, and structured JSON parsing.
-- **`generate_with_evaluation_async` (`generation.evaluation.service`)**: Orchestrator executing the bounded generation loop with quality gate validation, feedback propagation, and exhaustion handling.
-- **`evaluate` / `evaluate_async` (`generation.evaluation`)**: Functional convenience entrypoints for synchronous and asynchronous quality gate evaluation.
-- **Domain Exceptions (`exceptions.generation`)**: `EvaluationError`, `EvaluationValidationError`, `EvaluationProviderError`, `EvaluationTimeoutError`, `EvaluationOutputError`, `RegenerationExhaustedError`.
-
-### Configuration Reference
-
-`EvaluationConfig` parameters and application settings:
-
-| Variable / Parameter | Default | Description |
-| :--- | :--- | :--- |
-| `EVALUATION_ENABLED` / `enabled` | `true` | If `true`, executes LLM-based quality gate check; if `false`, bypasses evaluation |
-| `EVALUATION_MODEL` / `model` | `null` (defaults to `LLM_MODEL`) | Dedicated model identifier for quality gate evaluation |
-| `EVALUATION_TIMEOUT` / `timeout` | `15.0` | Bounded execution timeout in seconds for evaluation requests |
-| `EVALUATION_MAX_RETRIES` / `max_retries` | `1` | Maximum transient retry attempts for evaluation LLM calls |
-| `EVALUATION_TEMPERATURE` / `temperature` | `0.0` | Sampling temperature for deterministic quality gate evaluation |
-| `EVALUATION_MAX_REGENERATION_ATTEMPTS` / `max_regeneration_attempts` | `2` | Maximum bounded regeneration attempts after an initial rejected generation |
+> [!NOTE]
+> **RAG vs. Agent Responsibilities**:
+> - **RAG Responsibility**: Ingestion, chunking, indexing, hybrid retrieval, hydration, context assembly, and formatting. RAG returns an authoritative `RetrievalResult`.
+> - **Agent Responsibility**: Reasoning, evidence evaluation, gap detection, contradiction handling, BRD generation, section validation, regeneration loops, clarification, and user responses (owned by the future BRD Agent in Phase 2+).
 
 ---
 
@@ -1948,8 +1759,8 @@ uv run uvicorn app.main:app --reload
 # Run full test suite
 uv run pytest
 
-# Run retrieval and generation pipeline tests
-uv run pytest tests/test_indexing.py tests/test_vector_search.py tests/test_keyword_search.py tests/test_keyword_encoder.py tests/test_keyword_qdrant.py tests/test_fusion.py tests/test_metadata_filtering.py tests/test_reranking.py tests/test_chunk_hydration.py tests/test_context_assembly.py tests/test_context_formatting.py tests/test_prompt_construction.py tests/test_llm_interface.py tests/test_post_processing.py tests/test_evaluation.py
+# Run retrieval pipeline tests
+uv run pytest tests/test_indexing.py tests/test_vector_search.py tests/test_keyword_search.py tests/test_keyword_encoder.py tests/test_keyword_qdrant.py tests/test_fusion.py tests/test_metadata_filtering.py tests/test_reranking.py tests/test_chunk_hydration.py tests/test_context_assembly.py tests/test_context_formatting.py tests/test_rag_service.py tests/test_llm_interface.py
 ```
 
 

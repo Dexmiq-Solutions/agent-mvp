@@ -40,25 +40,41 @@ from llm.service import (
     get_llm_service,
     reset_llm_service,
 )
-from rag.generation.prompt.models import ConstructedPrompt
+from dataclasses import dataclass
 
 
 # ==============================================================================
 # Helpers and Fixtures
 # ==============================================================================
 
+@dataclass(frozen=True)
+class SamplePrompt:
+    """Sample prompt object implementing .to_messages() contract for LLM interface testing."""
+
+    system_instruction: str
+    user_query: str
+    context_text: str
+    user_prompt: str
+    messages: tuple[dict[str, str], ...]
+    project_id: str | None = None
+    context_items_count: int = 1
+
+    def to_messages(self) -> list[dict[str, str]]:
+        return [dict(m) for m in self.messages]
+
+
 def make_sample_constructed_prompt(
     system_instruction: str = "You are a test assistant.",
     user_query: str = "What is the capital of France?",
     context_text: str = "Paris is the capital of France.",
-) -> ConstructedPrompt:
-    """Create a sample ConstructedPrompt instance matching Prompt Construction output."""
+) -> SamplePrompt:
+    """Create a sample prompt instance matching LLM input contract."""
     user_prompt = f"## Retrieved Context\n{context_text}\n\n## User Query\n{user_query}"
     messages = (
         {"role": "system", "content": system_instruction},
         {"role": "user", "content": user_prompt},
     )
-    return ConstructedPrompt(
+    return SamplePrompt(
         system_instruction=system_instruction,
         user_query=user_query,
         context_text=context_text,

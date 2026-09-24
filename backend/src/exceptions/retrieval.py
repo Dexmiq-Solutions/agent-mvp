@@ -151,3 +151,12 @@ class ContextAssemblyError(RetrievalError):
 class ContextAssemblyValidationError(ContextAssemblyError):
     """Raised when context assembly input arguments or candidates fail validation."""
 
+
+class ContextFormattingError(RetrievalError):
+    """Base exception for context formatting stage failures."""
+
+
+class ContextFormattingValidationError(ContextFormattingError):
+    """Raised when context formatting inputs fail validation or contract invariants."""
+
+

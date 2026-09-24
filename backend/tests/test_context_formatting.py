@@ -1,14 +1,14 @@
-"""Unit tests for the Context Formatting stage of the RAG generation pipeline."""
+"""Unit tests for the Context Formatting stage of the RAG retrieval pipeline."""
 
 from typing import Any, Optional
 import pytest
 
-from exceptions.generation import (
+from exceptions.retrieval import (
     ContextFormattingError,
     ContextFormattingValidationError,
-    GenerationError,
+    RetrievalError,
 )
-from rag.generation import (
+from rag.retrieval.formatting import (
     DEFAULT_CONTEXT_FOOTER,
     DEFAULT_CONTEXT_HEADER,
     DEFAULT_EMPTY_CONTEXT_TEXT,
@@ -23,9 +23,8 @@ from rag.generation import (
     format_context_async,
     get_context_formatting_service,
     reset_context_formatting_service,
-    construct_prompt,
 )
-from rag.generation.formatting import (
+from rag.retrieval.formatting import (
     ContextFormattingConfig as FormattingContextFormattingConfig,
     ContextFormattingService as FormattingContextFormattingService,
     FormattedContext as FormattingFormattedContext,
@@ -36,7 +35,7 @@ from rag.generation.formatting import (
     get_context_formatting_service as formatting_get_context_formatting_service,
     reset_context_formatting_service as formatting_reset_context_formatting_service,
 )
-from rag.generation import (
+from rag.retrieval import (
     ContextFormattingConfig as RagContextFormattingConfig,
     ContextFormattingError as RagContextFormattingError,
     ContextFormattingService as RagContextFormattingService,
@@ -580,7 +579,7 @@ def test_singleton_get_and_reset():
 
 
 def test_reexports_across_packages():
-    """Verify components can be imported from rag.generation, generation.formatting, and rag.generation."""
+    """Verify components can be imported from rag.retrieval.formatting and rag.retrieval."""
     assert FormattedContext is FormattingFormattedContext
     assert FormattedContext is RagFormattedContext
     assert FormattedContextItem is FormattingFormattedContextItem
@@ -632,12 +631,12 @@ def test_custom_formatter_strategy():
 
 
 # ---------------------------------------------------------------------------
-# 13. Pipeline Integration with Prompt Construction
+# 13. Pipeline Integration with Retrieval Contract
 # ---------------------------------------------------------------------------
 
 
-def test_integration_with_prompt_construction():
-    """Verify full generation preparation pipeline: Final Context -> Context Formatting -> Formatted Context -> Prompt Construction."""
+def test_integration_with_retrieval_result():
+    """Verify retrieval pipeline boundary: Final Context -> Context Formatting -> FormattedContext."""
     # 1. Authoritative Final Context
     item = _make_context_item(
         chunk_id="chk-arch",
@@ -652,18 +651,8 @@ def test_integration_with_prompt_construction():
     formatted_context = format_context(final_context)
     assert isinstance(formatted_context, FormattedContext)
     assert "Software Architecture Guide" in formatted_context.text
-
-    # 3. Prompt Construction stage consuming FormattedContext directly
-    query = "How do microservices communicate?"
-    prompt = construct_prompt(query=query, context=formatted_context)
-
-    # 4. Verification of separation and composition
-    assert prompt.user_query == query
-    assert prompt.context_text == formatted_context.text
-    assert formatted_context.text in prompt.user_prompt
-    assert query in prompt.user_prompt
-    assert prompt.context_items_count == 1
-    assert len(prompt.messages) == 2
+    assert formatted_context.item_count == 1
+    assert not formatted_context.is_empty
 
 
 # ---------------------------------------------------------------------------
@@ -696,5 +685,5 @@ def test_performance_single_pass():
 def test_exception_inheritance():
     """Verify exception hierarchy matches domain design."""
     assert issubclass(ContextFormattingValidationError, ContextFormattingError)
-    assert issubclass(ContextFormattingError, GenerationError)
-    assert issubclass(GenerationError, Exception)
+    assert issubclass(ContextFormattingError, RetrievalError)
+    assert issubclass(RetrievalError, Exception)

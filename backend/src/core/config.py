@@ -151,30 +151,6 @@ class Settings(BaseSettings):
     CONTEXT_FORMATTING_ALLOW_EMPTY_CONTEXT: bool = True
     CONTEXT_FORMATTING_EMPTY_TEXT: str = "[No retrieved context provided]"
 
-    # Prompt Construction / Generation Configuration
-    PROMPT_CONSTRUCTION_DEFAULT_SYSTEM_INSTRUCTION: str = (
-        "You are a helpful and precise assistant. Answer the user's query using only the provided retrieved context. "
-        "If the context does not contain sufficient information to answer the query, clearly state that you do not have enough information."
-    )
-    PROMPT_CONSTRUCTION_INCLUDE_METADATA: bool = True
-    PROMPT_CONSTRUCTION_INCLUDE_PROVENANCE: bool = True
-    PROMPT_CONSTRUCTION_ALLOW_EMPTY_CONTEXT: bool = True
-
-    # Post-Processing Configuration
-    POST_PROCESSING_STRIP_WHITESPACE: bool = True
-    POST_PROCESSING_NORMALIZE_LINE_ENDINGS: bool = True
-    POST_PROCESSING_NORMALIZE_FINISH_REASON: bool = True
-    POST_PROCESSING_ALLOW_EMPTY_CONTENT: bool = False
-    POST_PROCESSING_PARSE_JSON: bool = False
-
-    # Groundedness & Safety Evaluation Configuration
-    EVALUATION_ENABLED: bool = True
-    EVALUATION_MODEL: str | None = None
-    EVALUATION_TIMEOUT: float = 15.0
-    EVALUATION_MAX_RETRIES: int = 1
-    EVALUATION_TEMPERATURE: float = 0.0
-    EVALUATION_MAX_REGENERATION_ATTEMPTS: int = 2
-
     # Document Processing Lifecycle Configuration
     AUTO_PROCESS_DOCUMENTS: bool = True
 

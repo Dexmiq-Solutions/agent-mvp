@@ -43,15 +43,12 @@ from exceptions.retrieval import (
     QueryLengthExceededError,
     RetrievalError,
 )
-from exceptions.generation import (
-    EvaluationError,
-    GenerationError,
+from exceptions.llm import (
     LLMAuthenticationError,
     LLMError,
     LLMProviderError,
     LLMRateLimitError,
     LLMTimeoutError,
-    RegenerationExhaustedError,
 )
 from exceptions.storage import StorageError
 
@@ -268,20 +265,6 @@ def create_application() -> FastAPI:
             content={"detail": f"Retrieval pipeline failed: {exc.message}"},
         )
 
-    @application.exception_handler(RegenerationExhaustedError)
-    async def regeneration_exhausted_handler(
-        request: Request, exc: RegenerationExhaustedError
-    ) -> JSONResponse:
-        logger.warning("Generation quality gate exhausted after %d attempts: %s", exc.attempts, exc.message)
-        return JSONResponse(
-            status_code=getattr(status, "HTTP_422_UNPROCESSABLE_CONTENT", status.HTTP_422_UNPROCESSABLE_ENTITY),
-            content={
-                "detail": str(exc),
-                "attempts": exc.attempts,
-                "reason": exc.last_evaluation.reason if exc.last_evaluation else None,
-            },
-        )
-
     @application.exception_handler(LLMTimeoutError)
     async def llm_timeout_handler(request: Request, exc: LLMTimeoutError) -> JSONResponse:
         logger.error("LLM provider timed out: %s", exc)
@@ -322,21 +305,6 @@ def create_application() -> FastAPI:
             content={"detail": f"LLM inference error: {exc.message}"},
         )
 
-    @application.exception_handler(EvaluationError)
-    async def evaluation_error_handler(request: Request, exc: EvaluationError) -> JSONResponse:
-        logger.error("Evaluation quality gate error: %s", exc)
-        return JSONResponse(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            content={"detail": f"Evaluation quality gate failure: {exc.message}"},
-        )
-
-    @application.exception_handler(GenerationError)
-    async def generation_error_handler(request: Request, exc: GenerationError) -> JSONResponse:
-        logger.error("Generation pipeline failure: %s", exc, exc_info=True)
-        return JSONResponse(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            content={"detail": f"Generation pipeline failed: {exc.message}"},
-        )
 
 
     # --------------------------------------------------------------------------

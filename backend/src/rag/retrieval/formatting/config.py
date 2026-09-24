@@ -1,4 +1,4 @@
-"""Configuration settings for the Context Formatting stage."""
+"""Configuration settings for the Context Formatting stage of the RAG retrieval pipeline."""
 
 from dataclasses import dataclass
 from typing import Optional

@@ -13,7 +13,7 @@ from exceptions.retrieval import (
     ProjectBoundaryViolationError,
     RetrievalError,
 )
-from rag.generation.formatting import (
+from rag.retrieval.formatting import (
     ContextFormattingService,
     FormattedContext,
     get_context_formatting_service,

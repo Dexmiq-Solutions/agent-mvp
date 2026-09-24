@@ -1,208 +1,135 @@
-# LLM Generation Integration Architecture
+# RAG & Agent Architectural Boundary (Phase 1 — Generation Layer Retired)
 
-## 1. Overview & Purpose
+## 1. Architectural Mission & Overview
 
-The **LLM Generation Integration** layer provides the application-level coordination bridging Dexmiq's conversational boundary, project-isolated RAG retrieval pipeline, and LLM inference engine.
+This document defines the architectural boundary established in **Phase 1 of the BRD Agent transition**.
 
-It connects the end-to-end flow:
-```
-Conversation
+The Dexmiq platform previously coupled document retrieval with an internal LLM generation layer:
+```text
+OLD STANDALONE RAG GENERATION (RETIRED)
+
+User Query
     ↓
-User Message Turn
+RAG Retrieval (Dense + Sparse + RRF + Reranking + Hydration + Assembly)
     ↓
-RAG Service (Dense + Sparse + RRF + Reranking + Hydration + Assembly)
+Context Formatting
     ↓
-Retrieved Context
+Prompt Construction (System instructions + context + user query)
     ↓
-Context Formatting (Structured, deterministic markdown context)
+LLM Inference
     ↓
-Prompt Construction (System instructions + context + original user query)
+Post-processing & Normalization
     ↓
-LLM Interface (Provider-independent async inference with timeouts & retries)
+Groundedness & Safety Evaluation Quality Gate
     ↓
-Model Response
+Regeneration / Quality Feedback Loop
     ↓
-Post-processing (Whitespace & line ending normalization, finish reasons)
-    ↓
-Groundedness & Safety Evaluation Quality Gate (Bounded feedback regeneration)
-    ↓
-Assistant Message Persistence
-    ↓
-Conversation Turn Result
+Final Response
 ```
 
-This layer establishes a reliable, non-agentic RAG-backed response generation pipeline ensuring that every generated response is strictly grounded in project-scoped knowledge, meets all safety criteria, and is persisted chronologically within tenant conversations.
+In the target architecture, the **BRD Agent** becomes the intelligent workflow layer. RAG is no longer a standalone question-answering system that generates answers or evaluates them.
+
+The new architecture establishes a clean, decoupled boundary:
+
+```text
+TARGET ARCHITECTURE (PHASE 1 ESTABLISHED)
+
+Query / Retrieval Request
+    ↓
+RAG Retrieval Pipeline (Document ingestion, indexing, search, hydration, context assembly, telemetry)
+    ↓
+RetrievalResult (Evidence Chunks + Metadata + Scores + Formatted Context + Execution Telemetry)
+    ↓
+Agent Boundary (Future Agent Tool)
+    ↓
+BRD Agent (Reasoning, Evidence Evaluation, BRD Synthesis, Validation, Clarification, Feedback Loops)
+```
+
+> **Core Architectural Principle**:
+> **RAG provides knowledge. The Agent decides what to do with that knowledge.**
 
 ---
 
-## 2. Non-Negotiable Architectural Rule: Single Source of Truth
+## 2. Target Responsibility Boundary
 
-In strict accordance with system architecture rules, the LLM Generation Integration layer introduces **zero duplicate abstractions or configurations**:
-
-| Responsibility | Authoritative Implementation Reused | Architectural Rationale |
+| Responsibility | Owning Subsystem | Status in Phase 1 |
 | :--- | :--- | :--- |
-| **LLM Configuration** | `core.config.Settings` & `llm.config.LLMConfig` | All model names, timeouts, retry limits, temperatures, and credentials derive strictly from application `Settings`. No parallel `GenerationConfig` or `ChatConfig`. |
-| **LLM Inference** | `llm.service.LLMService` & `BaseLLMInterface` | OpenAI-compatible adapter encapsulates provider calls, payload mapping, and vendor-specific error translation. |
-| **Infrastructure Retries** | `OpenAICompatibleLLMAdapter` backoff loop | Network timeouts and transient 5xx/429 errors are retried at the adapter layer. The generation layer never wraps this with a duplicate HTTP retry loop. |
-| **RAG Retrieval** | `services.rag_service.RAGService` (`rag/retrieval/service.py`) | Orchestrates multi-stage retrieval across Qdrant, technical sparse encoding, and PostgreSQL hydration. |
-| **Context Formatting** | `rag.generation.formatting.service.ContextFormattingService` | Pre-formats retrieved candidates into deterministic, model-readable context items. |
-| **Prompt Construction** | `rag.generation.prompt.service.PromptConstructionService` | Composes system instruction, verbatim context, and original query with clean logical boundaries and regeneration feedback support. |
-| **Post-processing** | `rag.generation.postprocessing.service.PostProcessingService` | Deterministic normalization of whitespace, line endings, finish reasons, and JSON parsing. |
-| **Evaluation Quality Gate** | `rag.generation.evaluation.service.EvaluationService` | Impartial evaluator checking factual groundedness against context and safety compliance. |
-| **Conversation & Messages** | `services.conversation_service.ConversationService` | Authoritative persistence for both user and assistant message models in PostgreSQL/SQLite. |
-| **Project Boundary Isolation** | `ConversationService.get_conversation`, `ProjectService.get_project`, `RAGService.retrieve` | Asserts tenant ownership across conversation lookups, vector filtering, and chunk hydration. |
+| **Document Ingestion & Parsing** | RAG | Active (`DocumentProcessingService`) |
+| **Cleaning & Normalization** | RAG | Active (`DocumentProcessingService`) |
+| **Chunking & Metadata Enrichment** | RAG | Active (`DocumentProcessingService`) |
+| **Dense & Sparse Indexing** | RAG | Active (Qdrant + BM25/Sparse) |
+| **Query Preprocessing & Transformation** | RAG | Active (`QueryPreprocessor`, `QueryTransformer`) |
+| **Dense & Sparse Vector Retrieval** | RAG | Active (`VectorSearcher`, `SparseSearcher`) |
+| **Reciprocal Rank Fusion (RRF)** | RAG | Active (`ReciprocalRankFusion`) |
+| **Cross-Encoder Reranking** | RAG | Active (`Reranker`) |
+| **Database Chunk Hydration** | RAG | Active (`ChunkHydrator`) |
+| **Context Assembly** | RAG | Active (`ContextAssembler`) |
+| **Context Formatting** | RAG | Active (`rag.retrieval.formatting`, Stage 11) |
+| **Retrieval Telemetry & Timing** | RAG | Active (`RetrievalResult.execution_metadata`) |
+| **Evidence Reasoning & Evaluation** | **Agent** | Deferred to Phase 2+ |
+| **Gap Detection & Contradiction Handling** | **Agent** | Deferred to Phase 2+ |
+| **Multi-turn Dialogue & Response Synthesis** | **Agent** | Deferred to Phase 2+ |
+| **BRD Section & Artifact Validation** | **Agent** | Deferred to Phase 2+ |
+| **Regeneration & Quality Rework Loops** | **Agent** | Deferred to Phase 2+ |
+| **User Clarification (HITL)** | **Agent** | Deferred to Phase 2+ |
 
 ---
 
-## 3. End-to-End Generation Workflow
+## 3. The Retrieval Boundary Contract (`RetrievalResult`)
 
-```
-[User Request / Client API]
-           │
-           ▼
-[POST /projects/{project_id}/conversations/{conversation_id}/messages?generate=true]
-           │
-           ▼
-[ConversationService.get_conversation(project_id, conversation_id)]  ──► Validates Project Ownership
-           │
-           ▼
-[ConversationService.create_message(role='user')]  ────────────────────► Persists User Message
-           │
-     (Session Commit)  ───► Short Transaction Window (Locks released before external calls)
-           │
-           ▼
-[RAGService.retrieve(project_id, query)]  ────────────────────────────► Hybrid Retrieval + Hydration
-           │
-     (RetrievalResult)
-           │
-           ▼
-  ┌──► [PromptConstructionService.construct()]  ──────────────────────► Composes System + Context + Query
-  │        │
-  │        ▼
-  │    [LLMService.generate()]  ──────────────────────────────────────► Bounded Timeout & HTTP Retries
-  │        │
-  │        ▼
-  │    [PostProcessingService.process()]  ────────────────────────────► Deterministic Normalization
-  │        │
-  │        ▼
-  │    [EvaluationService.evaluate_async()]  ─────────────────────────► Impartial Quality Gate
-  │        │
-  │        ├─► [passed == False & attempts < max] ────────────────────► Propagate Feedback to Regeneration Loop
-  │        │
-  │        ├─► [passed == False & attempts >= max] ───────────────────► Raise RegenerationExhaustedError
-  │        │                                                            (User msg preserved; NO fake assistant turn)
-  │        ▼
-  └─────── [passed == True]
-           │
-           ▼
-[ConversationService.create_message(role='assistant', metadata=...)] ─► Persists Accepted Turn
-           │
-     (Session Commit)
-           │
-           ▼
-[Return GenerationResult / MessageResponse]
+The primary contract between RAG and the consuming application (and future Agent) is `RetrievalResult`, exposed by `RAGService.retrieve(...)`:
+
+```python
+result: RetrievalResult = await rag_service.retrieve(
+    project_id=project_id,
+    query=query,
+    config=retrieval_config,
+    session=db_session,
+)
 ```
 
----
-
-## 4. State & Database Transaction Boundaries
-
-To ensure database scalability and prevent transaction lock exhaustion:
-
-1. **Short Write Window 1 (User Message)**:
-   The user message is inserted into PostgreSQL and committed immediately. If downstream retrieval or LLM inference fails, the user turn remains safely recorded in conversation history.
-2. **Transaction-Free Long-Running Window**:
-   Database write locks are **never** held open during:
-   - Vector similarity search (Qdrant)
-   - Cross-encoder reranking
-   - LLM generation (OpenAI/compatible)
-   - Quality gate evaluation calls
-3. **Short Write Window 2 (Assistant Message)**:
-   Upon quality gate acceptance, the assistant message turn is persisted with rich execution metadata and committed in a short transaction window.
-4. **No Fake Assistant Turns**:
-   If generation fails (e.g. LLM timeout, quality gate exhaustion), the user message is retained, and no placeholder or hallucinated assistant message is persisted.
+### RetrievalResult Structure
+* `chunks: list[HydratedChunk]`: Full chunk payload with persistent text content, section headers, document metadata, source document references, and character/token spans.
+* `scores: list[float]`: Combined fusion / reranker relevance scores.
+* `ranks: list[int]`: 1-based ordinal relevance rankings.
+* `execution_metadata: RetrievalExecutionMetadata`: Granular stage-by-stage execution latency (dense, sparse, fusion, rerank, hydration, assembly, formatting), query transformation details, attempts, and fallback flags.
+* `formatted_context: FormattedContext | None`: Structured, deterministic markdown representation assembled during Stage 11 of retrieval (`rag.retrieval.formatting`).
+* `formatted_text: str`: Model-ready formatted string (or extracted directly from `formatted_context`) for consumption by downstream reasoning agents or LLM prompts.
 
 ---
 
-## 5. Bounded Regeneration vs. Infrastructure Retry
+## 4. Summary of Phase 1 Retirements & Refactoring
 
-The system strictly decouples **infrastructure retries** from **semantic regeneration**:
+### A. Retired Components (Category A)
+1. **`services.generation_service.GenerationService`**: The RAG-owned generation orchestrator that executed prompt construction, LLM inference, post-processing, groundedness evaluation, and regeneration loops.
+2. **`rag.generation.prompt.service.PromptConstructionService`**: Answer prompt construction templates and formatting.
+3. **`rag.generation.postprocessing.service.PostProcessingService`**: Response whitespace normalization, finish reason filtering, and JSON extraction.
+4. **`rag.generation.evaluation.service.EvaluationService`**: RAG-owned groundedness and safety evaluation quality gates with regeneration triggers.
+5. **`schemas/generation.py`**: Generation request/response schemas (`GenerationRequestSchema`, `GenerationResponseSchema`).
+6. **`exceptions/generation.py`**: Generation exceptions (`GenerationError`, `PromptConstructionError`, `RegenerationExhaustedError`, etc.).
+7. **`generate=true` API branch on `POST .../messages`**: The endpoint now purely persists conversation message turns.
 
-- **Infrastructure Retries (Provider Layer)**:
-  Handled by `OpenAICompatibleLLMAdapter` using exponential backoff (`LLM_MAX_RETRIES`, `LLM_RETRY_DELAY`, `LLM_RETRY_BACKOFF`) for transient network timeouts, HTTP 502/503/504 errors, and HTTP 429 rate limits.
-- **Semantic Quality Gate Regeneration (Generation Layer)**:
-  If the generated response contains ungrounded factual claims (`grounded=False`) or safety violations (`safe=False`), `EvaluationService` returns a structured critique (`reason`). The generation loop passes this critique into `PromptConstructionService` as `evaluation_feedback`, directing the model to regenerate its response adhering strictly to context.
-  - Bounded by `Settings.EVALUATION_MAX_REGENERATION_ATTEMPTS` (default: 2 regeneration attempts).
-  - If attempts are exhausted without passing, `RegenerationExhaustedError` is raised.
+### B. Relocated Components (Category C)
+1. **Context Formatting (`rag.retrieval.formatting`)**:
+   - Relocated from `rag/generation/formatting/` to `rag/retrieval/formatting/`.
+   - Context formatting is Stage 11 of the RAG retrieval pipeline and feeds `RetrievalResult.formatted_context` / `RetrievalResult.formatted_text`.
+   - New exceptions `ContextFormattingError` and `ContextFormattingValidationError` inherit from `RetrievalError` in `src/exceptions/retrieval.py`.
 
----
-
-## 6. API Boundary & Backwards Compatibility
-
-The generation flow integrates directly into the existing conversation API:
-
-```http
-POST /projects/{project_id}/conversations/{conversation_id}/messages
-```
-
-### Request Parameters:
-- `project_id`: Mandatory tenant project identifier.
-- `conversation_id`: Mandatory conversation identifier.
-- `payload`: Standard `MessageCreate` schema (`role`, `content`, `metadata`).
-- `generate`: Optional boolean query parameter (`default=False`).
-
-### Behavior:
-1. **`generate=False` (Default)**:
-   Directly persists the message turn and returns `MessageResponse`. Preserves 100% backwards compatibility for existing CRUD tests and offline sync.
-2. **`generate=True` & `role='user'`**:
-   Executes the full RAG retrieval + LLM generation + Quality Gate pipeline, persists both the user turn and accepted assistant turn, and returns the assistant `MessageResponse` with metadata:
-   ```json
-   {
-     "id": "msg_asst_uuid",
-     "conversation_id": "conv_uuid",
-     "role": "assistant",
-     "content": "The return policy allows returns within 30 days with receipt.",
-     "metadata": {
-       "user_message_id": "msg_user_uuid",
-       "finish_reason": "stop",
-       "usage": { "input_tokens": 150, "output_tokens": 35, "total_tokens": 185 },
-       "model": "gpt-4o",
-       "retrieval": {
-         "chunks_count": 3,
-         "duration_ms": 42.5,
-         "attempts_count": 1,
-         "retrieval_query": "What is the return policy?"
-       },
-       "evaluation_passed": true,
-       "generation_attempts": 1,
-       "total_duration_ms": 1250.4
-     },
-     "created_at": "2026-09-14T10:00:00Z"
-   }
-   ```
+### C. Retained Shared Infrastructure (Category B)
+1. **Generic LLM Abstraction (`src/llm/`)**:
+   - `LLMService`, `BaseLLMInterface`, `OpenAICompatibleLLMAdapter`, and `LLMConfig` are retained.
+   - Used by RAG for query transformation / expansion.
+   - Serves as the generic OpenAI/OpenRouter foundation for the future Agent.
+2. **Conversation & Message Persistence (`ConversationService`)**:
+   - Unaffected message turn persistence in PostgreSQL/SQLite for multi-turn history.
+3. **Application Configuration (`src/core/config.py`)**:
+   - Generic `LLM_*` settings are retained; generation-specific (`PROMPT_CONSTRUCTION_*`, `POST_PROCESSING_*`, `EVALUATION_*`) settings are removed.
 
 ---
 
-## 7. Observability & Privacy Protection
+## 5. Next Steps (Phase 2 Roadmap)
 
-All generation lifecycle events use the centralized logger (`app.core.logging.get_logger`):
-
-- **Trace Identifiers**: Every log event includes `project_id`, `conversation_id`, and `user_message_id`.
-- **Lifecycle Milestones**:
-  - `Initiating RAG generation`: Logs query character length.
-  - `RAG retrieval completed`: Logs chunk count and retrieval duration.
-  - `Starting bounded generation regeneration attempt`: Logs attempt index and reason.
-  - `Generation passed quality gate`: Logs grounded/safe status and duration.
-  - `Generation workflow completed successfully`: Logs assistant message ID and total duration.
-- **Privacy Enforcement**: Full user queries, raw prompt dumps, complete retrieved context, and full model completions are **never** logged to stdout/telemetry; only character lengths, chunk counts, and structured metadata are recorded.
-
----
-
-## 8. Strict Exclusions & Deferred Work
-
-The following functionalities are intentionally excluded from this layer:
-- **Agent Orchestration**: No LangGraph, DeepAgents, autonomous planning, or reflection agents.
-- **Tools & MCP**: No tool calling, Model Context Protocol, or external function execution.
-- **Multi-Agent Coordination**: Single-turn project RAG response generation only.
-- **Conversation Summarization**: Token-budgeted history compression is deferred.
-- **Frontend / UI**: Backend application service and API boundary only.
+1. **DeepAgents & OpenRouter Integration**: Establish the agent framework using the OpenAI-compatible adapter.
+2. **RAG Agent Tool**: Expose `RAGService.retrieve(...)` as a first-class tool callable by the Agent.
+3. **BRD Lead Agent & State Management**: Implement reasoning, evidence evaluation, and section generation within the Agent domain.
+4. **Agent Validation & Feedback**: Port quality evaluation and regeneration loops into the Agent validation workflow.

@@ -36,6 +36,8 @@ from exceptions.retrieval import (
     ProjectBoundaryViolationError,
     ContextAssemblyError,
     ContextAssemblyValidationError,
+    ContextFormattingError,
+    ContextFormattingValidationError,
 )
 from rag.retrieval.assembly import (
     ContextAssemblyConfig,
@@ -44,6 +46,22 @@ from rag.retrieval.assembly import (
     assemble_context_async,
     get_context_assembly_service,
     reset_context_assembly_service,
+)
+from rag.retrieval.formatting import (
+    DEFAULT_CONTEXT_FOOTER,
+    DEFAULT_CONTEXT_HEADER,
+    DEFAULT_EMPTY_CONTEXT_TEXT,
+    DEFAULT_ITEM_TEMPLATE,
+    BaseContextFormatter,
+    ContextFormattingConfig,
+    ContextFormattingService,
+    FormattedContext,
+    FormattedContextItem,
+    TextContextFormatter,
+    format_context,
+    format_context_async,
+    get_context_formatting_service,
+    reset_context_formatting_service,
 )
 from rag.retrieval.config import (
     FusionConfig,
@@ -354,5 +372,22 @@ __all__ = [
     "ProjectBoundaryViolationError",
     "ContextAssemblyError",
     "ContextAssemblyValidationError",
+    # Context Formatting Subsystem & Helpers
+    "FormattedContext",
+    "FormattedContextItem",
+    "ContextFormattingConfig",
+    "DEFAULT_CONTEXT_HEADER",
+    "DEFAULT_CONTEXT_FOOTER",
+    "DEFAULT_EMPTY_CONTEXT_TEXT",
+    "DEFAULT_ITEM_TEMPLATE",
+    "BaseContextFormatter",
+    "TextContextFormatter",
+    "ContextFormattingService",
+    "get_context_formatting_service",
+    "reset_context_formatting_service",
+    "format_context",
+    "format_context_async",
+    "ContextFormattingError",
+    "ContextFormattingValidationError",
 ]
 

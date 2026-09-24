@@ -147,39 +147,28 @@ Agent-specific roles (such as `agent`, `tool`, `system`, or `retriever`) are int
 
 ## 7. Service Boundary & RAG Integration
 
-The Conversation layer sits directly between the application API and the RAG/Generation services:
+The Conversation layer manages project-isolated conversation lifecycle and message turn persistence:
 
 ```
-[User Request]
+[User Request / Message Turn]
        │
        ▼
 [Conversation API]
        │
        ▼
 [ConversationService]
-       │ (1. Persist User Message)
-       ├──────────────────────────────────────────┐
-       │ (2. Retrieve Context via Helper)         │
-       ▼                                          ▼
-[get_conversation_context()]             [PostgreSQL Database]
-       │                                 (Persistent conversations & messages)
+       │ (Persist Message Turn)
        ▼
-[RAGService.retrieve(project_id, query)] 
-       │
-       ▼
-[Retrieved Context & Chunks]
-       │
-       ▼
-[GenerationService.generate_response()]
-       │
-       ▼
-[ConversationService.create_message(role='assistant')]
+[PostgreSQL Database]
+ (Persistent conversations & messages)
 ```
+
+In Phase 1, the legacy RAG-owned GenerationService has been retired. The RAG pipeline (`RAGService.retrieve`) strictly retrieves project knowledge and returns `RetrievalResult`. The future BRD Agent will consume `RetrievalResult`, orchestrate reasoning and validation, and persist assistant turns via `ConversationService`.
 
 ### Architectural Guarantees:
 - **No Vector Search in Conversation Service**: `ConversationService` does not import Qdrant, embeddings, or chunk models.
 - **No Direct LLM Invocations**: `ConversationService` performs no prompt construction or model inference.
-- **Context Helper**: `ConversationService.get_conversation_context(project_id, conversation_id, max_messages)` provides a clean interface for subsequent generation stages to retrieve recent turns.
+- **Clean Agent Boundary**: Message persistence is strictly separated from retrieval and agent generation.
 
 ---
 

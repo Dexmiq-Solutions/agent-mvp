@@ -2,7 +2,7 @@
 
 Consolidates document acquisition, ingestion, parsing, cleaning,
 normalization, chunking, metadata enrichment, contextual enrichment,
-embeddings, indexing, retrieval, and generation pipelines.
+embeddings, indexing, and retrieval pipelines.
 """
 
 __all__ = [
@@ -11,7 +11,6 @@ __all__ = [
     "cleaning",
     "contextual_enrichment",
     "embeddings",
-    "generation",
     "indexing",
     "ingestion",
     "metadata_enrichment",

@@ -14,7 +14,7 @@ from exceptions.retrieval import (
     VectorRetrievalError,
 )
 from models.chunk import ChunkModel
-from rag.generation.formatting import FormattedContext, FormattedContextItem
+from rag.retrieval.formatting import FormattedContext, FormattedContextItem
 from rag.retrieval.config import RetrievalConfig
 from rag.retrieval.hydration.repository import BaseChunkRepository
 from rag.retrieval.models import (
