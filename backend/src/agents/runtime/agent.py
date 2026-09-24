@@ -9,7 +9,13 @@ from langchain_core.messages import HumanMessage
 
 from agents.runtime.config import AgentConfig
 from agents.runtime.model import create_agent_model
-from agents.runtime.state import AgentContext, AgentRunRequest, AgentRunResponse
+from agents.runtime.state import (
+    AgentContext,
+    AgentRunRequest,
+    AgentRunResponse,
+    reset_current_agent_context,
+    set_current_agent_context,
+)
 from exceptions.agent import (
     AgentConfigurationError,
     AgentExecutionError,
@@ -133,6 +139,7 @@ class AgentRuntime:
         """
         run_req, ctx = self._normalize_request(request, context)
         start_time = time.perf_counter()
+        token = set_current_agent_context(ctx)
 
         logger.info(
             "Agent execution started (model: %s, project_id: %s, prompt_len: %d)",
@@ -167,6 +174,8 @@ class AgentRuntime:
                 f"Agent execution failed: {exc}",
                 original_error=exc,
             ) from exc
+        finally:
+            reset_current_agent_context(token)
 
     async def execute_async(
         self,
@@ -187,6 +196,7 @@ class AgentRuntime:
         """
         run_req, ctx = self._normalize_request(request, context)
         start_time = time.perf_counter()
+        token = set_current_agent_context(ctx)
 
         logger.info(
             "Agent execution started [async] (model: %s, project_id: %s, prompt_len: %d)",
@@ -221,6 +231,8 @@ class AgentRuntime:
                 f"Agent execution failed: {exc}",
                 original_error=exc,
             ) from exc
+        finally:
+            reset_current_agent_context(token)
 
     def _normalize_request(
         self,

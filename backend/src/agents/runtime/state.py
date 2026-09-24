@@ -1,7 +1,27 @@
 """Agent execution context, state, and request/response models."""
 
+import contextvars
 from dataclasses import dataclass, field
 from typing import Any, Optional
+
+_current_agent_context: contextvars.ContextVar[Optional["AgentContext"]] = (
+    contextvars.ContextVar("current_agent_context", default=None)
+)
+
+
+def get_current_agent_context() -> Optional["AgentContext"]:
+    """Retrieve the active AgentContext from context-local storage."""
+    return _current_agent_context.get()
+
+
+def set_current_agent_context(context: Optional["AgentContext"]) -> contextvars.Token:
+    """Set the active AgentContext in context-local storage for the current execution context."""
+    return _current_agent_context.set(context)
+
+
+def reset_current_agent_context(token: contextvars.Token) -> None:
+    """Reset the active AgentContext in context-local storage using the provided token."""
+    _current_agent_context.reset(token)
 
 
 @dataclass(frozen=True)
