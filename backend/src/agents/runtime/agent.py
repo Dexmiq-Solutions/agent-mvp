@@ -120,6 +120,25 @@ class AgentRuntime:
         """Return the compiled DeepAgents graph."""
         return self._graph
 
+    def create_brd_lead_agent(
+        self,
+        system_prompt: Optional[str] = None,
+    ) -> Any:
+        """Instantiate a domain-specific BRD Lead Agent backed by this runtime harness.
+
+        Args:
+            system_prompt: Optional system prompt override.
+
+        Returns:
+            BRDLeadAgent: Initialized BRD Lead Agent.
+        """
+        from agents.brd.agent import BRDLeadAgent
+
+        return BRDLeadAgent(
+            runtime=self,
+            system_prompt=system_prompt,
+        )
+
     def execute(
         self,
         request: AgentRunRequest | str,

@@ -246,7 +246,9 @@ def test_canonical_agent_exports():
         AgentRunRequest,
         AgentRunResponse,
         AgentRuntime,
+        BRDLeadAgent,
         create_agent_model,
+        create_brd_lead_agent,
         create_runtime_agent,
     )
 
@@ -255,8 +257,11 @@ def test_canonical_agent_exports():
     assert AgentContext is not None
     assert AgentRunRequest is not None
     assert AgentRunResponse is not None
+    assert BRDLeadAgent is not None
     assert callable(create_agent_model)
+    assert callable(create_brd_lead_agent)
     assert callable(create_runtime_agent)
+
 
 
 def test_canonical_tools_exports():

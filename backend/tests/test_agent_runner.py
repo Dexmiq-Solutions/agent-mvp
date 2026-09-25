@@ -13,12 +13,14 @@ if str(SCRIPTS_DIR) not in sys.path:
 
 from run_agent import (
     DEFAULT_DEVELOPMENT_PROJECT_ID,
+    build_brd_lead_agent,
     build_developer_runtime,
     execute_prompt,
     execute_prompt_async,
     interactive_loop,
     main,
 )
+from agents.brd import BRDLeadAgent
 from agents.runtime.config import AgentConfig
 from agents.runtime.state import AgentContext, AgentRunResponse
 from exceptions.agent import AgentConfigurationError, AgentExecutionError
@@ -163,3 +165,39 @@ def test_main_missing_config_returns_exit_code_1():
     with patch("run_agent.build_developer_runtime", side_effect=AgentConfigurationError("Missing key")):
         exit_code = main()
         assert exit_code == 1
+
+
+def test_build_brd_lead_agent_constructs_brd_agent():
+    """Verify build_brd_lead_agent constructs a configured BRDLeadAgent with RAG enabled by default."""
+    config = AgentConfig(model="mock-model", api_key="test-key")
+    with patch("agents.runtime.agent.create_agent_model"):
+        with patch("agents.runtime.agent.create_runtime_agent"):
+            agent = build_brd_lead_agent(config=config)
+            assert isinstance(agent, BRDLeadAgent)
+            assert agent.agent_name == "BRDLeadAgent"
+            tool_names = [t.name for t in agent.tools]
+            assert "echo_diagnostic_tool" in tool_names
+            assert "search_project_knowledge" in tool_names
+
+
+@pytest.mark.asyncio
+async def test_interactive_loop_reports_brd_lead_agent_name():
+    """Verify interactive_loop correctly displays BRDLeadAgent name."""
+    mock_agent = MagicMock()
+    mock_agent.agent_name = "BRDLeadAgent"
+    mock_agent.config.model = "test-model"
+    mock_agent.tools = []
+    mock_agent.execute_async = AsyncMock(return_value=AgentRunResponse(output_text="BRD ready", success=True))
+
+    inputs = ["exit"]
+    input_generator = iter(inputs)
+    outputs = []
+
+    await interactive_loop(
+        mock_agent,
+        input_func=lambda _: next(input_generator),
+        print_func=lambda msg="": outputs.append(str(msg)),
+    )
+
+    combined_output = "\n".join(outputs)
+    assert "Agent:      BRDLeadAgent" in combined_output
