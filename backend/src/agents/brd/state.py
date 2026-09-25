@@ -1,0 +1,268 @@
+"""BRD Agent State models and lifecycle tracking.
+
+Defines the working context and operational state for the BRD Lead Agent:
+- Overall BRD objective vs immediate working task
+- Authoritative template sections and progress tracking
+- Evidence and working information
+- Unresolved information and gaps
+- Integration with DeepAgents/Agent runtime
+"""
+
+from __future__ import annotations
+
+from dataclasses import asdict, dataclass, field
+from enum import Enum
+import re
+from typing import Any, Optional, Sequence, Union
+
+from deepagents import DeepAgentState
+
+
+class BRDSectionStatus(str, Enum):
+    """Lifecycle status of a BRD section as defined in the context foundation."""
+
+    NOT_STARTED = "Not Started"
+    IN_PROGRESS = "In Progress"
+    COMPLETED = "Completed"
+    NEEDS_REVISION = "Needs Revision"
+
+    @classmethod
+    def from_string(cls, val: str | "BRDSectionStatus") -> "BRDSectionStatus":
+        """Convert string or enum to normalized BRDSectionStatus.
+
+        Supports case-insensitive, space-separated, or snake_case inputs.
+        """
+        if isinstance(val, cls):
+            return val
+        if not isinstance(val, str):
+            raise ValueError(f"Expected str or BRDSectionStatus, got {type(val)}")
+
+        normalized = val.strip().lower().replace("_", " ").replace("-", " ")
+        for status in cls:
+            if status.value.lower() == normalized or status.name.lower() == normalized.replace(" ", "_"):
+                return status
+
+        try:
+            return cls(val)
+        except ValueError:
+            valid = [s.value for s in cls]
+            raise ValueError(
+                f"Invalid section status '{val}'. Expected one of: {valid}"
+            )
+
+
+# Backward-compatible alias
+SectionStatus = BRDSectionStatus
+
+
+def _match_section_name(name: str, available_sections: Sequence[str]) -> str:
+    """Match a section name against available sections, supporting clean titles.
+
+    Allows matching "Introduction" to "1. Introduction" or exact matches.
+    """
+    cleaned_input = name.strip()
+    # 1. Exact match
+    for sec in available_sections:
+        if sec.lower() == cleaned_input.lower():
+            return sec
+
+    # 2. Number-stripped match (e.g. "1. Introduction" -> "Introduction")
+    input_stripped = re.sub(r"^\d+[\.\)]\s*", "", cleaned_input).strip().lower()
+    for sec in available_sections:
+        sec_stripped = re.sub(r"^\d+[\.\)]\s*", "", sec).strip().lower()
+        if sec_stripped == input_stripped:
+            return sec
+
+    return cleaned_input
+
+
+@dataclass
+class BRDAgentState:
+    """Working context and operational state for the BRD Lead Agent.
+
+    Represents what the Agent currently knows, is working on, and needs to remember
+    while progressing toward the BRD generation objective.
+
+    Attributes:
+        objective: Overall BRD goal (e.g. "Produce an evidence-grounded Business Requirements Document").
+        current_task: Immediate task or objective context currently being executed.
+        template_sections: Ordered list of required BRD sections derived from the template.
+        current_section: The specific section the Agent is currently focused on.
+        section_progress: Map of section names to their current BRDSectionStatus.
+        evidence: Working information and evidence collected during execution.
+        unresolved_information: Gaps, ambiguities, or missing information requiring resolution.
+        metadata: Extensible metadata dictionary (e.g. project_id, session notes).
+    """
+
+    objective: str = "Produce an evidence-grounded Business Requirements Document"
+    current_task: Optional[str] = None
+    template_sections: list[str] = field(default_factory=list)
+    current_section: Optional[str] = None
+    section_progress: dict[str, BRDSectionStatus] = field(default_factory=dict)
+    evidence: list[Any] = field(default_factory=list)
+    unresolved_information: list[str] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def initialize_from_template(
+        cls,
+        sections: Sequence[str],
+        objective: Optional[str] = None,
+        current_task: Optional[str] = None,
+        metadata: Optional[dict[str, Any]] = None,
+    ) -> "BRDAgentState":
+        """Initialize a fresh BRDAgentState using the sections extracted from the BRD template.
+
+        All sections default to BRDSectionStatus.NOT_STARTED.
+        """
+        sec_list = list(sections)
+        progress = {s: BRDSectionStatus.NOT_STARTED for s in sec_list}
+        return cls(
+            objective=objective or "Produce an evidence-grounded Business Requirements Document",
+            current_task=current_task,
+            template_sections=sec_list,
+            current_section=None,
+            section_progress=progress,
+            evidence=[],
+            unresolved_information=[],
+            metadata=dict(metadata or {}),
+        )
+
+    def get_section_status(self, section: str) -> Optional[BRDSectionStatus]:
+        """Get the current progress status for a given section."""
+        canonical = _match_section_name(section, self.template_sections or list(self.section_progress.keys()))
+        return self.section_progress.get(canonical)
+
+    def update_section_status(
+        self,
+        section: str,
+        status: BRDSectionStatus | str,
+    ) -> None:
+        """Update the progress status of a section."""
+        resolved_status = BRDSectionStatus.from_string(status)
+        canonical = _match_section_name(section, self.template_sections or list(self.section_progress.keys()))
+        self.section_progress[canonical] = resolved_status
+
+    def set_current_section(
+        self,
+        section: Optional[str],
+        auto_in_progress: bool = True,
+    ) -> None:
+        """Set the section the Agent is currently working on.
+
+        If auto_in_progress is True and the section is currently NOT_STARTED,
+        transitions its status to IN_PROGRESS.
+        """
+        if section is None:
+            self.current_section = None
+            return
+
+        canonical = _match_section_name(section, self.template_sections or list(self.section_progress.keys()))
+        self.current_section = canonical
+
+        if auto_in_progress:
+            current_stat = self.section_progress.get(canonical)
+            if current_stat is None or current_stat == BRDSectionStatus.NOT_STARTED:
+                self.section_progress[canonical] = BRDSectionStatus.IN_PROGRESS
+
+    def add_evidence(self, item: Any) -> None:
+        """Add an evidence or working information item to working context."""
+        self.evidence.append(item)
+
+    def add_unresolved(self, item: str) -> None:
+        """Record a missing or unresolved information item / gap."""
+        if item not in self.unresolved_information:
+            self.unresolved_information.append(item)
+
+    def resolve_unresolved(self, item: str) -> bool:
+        """Mark an unresolved item as resolved by removing it.
+
+        Returns:
+            bool: True if the item was found and removed, False otherwise.
+        """
+        if item in self.unresolved_information:
+            self.unresolved_information.remove(item)
+            return True
+        return False
+
+    def get_completed_sections(self) -> list[str]:
+        """Return list of sections that are Completed."""
+        return [
+            s for s, stat in self.section_progress.items()
+            if stat == BRDSectionStatus.COMPLETED
+        ]
+
+    def get_in_progress_sections(self) -> list[str]:
+        """Return list of sections that are In Progress."""
+        return [
+            s for s, stat in self.section_progress.items()
+            if stat == BRDSectionStatus.IN_PROGRESS
+        ]
+
+    def get_unstarted_sections(self) -> list[str]:
+        """Return list of sections that are Not Started."""
+        return [
+            s for s, stat in self.section_progress.items()
+            if stat == BRDSectionStatus.NOT_STARTED
+        ]
+
+    def get_needs_revision_sections(self) -> list[str]:
+        """Return list of sections that Need Revision."""
+        return [
+            s for s, stat in self.section_progress.items()
+            if stat == BRDSectionStatus.NEEDS_REVISION
+        ]
+
+    @property
+    def is_complete(self) -> bool:
+        """Check whether all template sections have reached Completed status."""
+        if not self.template_sections:
+            return False
+        return all(
+            self.section_progress.get(s) == BRDSectionStatus.COMPLETED
+            for s in self.template_sections
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize state to a JSON-serializable dictionary."""
+        data = asdict(self)
+        # Convert enums to string values
+        data["section_progress"] = {
+            k: v.value if isinstance(v, BRDSectionStatus) else str(v)
+            for k, v in self.section_progress.items()
+        }
+        return data
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "BRDAgentState":
+        """Deserialize a dictionary into a BRDAgentState instance."""
+        raw_progress = data.get("section_progress", {})
+        parsed_progress = {
+            k: BRDSectionStatus.from_string(v)
+            for k, v in raw_progress.items()
+        }
+        return cls(
+            objective=data.get("objective", "Produce an evidence-grounded Business Requirements Document"),
+            current_task=data.get("current_task"),
+            template_sections=list(data.get("template_sections", [])),
+            current_section=data.get("current_section"),
+            section_progress=parsed_progress,
+            evidence=list(data.get("evidence", [])),
+            unresolved_information=list(data.get("unresolved_information", [])),
+            metadata=dict(data.get("metadata", {})),
+        )
+
+
+class BRDDeepAgentState(DeepAgentState, total=False):
+    """DeepAgents / LangGraph-compatible state representation for the BRD Lead Agent.
+
+    Extends DeepAgentState with BRD domain working context.
+    """
+
+    objective: Optional[str]
+    current_task: Optional[str]
+    current_section: Optional[str]
+    template_sections: Optional[list[str]]
+    section_progress: Optional[dict[str, str]]
+    evidence: Optional[list[Any]]
+    unresolved_information: Optional[list[str]]

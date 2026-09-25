@@ -134,12 +134,16 @@ class AgentRuntime:
         self,
         system_instruction: Optional[str] = None,
         system_prompt: Optional[str] = None,
+        template: Optional[str] = None,
+        state: Optional[Any] = None,
     ) -> Any:
         """Instantiate a domain-specific BRD Lead Agent backed by this runtime harness.
 
         Args:
             system_instruction: Optional system instruction override.
             system_prompt: Deprecated alias for system_instruction for backward compatibility.
+            template: Optional BRD template override.
+            state: Optional BRDAgentState working state instance.
 
         Returns:
             BRDLeadAgent: Initialized BRD Lead Agent.
@@ -150,6 +154,8 @@ class AgentRuntime:
             runtime=self,
             system_instruction=system_instruction,
             system_prompt=system_prompt,
+            template=template,
+            state=state,
         )
 
     def execute(

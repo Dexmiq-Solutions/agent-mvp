@@ -5,13 +5,19 @@ Business Requirements Document (BRD) generation objective.
 
 Loads its foundational behavioral system instruction from the authoritative
 external Markdown artifact (system_instruction.md).
+Loads its required BRD document structure from the authoritative
+external Markdown artifact (brd_template.md).
+Maintains its working context and progress via BRDAgentState.
 """
+from __future__ import annotations
 
 from pathlib import Path
+import re
 from typing import Any, Optional, Sequence
 
 from langchain_core.language_models.chat_models import BaseChatModel
 
+from agents.brd.state import BRDAgentState
 from agents.runtime.agent import AgentRuntime
 from agents.runtime.config import AgentConfig
 from agents.runtime.state import AgentContext, AgentRunRequest, AgentRunResponse
@@ -21,6 +27,7 @@ from tools import get_default_tools
 logger = get_logger(__name__)
 
 SYSTEM_INSTRUCTION_FILE = "system_instruction.md"
+BRD_TEMPLATE_FILE = "brd_template.md"
 
 
 def get_system_instruction_path() -> Path:
@@ -58,6 +65,59 @@ def load_system_instruction() -> str:
     return content
 
 
+def get_brd_template_path() -> Path:
+    """Resolve the absolute path to the authoritative BRD template Markdown file."""
+    return Path(__file__).resolve().parent / BRD_TEMPLATE_FILE
+
+
+def load_brd_template() -> str:
+    """Load the authoritative BRD template from Markdown.
+
+    Returns:
+        str: Raw Markdown content of the BRD template.
+
+    Raises:
+        FileNotFoundError: If the BRD template Markdown file does not exist.
+        ValueError: If the BRD template Markdown file is empty.
+    """
+    template_path = get_brd_template_path()
+    if not template_path.is_file():
+        raise FileNotFoundError(
+            f"Required BRD template file not found: {template_path}"
+        )
+
+    try:
+        content = template_path.read_text(encoding="utf-8").strip()
+    except Exception as exc:
+        logger.error("Failed to read BRD template from %s: %s", template_path, exc)
+        raise
+
+    if not content:
+        raise ValueError(
+            f"BRD template file is empty: {template_path}"
+        )
+
+    return content
+
+
+def extract_brd_sections(content: Optional[str] = None) -> list[str]:
+    """Extract required BRD sections dynamically from the BRD template Markdown.
+
+    The Markdown template is the single source of truth for the required BRD structure.
+    Top-level section headings (level-2 markdown headers: '## <heading>') define the required
+    sections in exact document order without duplicating them in Python code.
+
+    Args:
+        content: Optional raw Markdown string. If omitted, loaded from load_brd_template().
+
+    Returns:
+        list[str]: Ordered list of section headings extracted from the template.
+    """
+    raw_content = load_brd_template() if content is None else content
+    matches = re.findall(r"^##\s+(.+)$", raw_content, re.MULTILINE)
+    return [m.strip() for m in matches if m.strip()]
+
+
 class _SystemInstructionDescriptor:
     """Descriptor providing access to system instruction on both instances and the class."""
 
@@ -67,21 +127,34 @@ class _SystemInstructionDescriptor:
         return load_system_instruction()
 
 
+class _BRDTemplateDescriptor:
+    """Descriptor providing access to BRD template on both instances and the class."""
+
+    def __get__(self, instance: Optional["BRDLeadAgent"], owner: Optional[type] = None) -> str:
+        if instance is not None and hasattr(instance, "_template"):
+            return instance._template
+        return load_brd_template()
+
+
 class BRDLeadAgent:
     """Domain-specific Agent responsible for accomplishing the BRD generation objective.
 
     The BRD Lead Agent is the primary agent for the BRD generation use case.
+    It operates across three foundational pillars:
+    1. System Instruction (system_instruction.md): Defines how the Agent behaves.
+    2. BRD Template (brd_template.md): Defines what the Agent must produce.
+    3. Agent State (BRDAgentState): Defines what the Agent currently knows and remembers.
+
     It executes within the DeepAgents execution harness managed by AgentRuntime,
     operating within application-provided project boundaries and utilizing existing
     agent tools (including RAG knowledge retrieval).
-
-    The Agent's foundational behavioral identity, objective, and evidence principles
-    are defined in its authoritative external system instruction (system_instruction.md).
     """
 
     agent_name: str = "BRDLeadAgent"
     system_instruction: str = _SystemInstructionDescriptor()  # type: ignore[assignment]
     default_system_prompt: str = _SystemInstructionDescriptor()  # type: ignore[assignment]
+    brd_template: str = _BRDTemplateDescriptor()  # type: ignore[assignment]
+    template: str = _BRDTemplateDescriptor()  # type: ignore[assignment]
 
     def __init__(
         self,
@@ -91,6 +164,8 @@ class BRDLeadAgent:
         tools: Optional[Sequence[Any]] = None,
         system_instruction: Optional[str] = None,
         system_prompt: Optional[str] = None,
+        template: Optional[str] = None,
+        state: Optional[BRDAgentState] = None,
     ) -> None:
         """Initialize the BRD Lead Agent.
 
@@ -103,9 +178,21 @@ class BRDLeadAgent:
             system_instruction: Optional system instruction override. If omitted, loaded from
                 system_instruction.md.
             system_prompt: Deprecated alias for system_instruction for backward compatibility.
+            template: Optional BRD template override. If omitted, loaded from brd_template.md.
+            state: Optional BRDAgentState working state instance. If omitted, initialized
+                from the template structure.
         """
         resolved_instruction = system_instruction or system_prompt or load_system_instruction()
         self._system_instruction = resolved_instruction
+
+        resolved_template = template or load_brd_template()
+        self._template = resolved_template
+
+        # Initialize working state from template structure if not injected
+        if state is not None:
+            self._state = state
+        else:
+            self._state = BRDAgentState.initialize_from_template(sections=self.sections)
 
         if runtime is not None:
             self._runtime = runtime
@@ -146,6 +233,20 @@ class BRDLeadAgent:
         """Return the compiled DeepAgents graph."""
         return self._runtime.graph
 
+    @property
+    def sections(self) -> list[str]:
+        """Return ordered required BRD sections dynamically extracted from the template."""
+        return extract_brd_sections(self._template)
+
+    @property
+    def state(self) -> BRDAgentState:
+        """Return the active BRDAgentState working context."""
+        return self._state
+
+    def reset_state(self) -> None:
+        """Reset the Agent working state to initial unstarted state based on template sections."""
+        self._state = BRDAgentState.initialize_from_template(sections=self.sections)
+
     def execute(
         self,
         request: AgentRunRequest | str,
@@ -158,9 +259,23 @@ class BRDLeadAgent:
             context: Optional AgentContext for project isolation.
 
         Returns:
-            AgentRunResponse: Normalized response containing output text and execution artifacts.
+            AgentRunResponse: Normalized response containing output text, artifacts, and state.
         """
-        return self._runtime.execute(request=request, context=context)
+        # Adopt or normalize incoming state if passed in request
+        if isinstance(request, AgentRunRequest) and request.state is not None:
+            if isinstance(request.state, BRDAgentState):
+                self._state = request.state
+            elif isinstance(request.state, dict):
+                self._state = BRDAgentState.from_dict(request.state)
+
+        # Preserve project context in state metadata
+        effective_ctx = request.context if isinstance(request, AgentRunRequest) else context
+        if effective_ctx and effective_ctx.project_id:
+            self._state.metadata["project_id"] = effective_ctx.project_id
+
+        response = self._runtime.execute(request=request, context=context)
+        response.state = self._state
+        return response
 
     async def execute_async(
         self,
@@ -174,9 +289,21 @@ class BRDLeadAgent:
             context: Optional AgentContext for project isolation.
 
         Returns:
-            AgentRunResponse: Normalized response containing output text and execution artifacts.
+            AgentRunResponse: Normalized response containing output text, artifacts, and state.
         """
-        return await self._runtime.execute_async(request=request, context=context)
+        if isinstance(request, AgentRunRequest) and request.state is not None:
+            if isinstance(request.state, BRDAgentState):
+                self._state = request.state
+            elif isinstance(request.state, dict):
+                self._state = BRDAgentState.from_dict(request.state)
+
+        effective_ctx = request.context if isinstance(request, AgentRunRequest) else context
+        if effective_ctx and effective_ctx.project_id:
+            self._state.metadata["project_id"] = effective_ctx.project_id
+
+        response = await self._runtime.execute_async(request=request, context=context)
+        response.state = self._state
+        return response
 
 
 def create_brd_lead_agent(
@@ -186,6 +313,8 @@ def create_brd_lead_agent(
     tools: Optional[Sequence[Any]] = None,
     system_instruction: Optional[str] = None,
     system_prompt: Optional[str] = None,
+    template: Optional[str] = None,
+    state: Optional[BRDAgentState] = None,
 ) -> BRDLeadAgent:
     """Factory function to instantiate the BRD Lead Agent.
 
@@ -196,6 +325,8 @@ def create_brd_lead_agent(
         tools: Optional sequence of tools.
         system_instruction: Optional system instruction override.
         system_prompt: Deprecated alias for system_instruction for backward compatibility.
+        template: Optional BRD template override.
+        state: Optional BRDAgentState working state instance.
 
     Returns:
         Configured BRDLeadAgent instance.
@@ -207,4 +338,6 @@ def create_brd_lead_agent(
         tools=tools,
         system_instruction=system_instruction,
         system_prompt=system_prompt,
+        template=template,
+        state=state,
     )

@@ -76,6 +76,8 @@ def build_brd_lead_agent(
     tools: Optional[Sequence[Any]] = None,
     enable_rag: bool = True,
     system_instruction: Optional[str] = None,
+    template: Optional[str] = None,
+    state: Optional[Any] = None,
 ) -> BRDLeadAgent:
     """Build and initialize the BRDLeadAgent equipped with developer diagnostic tools and RAG.
 
@@ -86,6 +88,8 @@ def build_brd_lead_agent(
             Defaults to True for the BRD Lead Agent.
         system_instruction: Optional system instruction override. Defaults to loading
             from system_instruction.md.
+        template: Optional BRD template override.
+        state: Optional BRDAgentState working state instance.
 
     Returns:
         Configured BRDLeadAgent instance.
@@ -97,7 +101,11 @@ def build_brd_lead_agent(
         enable_rag=enable_rag,
         system_instruction=resolved_instruction,
     )
-    return runtime.create_brd_lead_agent(system_instruction=resolved_instruction)
+    return runtime.create_brd_lead_agent(
+        system_instruction=resolved_instruction,
+        template=template,
+        state=state,
+    )
 
 
 
@@ -162,6 +170,8 @@ async def interactive_loop(
     print_func(f"Project ID: {project_id}")
     tool_names = [t.name for t in agent.tools]
     print_func(f"Tools:      {', '.join(tool_names) if tool_names else 'None'}")
+    if hasattr(agent, "sections") and agent.sections:
+        print_func(f"Sections:   {', '.join(agent.sections)}")
     print_func("")
     print_func("Type 'exit', 'quit', or press Ctrl+C to exit.")
     print_func("----------------------------------------\n")

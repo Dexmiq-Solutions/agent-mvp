@@ -46,6 +46,7 @@ class AgentRunRequest:
     input_text: str
     context: AgentContext = field(default_factory=AgentContext)
     system_prompt: Optional[str] = None
+    state: Optional[Any] = None
 
 
 @dataclass
@@ -59,3 +60,4 @@ class AgentRunResponse:
     model: str = ""
     success: bool = True
     error: Optional[str] = None
+    state: Optional[Any] = None
