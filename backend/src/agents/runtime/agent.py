@@ -120,14 +120,26 @@ class AgentRuntime:
         """Return the compiled DeepAgents graph."""
         return self._graph
 
+    @property
+    def system_prompt(self) -> str:
+        """Return the active system prompt/instruction configured for the runtime."""
+        return self._system_prompt
+
+    @property
+    def system_instruction(self) -> str:
+        """Return the active system instruction configured for the runtime."""
+        return self._system_prompt
+
     def create_brd_lead_agent(
         self,
+        system_instruction: Optional[str] = None,
         system_prompt: Optional[str] = None,
     ) -> Any:
         """Instantiate a domain-specific BRD Lead Agent backed by this runtime harness.
 
         Args:
-            system_prompt: Optional system prompt override.
+            system_instruction: Optional system instruction override.
+            system_prompt: Deprecated alias for system_instruction for backward compatibility.
 
         Returns:
             BRDLeadAgent: Initialized BRD Lead Agent.
@@ -136,6 +148,7 @@ class AgentRuntime:
 
         return BRDLeadAgent(
             runtime=self,
+            system_instruction=system_instruction,
             system_prompt=system_prompt,
         )
 

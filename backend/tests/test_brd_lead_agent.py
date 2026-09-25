@@ -16,7 +16,12 @@ from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 
-from agents.brd import BRDLeadAgent, create_brd_lead_agent
+from agents.brd import (
+    BRDLeadAgent,
+    create_brd_lead_agent,
+    get_system_instruction_path,
+    load_system_instruction,
+)
 from agents.runtime.agent import AgentRuntime
 from agents.runtime.config import AgentConfig
 from agents.runtime.state import AgentContext, AgentRunRequest, AgentRunResponse
@@ -209,3 +214,126 @@ def test_brd_lead_agent_no_duplicate_architectures():
     assert isinstance(agent.config, AgentConfig)
     # Graph is compiled DeepAgents graph
     assert agent.graph is not None
+
+
+def test_brd_system_instruction_file_exists():
+    """Verify the BRD system instruction Markdown file exists and is non-empty."""
+    path = get_system_instruction_path()
+    assert path.is_file(), f"Expected system instruction at {path}"
+    content = path.read_text(encoding="utf-8").strip()
+    assert len(content) > 0
+    assert "# BRD Lead Agent" in content
+
+
+def test_brd_system_instruction_loaded_and_structured():
+    """Verify BRD Lead Agent system instruction loads with required sections."""
+    instruction = load_system_instruction()
+    assert "BRD Lead Agent" in instruction
+    assert "## Identity" in instruction
+    assert "## Objective" in instruction
+    assert "## Responsibilities" in instruction
+    assert "## Evidence Principles" in instruction
+    assert "## Project Context" in instruction
+    assert "## Boundaries" in instruction
+    assert "## Behavioral Principles" in instruction
+
+    # Evidence distinctions
+    assert "Confirmed Information" in instruction
+    assert "User-Provided Information" in instruction
+    assert "Assumptions" in instruction
+    assert "Unresolved Information" in instruction
+
+    # Core principles & boundaries
+    assert "Do not invent project facts" in instruction
+    assert "Qdrant" in instruction
+    assert "PostgreSQL" in instruction
+
+
+def test_brd_lead_agent_loads_system_instruction_property():
+    """Verify BRDLeadAgent exposes the loaded system instruction as a property."""
+    model = MockChatModel(messages_to_return=[AIMessage(content="Ready")])
+    config = AgentConfig(model="test-model", api_key="test-key")
+    agent = BRDLeadAgent(config=config, model=model)
+
+    assert agent.system_instruction == load_system_instruction()
+    assert agent.default_system_prompt == load_system_instruction()
+    assert "BRD Lead Agent" in agent.system_instruction
+
+
+def test_system_instruction_supplied_to_runtime_and_model():
+    """Verify system instruction is actually supplied to the underlying AgentRuntime."""
+    model = MockChatModel(messages_to_return=[AIMessage(content="Ready")])
+    config = AgentConfig(model="test-model", api_key="test-key")
+    agent = BRDLeadAgent(config=config, model=model)
+
+    assert agent.runtime.system_prompt == agent.system_instruction
+    assert agent.runtime.system_instruction == agent.system_instruction
+    assert "BRD Lead Agent" in agent.runtime.system_prompt
+
+
+def test_system_instruction_supplied_when_wrapping_runtime():
+    """Verify system instruction is supplied when wrapping an existing AgentRuntime."""
+    model = MockChatModel(messages_to_return=[AIMessage(content="Ready")])
+    config = AgentConfig(model="test-model", api_key="test-key")
+    # Runtime initially created with default generic assistant prompt
+    runtime = AgentRuntime(config=config, model=model, tools=[echo_diagnostic_tool])
+    assert runtime.system_prompt == config.system_prompt
+
+    agent = BRDLeadAgent(runtime=runtime)
+    # Wrapping in BRDLeadAgent configures the BRD system instruction
+    assert agent.runtime is runtime
+    assert agent.runtime.system_prompt == agent.system_instruction
+    assert "BRD Lead Agent" in agent.runtime.system_prompt
+
+
+def test_brd_lead_agent_custom_instruction_override():
+    """Verify custom system instruction override is honored."""
+    model = MockChatModel(messages_to_return=[AIMessage(content="Custom ready")])
+    config = AgentConfig(model="test-model", api_key="test-key")
+    custom_instruction = "Custom BRD Agent test instruction."
+
+    agent = BRDLeadAgent(config=config, model=model, system_instruction=custom_instruction)
+
+    assert agent.system_instruction == custom_instruction
+    assert agent.runtime.system_prompt == custom_instruction
+
+
+def test_missing_system_instruction_file_raises_error(monkeypatch):
+    """Verify clear error is raised if the system instruction file is missing."""
+    from pathlib import Path
+    import agents.brd.agent as brd_module
+
+    fake_path = Path("/nonexistent/system_instruction.md")
+    monkeypatch.setattr(brd_module, "get_system_instruction_path", lambda: fake_path)
+
+    with pytest.raises(FileNotFoundError, match="not found"):
+        load_system_instruction()
+
+
+def test_empty_system_instruction_file_raises_error(tmp_path, monkeypatch):
+    """Verify clear error is raised if the system instruction file is empty."""
+    import agents.brd.agent as brd_module
+
+    empty_file = tmp_path / "system_instruction.md"
+    empty_file.write_text("   \n  \t  ", encoding="utf-8")
+    monkeypatch.setattr(brd_module, "get_system_instruction_path", lambda: empty_file)
+
+    with pytest.raises(ValueError, match="is empty"):
+        load_system_instruction()
+
+
+def test_no_duplicate_hardcoded_brd_system_instruction_in_agent_code():
+    """Verify agent.py does not duplicate the system instruction content."""
+    import inspect
+    import agents.brd.agent as brd_agent_module
+
+    source_code = inspect.getsource(brd_agent_module)
+
+    # The file should delegate to load_system_instruction() and not embed the markdown instruction
+    assert "load_system_instruction" in source_code
+    assert "system_instruction.md" in source_code
+    # The full instruction headers and body text should not be duplicated as python strings
+    assert "## Evidence Principles" not in source_code
+    assert "## Behavioral Principles" not in source_code
+    assert "Do not invent project facts, requirements" not in source_code
+

@@ -19,7 +19,11 @@ SRC_DIR = BACKEND_DIR / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from agents.brd import BRDLeadAgent, create_brd_lead_agent
+from agents.brd import (
+    BRDLeadAgent,
+    create_brd_lead_agent,
+    load_system_instruction,
+)
 from agents.runtime.agent import AgentRuntime
 from agents.runtime.config import AgentConfig
 from agents.runtime.state import AgentContext, AgentRunResponse
@@ -34,6 +38,7 @@ def build_developer_runtime(
     config: Optional[AgentConfig] = None,
     tools: Optional[Sequence[Any]] = None,
     enable_rag: bool = False,
+    system_instruction: Optional[str] = None,
 ) -> AgentRuntime:
     """Build and initialize the AgentRuntime equipped with developer diagnostic tools and RAG.
 
@@ -42,6 +47,7 @@ def build_developer_runtime(
         tools: Optional explicit sequence of tools to equip.
         enable_rag: If True, equips search_project_knowledge alongside echo_diagnostic_tool.
             Defaults to False for backward compatibility with Phase 2 unit tests.
+        system_instruction: Optional system instruction override.
 
     Returns:
         Configured AgentRuntime instance.
@@ -61,6 +67,7 @@ def build_developer_runtime(
     return AgentRuntime(
         config=agent_config,
         tools=runtime_tools,
+        system_prompt=system_instruction,
     )
 
 
@@ -68,6 +75,7 @@ def build_brd_lead_agent(
     config: Optional[AgentConfig] = None,
     tools: Optional[Sequence[Any]] = None,
     enable_rag: bool = True,
+    system_instruction: Optional[str] = None,
 ) -> BRDLeadAgent:
     """Build and initialize the BRDLeadAgent equipped with developer diagnostic tools and RAG.
 
@@ -76,12 +84,20 @@ def build_brd_lead_agent(
         tools: Optional explicit sequence of tools to equip.
         enable_rag: If True, equips search_project_knowledge alongside echo_diagnostic_tool.
             Defaults to True for the BRD Lead Agent.
+        system_instruction: Optional system instruction override. Defaults to loading
+            from system_instruction.md.
 
     Returns:
         Configured BRDLeadAgent instance.
     """
-    runtime = build_developer_runtime(config=config, tools=tools, enable_rag=enable_rag)
-    return runtime.create_brd_lead_agent()
+    resolved_instruction = system_instruction or load_system_instruction()
+    runtime = build_developer_runtime(
+        config=config,
+        tools=tools,
+        enable_rag=enable_rag,
+        system_instruction=resolved_instruction,
+    )
+    return runtime.create_brd_lead_agent(system_instruction=resolved_instruction)
 
 
 
@@ -213,8 +229,10 @@ async def main_async(argv: Optional[Sequence[str]] = None) -> int:
     args = parser.parse_args(raw_args)
 
     try:
-        runtime = build_developer_runtime(enable_rag=True)
-        agent = runtime.create_brd_lead_agent() if args.agent_type == "brd" else runtime
+        if args.agent_type == "brd":
+            agent = build_brd_lead_agent()
+        else:
+            agent = build_developer_runtime(enable_rag=True)
     except AgentConfigurationError as exc:
         print("\n[Configuration Error]: Unable to start Agent runner.")
         print(f"Details: {exc.message}")
