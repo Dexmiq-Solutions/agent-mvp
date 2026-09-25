@@ -28,6 +28,7 @@ from agents.runtime.agent import create_runtime_agent
 from agents.runtime.config import AgentConfig
 from agents.runtime.model import create_agent_model
 from agents.runtime.state import ActionResult, ActionSource, AgentContext
+from agents.brd.template import extract_section_requirements
 from observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -298,71 +299,8 @@ class EvaluationResult:
         )
 
 
-def extract_section_requirements(section_name: str, template_content: Optional[str] = None) -> list[str]:
-    """Extract required items / criteria for a given section from the authoritative BRD template.
-
-    Reuses the existing template structure as the single source of truth without
-    creating a parallel document schema.
-
-    Args:
-        section_name: Target section name (e.g. "Personas", "1. Purpose & Scope of This Document").
-        template_content: Optional raw Markdown content of the BRD template.
-
-    Returns:
-        list[str]: Extracted requirement points for the section.
-    """
-    from agents.brd.agent import load_brd_template
-
-    content = load_brd_template() if template_content is None else template_content
-    cleaned_name = section_name.strip()
-    name_stripped = re.sub(r"^\d+[\.\)]\s*", "", cleaned_name).strip().lower()
-
-    # Find section header lines (# ... or ## ...)
-    header_pattern = re.compile(r"^(#{1,3})\s+(.+)$", re.MULTILINE)
-    matches = list(header_pattern.finditer(content))
-
-    target_start = -1
-    target_end = len(content)
-
-    for i, m in enumerate(matches):
-        heading_text = m.group(2).strip()
-        heading_stripped = re.sub(r"^\d+[\.\)]\s*", "", heading_text).strip().lower()
-
-        # Check match against exact or stripped name
-        if (
-            heading_stripped == name_stripped
-            or name_stripped in heading_stripped
-            or heading_text.lower() == cleaned_name.lower()
-        ):
-            target_start = m.end()
-            if i + 1 < len(matches):
-                target_end = matches[i + 1].start()
-            break
-
-    if target_start == -1:
-        # Fallback: general requirements for the section
-        return [f"Complete requirements and specifications for {section_name}"]
-
-    section_body = content[target_start:target_end].strip()
-
-    # Extract bullet points
-    bullets = re.findall(r"^[*-]\s+(.+)$", section_body, re.MULTILINE)
-    if bullets:
-        return [b.strip() for b in bullets if b.strip()]
-
-    # If table exists, extract table header columns
-    table_headers = re.findall(r"^\|(.+)\|$", section_body, re.MULTILINE)
-    if table_headers:
-        columns = [c.strip() for c in table_headers[0].split("|") if c.strip() and "---" not in c]
-        if columns:
-            return [f"Structured table containing: {', '.join(columns)}"]
-
-    # Fallback to non-empty lines
-    lines = [line.strip() for line in section_body.splitlines() if line.strip() and not line.strip().startswith("#")]
-    if lines:
-        return lines
-
-    return [f"Requirements for {section_name}"]
+# extract_section_requirements is imported from agents.brd.template for backward compatibility
+__all__ = ["extract_section_requirements"]
 
 
 def _build_evaluation_prompt(context: EvaluationContext) -> str:

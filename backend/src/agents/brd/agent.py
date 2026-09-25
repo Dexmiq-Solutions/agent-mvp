@@ -32,7 +32,19 @@ from agents.brd.evaluation import (
     EvaluationContext,
     EvaluationOutcome,
     EvaluationResult,
+)
+from agents.brd.section_generation import (
+    BRDSectionGenerationAgent,
+    SectionGenerationContext,
+    SectionGenerationResult,
+    SectionOperation,
+)
+from agents.brd.template import (
+    extract_brd_sections,
     extract_section_requirements,
+    extract_section_template,
+    get_brd_template_path,
+    load_brd_template,
 )
 from agents.brd.state import BRDAgentState
 from agents.runtime.agent import AgentRuntime
@@ -91,57 +103,6 @@ def load_system_instruction() -> str:
     return content
 
 
-def get_brd_template_path() -> Path:
-    """Resolve the absolute path to the authoritative BRD template Markdown file."""
-    return Path(__file__).resolve().parent / BRD_TEMPLATE_FILE
-
-
-def load_brd_template() -> str:
-    """Load the authoritative BRD template from Markdown.
-
-    Returns:
-        str: Raw Markdown content of the BRD template.
-
-    Raises:
-        FileNotFoundError: If the BRD template Markdown file does not exist.
-        ValueError: If the BRD template Markdown file is empty.
-    """
-    template_path = get_brd_template_path()
-    if not template_path.is_file():
-        raise FileNotFoundError(
-            f"Required BRD template file not found: {template_path}"
-        )
-
-    try:
-        content = template_path.read_text(encoding="utf-8").strip()
-    except Exception as exc:
-        logger.error("Failed to read BRD template from %s: %s", template_path, exc)
-        raise
-
-    if not content:
-        raise ValueError(
-            f"BRD template file is empty: {template_path}"
-        )
-
-    return content
-
-
-def extract_brd_sections(content: Optional[str] = None) -> list[str]:
-    """Extract required BRD sections dynamically from the BRD template Markdown.
-
-    The Markdown template is the single source of truth for the required BRD structure.
-    Top-level section headings (level-2 markdown headers: '## <heading>') define the required
-    sections in exact document order without duplicating them in Python code.
-
-    Args:
-        content: Optional raw Markdown string. If omitted, loaded from load_brd_template().
-
-    Returns:
-        list[str]: Ordered list of section headings extracted from the template.
-    """
-    raw_content = load_brd_template() if content is None else content
-    matches = re.findall(r"^##\s+(.+)$", raw_content, re.MULTILINE)
-    return [m.strip() for m in matches if m.strip()]
 
 
 class _SystemInstructionDescriptor:
@@ -203,6 +164,7 @@ class BRDLeadAgent:
         rag_service: Optional[RAGService] = None,
         enable_rag: bool = True,
         evaluator: Optional[BRDEvaluationAgent] = None,
+        section_generator: Optional[BRDSectionGenerationAgent] = None,
     ) -> None:
         """Initialize the BRD Lead Agent.
 
@@ -223,10 +185,13 @@ class BRDLeadAgent:
                 Defaults to True.
             evaluator: Optional pre-configured BRDEvaluationAgent instance. If omitted, instantiated
                 on demand using the active model.
+            section_generator: Optional pre-configured BRDSectionGenerationAgent instance. If omitted,
+                instantiated on demand using the active model.
         """
         resolved_instruction = system_instruction or system_prompt or load_system_instruction()
         self._system_instruction = resolved_instruction
         self._evaluator = evaluator
+        self._section_generator = section_generator
 
         resolved_template = template or load_brd_template()
         self._template = resolved_template
@@ -311,6 +276,13 @@ class BRDLeadAgent:
         if self._evaluator is None:
             self._evaluator = BRDEvaluationAgent(model=self.model)
         return self._evaluator
+
+    @property
+    def section_generator(self) -> BRDSectionGenerationAgent:
+        """Return the attached Section Generation Sub-Agent capability."""
+        if self._section_generator is None:
+            self._section_generator = BRDSectionGenerationAgent(model=self.model)
+        return self._section_generator
 
     def reset_state(self) -> None:
         """Reset the Agent working state to initial unstarted state based on template sections."""
@@ -858,6 +830,244 @@ class BRDLeadAgent:
         if resolved_item:
             self._state.resolve_unresolved(resolved_item)
 
+    def generate_section(
+        self,
+        section: Optional[str] = None,
+        available_information: Optional[Sequence[Any] | str] = None,
+        section_requirements: Optional[Sequence[str] | str] = None,
+        template_structure: Optional[str] = None,
+        existing_content: Optional[str] = None,
+        rework_feedback: Optional[str] = None,
+        context: Optional[AgentContext] = None,
+    ) -> SectionGenerationResult:
+        """Generate or update a BRD section via the Section Generation Sub-Agent.
+
+        Workflow:
+        BRD Lead Agent (prepares context/evidence) -> Section Generation Sub-Agent ->
+        SectionGenerationResult -> Lead Agent stores result in BRDAgentState.
+
+        Args:
+            section: Target section name (e.g. "5. Stakeholders & Personas"). Defaults to
+                self.state.current_section.
+            available_information: Optional specific information or evidence to base the section on.
+                If omitted, gathered from latest action result, working evidence, and task results.
+            section_requirements: Optional specific requirements/criteria. If omitted,
+                extracted dynamically from the authoritative BRD template.
+            template_structure: Optional template snippet. If omitted, extracted dynamically
+                from the authoritative BRD template.
+            existing_content: Optional baseline section content for update/rework. If omitted,
+                retrieved from state.get_section_content().
+            rework_feedback: Optional validation or review feedback. If omitted, retrieved
+                from state.get_rework_feedback().
+            context: Optional tenant AgentContext.
+
+        Returns:
+            SectionGenerationResult: Generated or updated section content and metadata.
+
+        Raises:
+            ValueError: If no target section can be identified.
+        """
+        target_sec = section or self._state.current_section
+        if not target_sec:
+            raise ValueError(
+                "No target section specified or set as current_section in Agent State."
+            )
+        self._state.set_current_section(target_sec)
+        canonical_sec = self._state.current_section or target_sec
+
+        if section_requirements is not None:
+            sec_reqs = [section_requirements] if isinstance(section_requirements, str) else list(section_requirements)
+        else:
+            sec_reqs = extract_section_requirements(canonical_sec, self._template)
+
+        sec_template = template_structure or extract_section_template(canonical_sec, self._template)
+
+        if available_information is not None:
+            info_payload = available_information
+        else:
+            info_parts: list[Any] = []
+            if self._state.latest_action_result and self._state.latest_action_result.content:
+                info_parts.append({
+                    "source": str(self._state.latest_action_result.source),
+                    "content": self._state.latest_action_result.content,
+                })
+            if self._state.evidence:
+                info_parts.extend(self._state.evidence)
+            if self._state.task_results:
+                for tr in self._state.task_results:
+                    info_parts.append({
+                        "source": f"delegated_task:{tr.task_id}",
+                        "content": tr.output,
+                    })
+            info_payload = info_parts if info_parts else "*(No prior evidence collected)*"
+
+        resolved_existing = (
+            existing_content
+            if existing_content is not None
+            else self._state.get_section_content(canonical_sec)
+        )
+        resolved_rework = (
+            rework_feedback
+            if rework_feedback is not None
+            else self._state.get_rework_feedback(canonical_sec)
+        )
+
+        op = (
+            SectionOperation.UPDATE
+            if (resolved_existing and resolved_existing.strip())
+            else SectionOperation.GENERATE
+        )
+
+        effective_ctx = context or AgentContext()
+        if effective_ctx.project_id:
+            self._state.metadata["project_id"] = effective_ctx.project_id
+
+        gen_ctx = SectionGenerationContext(
+            section_name=canonical_sec,
+            section_requirements=sec_reqs,
+            template_structure=sec_template,
+            available_information=info_payload,
+            existing_content=resolved_existing,
+            rework_feedback=resolved_rework,
+            operation=op,
+            metadata={
+                "project_id": effective_ctx.project_id or self._state.metadata.get("project_id"),
+            },
+        )
+
+        result = self.section_generator.generate(gen_ctx)
+
+        if result.content:
+            self._state.set_section_content(canonical_sec, result.content)
+        self._state.set_section_result(result)
+        if resolved_rework:
+            self._state.clear_rework_feedback(canonical_sec)
+
+        return result
+
+    async def generate_section_async(
+        self,
+        section: Optional[str] = None,
+        available_information: Optional[Sequence[Any] | str] = None,
+        section_requirements: Optional[Sequence[str] | str] = None,
+        template_structure: Optional[str] = None,
+        existing_content: Optional[str] = None,
+        rework_feedback: Optional[str] = None,
+        context: Optional[AgentContext] = None,
+    ) -> SectionGenerationResult:
+        """Asynchronously generate or update a BRD section via the Section Generation Sub-Agent."""
+        target_sec = section or self._state.current_section
+        if not target_sec:
+            raise ValueError(
+                "No target section specified or set as current_section in Agent State."
+            )
+        self._state.set_current_section(target_sec)
+        canonical_sec = self._state.current_section or target_sec
+
+        if section_requirements is not None:
+            sec_reqs = [section_requirements] if isinstance(section_requirements, str) else list(section_requirements)
+        else:
+            sec_reqs = extract_section_requirements(canonical_sec, self._template)
+
+        sec_template = template_structure or extract_section_template(canonical_sec, self._template)
+
+        if available_information is not None:
+            info_payload = available_information
+        else:
+            info_parts: list[Any] = []
+            if self._state.latest_action_result and self._state.latest_action_result.content:
+                info_parts.append({
+                    "source": str(self._state.latest_action_result.source),
+                    "content": self._state.latest_action_result.content,
+                })
+            if self._state.evidence:
+                info_parts.extend(self._state.evidence)
+            if self._state.task_results:
+                for tr in self._state.task_results:
+                    info_parts.append({
+                        "source": f"delegated_task:{tr.task_id}",
+                        "content": tr.output,
+                    })
+            info_payload = info_parts if info_parts else "*(No prior evidence collected)*"
+
+        resolved_existing = (
+            existing_content
+            if existing_content is not None
+            else self._state.get_section_content(canonical_sec)
+        )
+        resolved_rework = (
+            rework_feedback
+            if rework_feedback is not None
+            else self._state.get_rework_feedback(canonical_sec)
+        )
+
+        op = (
+            SectionOperation.UPDATE
+            if (resolved_existing and resolved_existing.strip())
+            else SectionOperation.GENERATE
+        )
+
+        effective_ctx = context or AgentContext()
+        if effective_ctx.project_id:
+            self._state.metadata["project_id"] = effective_ctx.project_id
+
+        gen_ctx = SectionGenerationContext(
+            section_name=canonical_sec,
+            section_requirements=sec_reqs,
+            template_structure=sec_template,
+            available_information=info_payload,
+            existing_content=resolved_existing,
+            rework_feedback=resolved_rework,
+            operation=op,
+            metadata={
+                "project_id": effective_ctx.project_id or self._state.metadata.get("project_id"),
+            },
+        )
+
+        result = await self.section_generator.generate_async(gen_ctx)
+
+        if result.content:
+            self._state.set_section_content(canonical_sec, result.content)
+        self._state.set_section_result(result)
+        if resolved_rework:
+            self._state.clear_rework_feedback(canonical_sec)
+
+        return result
+
+    def update_section(
+        self,
+        section: Optional[str] = None,
+        new_information: Optional[Sequence[Any] | str] = None,
+        rework_feedback: Optional[str] = None,
+        existing_content: Optional[str] = None,
+        context: Optional[AgentContext] = None,
+    ) -> SectionGenerationResult:
+        """Update an existing BRD section incorporating new information and rework feedback."""
+        return self.generate_section(
+            section=section,
+            available_information=new_information,
+            existing_content=existing_content,
+            rework_feedback=rework_feedback,
+            context=context,
+        )
+
+    async def update_section_async(
+        self,
+        section: Optional[str] = None,
+        new_information: Optional[Sequence[Any] | str] = None,
+        rework_feedback: Optional[str] = None,
+        existing_content: Optional[str] = None,
+        context: Optional[AgentContext] = None,
+    ) -> SectionGenerationResult:
+        """Asynchronously update an existing BRD section incorporating new information and rework feedback."""
+        return await self.generate_section_async(
+            section=section,
+            available_information=new_information,
+            existing_content=existing_content,
+            rework_feedback=rework_feedback,
+            context=context,
+        )
+
 
 def create_brd_lead_agent(
     runtime: Optional[AgentRuntime] = None,
@@ -871,6 +1081,7 @@ def create_brd_lead_agent(
     rag_service: Optional[RAGService] = None,
     enable_rag: bool = True,
     evaluator: Optional[BRDEvaluationAgent] = None,
+    section_generator: Optional[BRDSectionGenerationAgent] = None,
 ) -> BRDLeadAgent:
     """Factory function to instantiate the BRD Lead Agent.
 
@@ -886,6 +1097,7 @@ def create_brd_lead_agent(
         rag_service: Optional pre-configured RAGService instance to inject for knowledge retrieval.
         enable_rag: Whether to equip RAG knowledge retrieval tool (defaults to True).
         evaluator: Optional pre-configured BRDEvaluationAgent instance.
+        section_generator: Optional pre-configured BRDSectionGenerationAgent instance.
 
     Returns:
         Configured BRDLeadAgent instance.
@@ -902,4 +1114,5 @@ def create_brd_lead_agent(
         rag_service=rag_service,
         enable_rag=enable_rag,
         evaluator=evaluator,
+        section_generator=section_generator,
     )

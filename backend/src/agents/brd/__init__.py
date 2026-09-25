@@ -4,10 +4,7 @@ from agents.brd.agent import (
     BRDLeadAgent,
     WorkflowDecision,
     create_brd_lead_agent,
-    extract_brd_sections,
-    get_brd_template_path,
     get_system_instruction_path,
-    load_brd_template,
     load_system_instruction,
 )
 from agents.brd.delegation import (
@@ -26,9 +23,23 @@ from agents.brd.evaluation import (
     EvaluationOutcome,
     EvaluationResult,
     InformationStatus,
-    extract_section_requirements,
     get_evaluation_system_instruction_path,
     load_evaluation_system_instruction,
+)
+from agents.brd.section_generation import (
+    BRDSectionGenerationAgent,
+    SectionGenerationContext,
+    SectionGenerationResult,
+    SectionOperation,
+    get_generation_system_instruction_path,
+    load_generation_system_instruction,
+)
+from agents.brd.template import (
+    extract_brd_sections,
+    extract_section_requirements,
+    extract_section_template,
+    get_brd_template_path,
+    load_brd_template,
 )
 from agents.brd.state import (
     BRDAgentState,
@@ -45,6 +56,7 @@ __all__ = [
     "BRDDeepAgentState",
     "BRDEvaluationAgent",
     "BRDLeadAgent",
+    "BRDSectionGenerationAgent",
     "BRDSectionStatus",
     "DelegatedTask",
     "DelegationResult",
@@ -53,6 +65,9 @@ __all__ = [
     "EvaluationOutcome",
     "EvaluationResult",
     "InformationStatus",
+    "SectionGenerationContext",
+    "SectionGenerationResult",
+    "SectionOperation",
     "SectionStatus",
     "TaskResult",
     "WorkflowDecision",
@@ -63,11 +78,14 @@ __all__ = [
     "execute_subagent_task_async",
     "extract_brd_sections",
     "extract_section_requirements",
+    "extract_section_template",
     "get_brd_template_path",
     "get_evaluation_system_instruction_path",
+    "get_generation_system_instruction_path",
     "get_system_instruction_path",
     "load_brd_template",
     "load_evaluation_system_instruction",
+    "load_generation_system_instruction",
     "load_system_instruction",
 ]
 

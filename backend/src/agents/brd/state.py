@@ -112,6 +112,9 @@ class BRDAgentState:
     latest_action_result: Optional[ActionResult] = None
     latest_evaluation_result: Optional[EvaluationResult] = None
     evaluation_history: list[EvaluationResult] = field(default_factory=list)
+    section_content: dict[str, str] = field(default_factory=dict)
+    rework_feedback: dict[str, str] = field(default_factory=dict)
+    latest_section_result: Optional[Any] = None
 
     @classmethod
     def initialize_from_template(
@@ -168,6 +171,44 @@ class BRDAgentState:
         """Retrieve the latest evaluation result."""
         return self.latest_evaluation_result
 
+    def _available_section_keys(self) -> list[str]:
+        """Aggregate all available section identifiers across state structures."""
+        keys = (
+            list(self.section_content.keys())
+            + list(self.section_progress.keys())
+            + list(self.template_sections)
+        )
+        return list(dict.fromkeys(keys))
+
+    def get_section_content(self, section: str) -> Optional[str]:
+        """Get the stored Markdown content for a given section."""
+        canonical = _match_section_name(section, self._available_section_keys())
+        return self.section_content.get(canonical)
+
+    def set_section_content(self, section: str, content: str) -> None:
+        """Store or update the Markdown content for a given section."""
+        canonical = _match_section_name(section, self._available_section_keys())
+        self.section_content[canonical] = content
+
+    def get_rework_feedback(self, section: str) -> Optional[str]:
+        """Get the validation / rework feedback for a given section."""
+        canonical = _match_section_name(section, self._available_section_keys())
+        return self.rework_feedback.get(canonical)
+
+    def set_rework_feedback(self, section: str, feedback: str) -> None:
+        """Record validation / rework feedback for a given section."""
+        canonical = _match_section_name(section, self._available_section_keys())
+        self.rework_feedback[canonical] = feedback
+
+    def clear_rework_feedback(self, section: str) -> None:
+        """Clear validation / rework feedback once addressed."""
+        canonical = _match_section_name(section, self._available_section_keys())
+        self.rework_feedback.pop(canonical, None)
+
+    def set_section_result(self, result: Optional[Any]) -> None:
+        """Store the latest section generation / update result."""
+        self.latest_section_result = result
+
     def clear_delegation(self) -> None:
         """Clear delegated execution state for the next workflow cycle."""
         self.delegated_tasks.clear()
@@ -176,7 +217,7 @@ class BRDAgentState:
 
     def get_section_status(self, section: str) -> Optional[BRDSectionStatus]:
         """Get the current progress status for a given section."""
-        canonical = _match_section_name(section, self.template_sections or list(self.section_progress.keys()))
+        canonical = _match_section_name(section, self._available_section_keys())
         return self.section_progress.get(canonical)
 
     def update_section_status(
@@ -186,7 +227,7 @@ class BRDAgentState:
     ) -> None:
         """Update the progress status of a section."""
         resolved_status = BRDSectionStatus.from_string(status)
-        canonical = _match_section_name(section, self.template_sections or list(self.section_progress.keys()))
+        canonical = _match_section_name(section, self._available_section_keys())
         self.section_progress[canonical] = resolved_status
 
     def set_current_section(
@@ -203,7 +244,7 @@ class BRDAgentState:
             self.current_section = None
             return
 
-        canonical = _match_section_name(section, self.template_sections or list(self.section_progress.keys()))
+        canonical = _match_section_name(section, self._available_section_keys())
         self.current_section = canonical
 
         if auto_in_progress:
@@ -286,6 +327,14 @@ class BRDAgentState:
         data["evaluation_history"] = [
             e.to_dict() if hasattr(e, "to_dict") else e for e in self.evaluation_history
         ]
+        if self.latest_section_result is not None:
+            data["latest_section_result"] = (
+                self.latest_section_result.to_dict()
+                if hasattr(self.latest_section_result, "to_dict")
+                else self.latest_section_result
+            )
+        data["section_content"] = dict(self.section_content)
+        data["rework_feedback"] = dict(self.rework_feedback)
         return data
 
     @classmethod
@@ -327,6 +376,14 @@ class BRDAgentState:
             EvaluationResult.from_dict(e) if isinstance(e, dict) else e
             for e in eval_hist_raw
         ]
+        sec_res_raw = data.get("latest_section_result")
+        latest_section_result = sec_res_raw
+        if isinstance(sec_res_raw, dict):
+            try:
+                from agents.brd.section_generation.agent import SectionGenerationResult
+                latest_section_result = SectionGenerationResult.from_dict(sec_res_raw)
+            except Exception:
+                latest_section_result = sec_res_raw
 
         return cls(
             objective=data.get("objective", "Produce an evidence-grounded Business Requirements Document"),
@@ -343,6 +400,9 @@ class BRDAgentState:
             latest_action_result=latest_action_result,
             latest_evaluation_result=latest_evaluation_result,
             evaluation_history=evaluation_history,
+            section_content=dict(data.get("section_content", {})),
+            rework_feedback=dict(data.get("rework_feedback", {})),
+            latest_section_result=latest_section_result,
         )
 
 
@@ -365,3 +425,6 @@ class BRDDeepAgentState(DeepAgentState, total=False):
     latest_action_result: Optional[dict[str, Any]]
     latest_evaluation_result: Optional[dict[str, Any]]
     evaluation_history: Optional[list[dict[str, Any]]]
+    section_content: Optional[dict[str, str]]
+    rework_feedback: Optional[dict[str, str]]
+    latest_section_result: Optional[dict[str, Any]]
