@@ -395,27 +395,18 @@ async def test_direct_work_async_execution():
 # ---------------------------------------------------------------------------
 
 
-def test_no_delegation_mechanisms_introduced():
-    """Verify no delegation, sub-agents, or task decomposition architectures exist in this phase."""
-    import agents.brd.agent as brd_mod
-    import agents.runtime.agent as runtime_mod
+def test_direct_work_does_not_delegate():
+    """Verify Direct Work handles tasks directly without triggering delegation or sub-agents."""
+    model = MockChatModel(messages_to_return=[AIMessage(content="Direct execution only")])
+    config = AgentConfig(model="test-model", api_key="test-key")
+    agent = BRDLeadAgent(config=config, model=model)
 
-    # Verify no delegation symbols or classes in module namespaces
-    for mod in [brd_mod, runtime_mod]:
-        dir_names = [n.lower() for n in dir(mod)]
-        assert not any("delegate" in n for n in dir_names), f"Delegation symbol found in {mod.__name__}"
-        assert not any("subagent" in n for n in dir_names), f"Subagent symbol found in {mod.__name__}"
-        assert not any("sub_agent" in n for n in dir_names), f"Subagent symbol found in {mod.__name__}"
-        assert not any("decompose" in n for n in dir_names), f"Decompose symbol found in {mod.__name__}"
-        assert not any("assign_task" in n for n in dir_names), f"Task assignment symbol found in {mod.__name__}"
-
-    # Verify BRDLeadAgent methods do not contain delegation methods
-    agent_methods = [m.lower() for m in dir(BRDLeadAgent)]
-    assert not any("delegate" in m for m in agent_methods)
-    assert not any("subagent" in m for m in agent_methods)
-    assert not any("sub_agent" in m for m in agent_methods)
-    assert not any("decompose" in m for m in agent_methods)
-    assert not any("parallel" in m for m in agent_methods)
+    response = agent.execute("Rewrite this requirement: Users must log in.")
+    assert response.is_direct_work is True
+    assert response.is_delegation is False
+    assert len(agent.state.delegated_tasks) == 0
+    assert len(agent.state.task_results) == 0
+    assert agent.state.delegation_result is None
 
 
 # ---------------------------------------------------------------------------

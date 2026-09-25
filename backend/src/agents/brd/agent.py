@@ -17,10 +17,25 @@ from typing import Any, Optional, Sequence
 
 from langchain_core.language_models.chat_models import BaseChatModel
 
+from agents.brd.delegation import (
+    DelegatedTask,
+    DelegationResult,
+    TaskResult,
+    collect_task_results,
+    decompose_objective,
+    execute_subagent_task,
+    execute_subagent_task_async,
+)
 from agents.brd.state import BRDAgentState
 from agents.runtime.agent import AgentRuntime
 from agents.runtime.config import AgentConfig
-from agents.runtime.state import AgentContext, AgentRunRequest, AgentRunResponse
+from agents.runtime.state import (
+    ActionResult,
+    ActionSource,
+    AgentContext,
+    AgentRunRequest,
+    AgentRunResponse,
+)
 from observability.logging import get_logger
 from services.rag_service import RAGService
 from tools import get_default_tools
@@ -274,11 +289,165 @@ class BRDLeadAgent:
         """Reset the Agent working state to initial unstarted state based on template sections."""
         self._state = BRDAgentState.initialize_from_template(sections=self.sections)
 
+    def decompose_objective(
+        self,
+        objective: str,
+        context: Optional[str] = None,
+        tasks_hint: Optional[int] = None,
+    ) -> list[DelegatedTask]:
+        """Decompose an objective dynamically into an appropriate number of bounded tasks.
+
+        Supports dynamic task decomposition (e.g. 2, 3, 5, etc.) based on objective requirements.
+
+        Args:
+            objective: Overarching objective or composite task to decompose.
+            context: Optional scoped context or specifications.
+            tasks_hint: Optional suggested number of tasks.
+
+        Returns:
+            list[DelegatedTask]: Dynamic list of bounded tasks.
+        """
+        return decompose_objective(
+            objective=objective,
+            context=context,
+            model=self.model,
+            tasks_hint=tasks_hint,
+        )
+
+    def delegate(
+        self,
+        tasks: Sequence[DelegatedTask | dict[str, Any]] | str,
+        context: Optional[AgentContext] = None,
+        objective: Optional[str] = None,
+        current_task: Optional[str] = None,
+        tools: Optional[Sequence[Any]] = None,
+    ) -> AgentRunResponse:
+        """Decompose an objective and delegate bounded tasks to temporary task-scoped sub-agents.
+
+        Executes each delegated task within a temporary sub-agent execution, preserves task-level
+        attribution, collects results into a unified DelegationResult, converts it to a common
+        ActionResult, updates the Lead Agent working state, and returns an AgentRunResponse.
+
+        Args:
+            tasks: Either a sequence of DelegatedTask (or dicts) or a raw string objective to dynamically decompose.
+            context: Optional AgentContext for tenant project isolation.
+            objective: Optional overarching objective description.
+            current_task: Optional immediate working task description to set on state.
+            tools: Optional sequence of tools to make available to sub-agents (recursive delegation disallowed).
+
+        Returns:
+            AgentRunResponse: Normalized response containing the unified delegation output and action result.
+        """
+        effective_ctx = context or AgentContext()
+        if effective_ctx.project_id:
+            self._state.metadata["project_id"] = effective_ctx.project_id
+
+        if current_task is not None:
+            self._state.current_task = current_task
+
+        if isinstance(tasks, str):
+            overall_obj = objective or tasks
+            task_objs = self.decompose_objective(objective=tasks, context=self._state.current_task)
+        else:
+            overall_obj = objective or self._state.current_task or self._state.objective
+            task_objs = [DelegatedTask.from_dict(t) if isinstance(t, dict) else t for t in tasks]
+
+        self._state.set_delegated_tasks(task_objs)
+
+        # Execute each delegated task sequentially via temporary task-scoped sub-agent
+        subagent_results: list[TaskResult] = []
+        for t in task_objs:
+            res = execute_subagent_task(
+                task=t,
+                model=self.model,
+                parent_context=effective_ctx,
+                tools=tools,
+            )
+            subagent_results.append(res)
+            self._state.add_task_result(res)
+
+        # Collect task results into unified delegation result
+        delegation_result = collect_task_results(
+            task_results=subagent_results,
+            overall_objective=overall_obj,
+        )
+        self._state.set_delegation_result(delegation_result)
+
+        # Produce unified Action Result converging to common result boundary
+        action_result = delegation_result.to_action_result(context=effective_ctx)
+        self._state.set_action_result(action_result)
+
+        return AgentRunResponse(
+            output_text=delegation_result.content,
+            context=effective_ctx,
+            model=getattr(self.model, "model_name", str(self.model)),
+            success=delegation_result.success,
+            error=action_result.error,
+            state=self._state,
+            action_result=action_result,
+        )
+
+    async def delegate_async(
+        self,
+        tasks: Sequence[DelegatedTask | dict[str, Any]] | str,
+        context: Optional[AgentContext] = None,
+        objective: Optional[str] = None,
+        current_task: Optional[str] = None,
+        tools: Optional[Sequence[Any]] = None,
+    ) -> AgentRunResponse:
+        """Asynchronously delegate bounded tasks to temporary task-scoped sub-agents."""
+        effective_ctx = context or AgentContext()
+        if effective_ctx.project_id:
+            self._state.metadata["project_id"] = effective_ctx.project_id
+
+        if current_task is not None:
+            self._state.current_task = current_task
+
+        if isinstance(tasks, str):
+            overall_obj = objective or tasks
+            task_objs = self.decompose_objective(objective=tasks, context=self._state.current_task)
+        else:
+            overall_obj = objective or self._state.current_task or self._state.objective
+            task_objs = [DelegatedTask.from_dict(t) if isinstance(t, dict) else t for t in tasks]
+
+        self._state.set_delegated_tasks(task_objs)
+
+        subagent_results: list[TaskResult] = []
+        for t in task_objs:
+            res = await execute_subagent_task_async(
+                task=t,
+                model=self.model,
+                parent_context=effective_ctx,
+                tools=tools,
+            )
+            subagent_results.append(res)
+            self._state.add_task_result(res)
+
+        delegation_result = collect_task_results(
+            task_results=subagent_results,
+            overall_objective=overall_obj,
+        )
+        self._state.set_delegation_result(delegation_result)
+
+        action_result = delegation_result.to_action_result(context=effective_ctx)
+        self._state.set_action_result(action_result)
+
+        return AgentRunResponse(
+            output_text=delegation_result.content,
+            context=effective_ctx,
+            model=getattr(self.model, "model_name", str(self.model)),
+            success=delegation_result.success,
+            error=action_result.error,
+            state=self._state,
+            action_result=action_result,
+        )
+
     def execute(
         self,
         request: AgentRunRequest | str,
         context: Optional[AgentContext] = None,
         current_task: Optional[str] = None,
+        delegate: bool = False,
     ) -> AgentRunResponse:
         """Execute a synchronous interaction cycle via the DeepAgents harness.
 
@@ -286,6 +455,7 @@ class BRDLeadAgent:
             request: AgentRunRequest or raw input string prompt.
             context: Optional AgentContext for project isolation.
             current_task: Optional immediate task context override to associate with this execution.
+            delegate: If True, execute via delegation and sub-agents.
 
         Returns:
             AgentRunResponse: Normalized response containing output text, artifacts, and state.
@@ -306,7 +476,24 @@ class BRDLeadAgent:
         if effective_ctx and effective_ctx.project_id:
             self._state.metadata["project_id"] = effective_ctx.project_id
 
+        # Route to delegation if requested
+        should_delegate = delegate or (
+            isinstance(request, AgentRunRequest)
+            and bool(request.context.metadata.get("delegate", False))
+        )
+        if should_delegate:
+            prompt_text = request.input_text if isinstance(request, AgentRunRequest) else request
+            return self.delegate(
+                tasks=prompt_text,
+                context=effective_ctx,
+                current_task=current_task,
+            )
+
         response = self._runtime.execute(request=request, context=context)
+        # Converge onto common Action Result boundary
+        action_res = response.to_action_result()
+        response.action_result = action_res
+        self._state.set_action_result(action_res)
         response.state = self._state
         return response
 
@@ -315,6 +502,7 @@ class BRDLeadAgent:
         request: AgentRunRequest | str,
         context: Optional[AgentContext] = None,
         current_task: Optional[str] = None,
+        delegate: bool = False,
     ) -> AgentRunResponse:
         """Execute an asynchronous interaction cycle via the DeepAgents harness.
 
@@ -322,6 +510,7 @@ class BRDLeadAgent:
             request: AgentRunRequest or raw input string prompt.
             context: Optional AgentContext for project isolation.
             current_task: Optional immediate task context override to associate with this execution.
+            delegate: If True, execute via delegation and sub-agents.
 
         Returns:
             AgentRunResponse: Normalized response containing output text, artifacts, and state.
@@ -339,7 +528,22 @@ class BRDLeadAgent:
         if effective_ctx and effective_ctx.project_id:
             self._state.metadata["project_id"] = effective_ctx.project_id
 
+        should_delegate = delegate or (
+            isinstance(request, AgentRunRequest)
+            and bool(request.context.metadata.get("delegate", False))
+        )
+        if should_delegate:
+            prompt_text = request.input_text if isinstance(request, AgentRunRequest) else request
+            return await self.delegate_async(
+                tasks=prompt_text,
+                context=effective_ctx,
+                current_task=current_task,
+            )
+
         response = await self._runtime.execute_async(request=request, context=context)
+        action_res = response.to_action_result()
+        response.action_result = action_res
+        self._state.set_action_result(action_res)
         response.state = self._state
         return response
 

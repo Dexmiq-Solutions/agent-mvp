@@ -17,6 +17,9 @@ from typing import Any, Optional, Sequence, Union
 
 from deepagents import DeepAgentState
 
+from agents.brd.delegation import DelegatedTask, DelegationResult, TaskResult
+from agents.runtime.state import ActionResult
+
 
 class BRDSectionStatus(str, Enum):
     """Lifecycle status of a BRD section as defined in the context foundation."""
@@ -102,6 +105,10 @@ class BRDAgentState:
     evidence: list[Any] = field(default_factory=list)
     unresolved_information: list[str] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
+    delegated_tasks: list[DelegatedTask] = field(default_factory=list)
+    task_results: list[TaskResult] = field(default_factory=list)
+    delegation_result: Optional[DelegationResult] = None
+    latest_action_result: Optional[ActionResult] = None
 
     @classmethod
     def initialize_from_template(
@@ -131,6 +138,28 @@ class BRDAgentState:
     def set_current_task(self, task: Optional[str]) -> None:
         """Set the immediate task or objective context currently being executed."""
         self.current_task = task
+
+    def set_delegated_tasks(self, tasks: Sequence[DelegatedTask]) -> None:
+        """Store the list of delegated tasks decomposed from the Lead Agent objective."""
+        self.delegated_tasks = list(tasks)
+
+    def add_task_result(self, result: TaskResult) -> None:
+        """Record an attributable result from a temporary sub-agent execution."""
+        self.task_results.append(result)
+
+    def set_delegation_result(self, result: Optional[DelegationResult]) -> None:
+        """Store the consolidated delegation result."""
+        self.delegation_result = result
+
+    def set_action_result(self, action_result: Optional[ActionResult]) -> None:
+        """Store the latest unified action result (converging Direct Work, RAG, or Delegation)."""
+        self.latest_action_result = action_result
+
+    def clear_delegation(self) -> None:
+        """Clear delegated execution state for the next workflow cycle."""
+        self.delegated_tasks.clear()
+        self.task_results.clear()
+        self.delegation_result = None
 
     def get_section_status(self, section: str) -> Optional[BRDSectionStatus]:
         """Get the current progress status for a given section."""
@@ -235,6 +264,10 @@ class BRDAgentState:
             k: v.value if isinstance(v, BRDSectionStatus) else str(v)
             for k, v in self.section_progress.items()
         }
+        if self.delegation_result is not None:
+            data["delegation_result"] = self.delegation_result.to_dict()
+        if self.latest_action_result is not None:
+            data["latest_action_result"] = self.latest_action_result.to_dict()
         return data
 
     @classmethod
@@ -245,6 +278,27 @@ class BRDAgentState:
             k: BRDSectionStatus.from_string(v)
             for k, v in raw_progress.items()
         }
+        delegated_tasks = [
+            DelegatedTask.from_dict(t) if isinstance(t, dict) else t
+            for t in data.get("delegated_tasks", [])
+        ]
+        task_results = [
+            TaskResult.from_dict(r) if isinstance(r, dict) else r
+            for r in data.get("task_results", [])
+        ]
+        del_res_raw = data.get("delegation_result")
+        delegation_result = (
+            DelegationResult.from_dict(del_res_raw)
+            if isinstance(del_res_raw, dict)
+            else del_res_raw
+        )
+        act_res_raw = data.get("latest_action_result")
+        latest_action_result = (
+            ActionResult.from_dict(act_res_raw)
+            if isinstance(act_res_raw, dict)
+            else act_res_raw
+        )
+
         return cls(
             objective=data.get("objective", "Produce an evidence-grounded Business Requirements Document"),
             current_task=data.get("current_task"),
@@ -254,6 +308,10 @@ class BRDAgentState:
             evidence=list(data.get("evidence", [])),
             unresolved_information=list(data.get("unresolved_information", [])),
             metadata=dict(data.get("metadata", {})),
+            delegated_tasks=delegated_tasks,
+            task_results=task_results,
+            delegation_result=delegation_result,
+            latest_action_result=latest_action_result,
         )
 
 
@@ -270,3 +328,7 @@ class BRDDeepAgentState(DeepAgentState, total=False):
     section_progress: Optional[dict[str, str]]
     evidence: Optional[list[Any]]
     unresolved_information: Optional[list[str]]
+    delegated_tasks: Optional[list[dict[str, Any]]]
+    task_results: Optional[list[dict[str, Any]]]
+    delegation_result: Optional[dict[str, Any]]
+    latest_action_result: Optional[dict[str, Any]]
