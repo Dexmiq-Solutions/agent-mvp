@@ -11,6 +11,7 @@ Maintains its working context and progress via BRDAgentState.
 """
 from __future__ import annotations
 
+from enum import Enum
 from pathlib import Path
 import re
 from typing import Any, Optional, Sequence
@@ -25,6 +26,13 @@ from agents.brd.delegation import (
     decompose_objective,
     execute_subagent_task,
     execute_subagent_task_async,
+)
+from agents.brd.evaluation import (
+    BRDEvaluationAgent,
+    EvaluationContext,
+    EvaluationOutcome,
+    EvaluationResult,
+    extract_section_requirements,
 )
 from agents.brd.state import BRDAgentState
 from agents.runtime.agent import AgentRuntime
@@ -154,6 +162,14 @@ class _BRDTemplateDescriptor:
         return load_brd_template()
 
 
+class WorkflowDecision(str, Enum):
+    """Workflow decision determined by the BRD Lead Agent following evaluation."""
+
+    PROCEED_TO_SECTION_GENERATION = "proceed_to_section_generation"
+    RAG = "rag"
+    ASK_USER = "ask_user"
+
+
 class BRDLeadAgent:
     """Domain-specific Agent responsible for accomplishing the BRD generation objective.
 
@@ -186,6 +202,7 @@ class BRDLeadAgent:
         state: Optional[BRDAgentState] = None,
         rag_service: Optional[RAGService] = None,
         enable_rag: bool = True,
+        evaluator: Optional[BRDEvaluationAgent] = None,
     ) -> None:
         """Initialize the BRD Lead Agent.
 
@@ -204,9 +221,12 @@ class BRDLeadAgent:
             rag_service: Optional pre-configured RAGService instance to inject for knowledge retrieval.
             enable_rag: Whether to equip the search_project_knowledge tool when constructing runtime.
                 Defaults to True.
+            evaluator: Optional pre-configured BRDEvaluationAgent instance. If omitted, instantiated
+                on demand using the active model.
         """
         resolved_instruction = system_instruction or system_prompt or load_system_instruction()
         self._system_instruction = resolved_instruction
+        self._evaluator = evaluator
 
         resolved_template = template or load_brd_template()
         self._template = resolved_template
@@ -284,6 +304,13 @@ class BRDLeadAgent:
     def state(self) -> BRDAgentState:
         """Return the active BRDAgentState working context."""
         return self._state
+
+    @property
+    def evaluator(self) -> BRDEvaluationAgent:
+        """Return the attached Evaluation Sub-Agent capability."""
+        if self._evaluator is None:
+            self._evaluator = BRDEvaluationAgent(model=self.model)
+        return self._evaluator
 
     def reset_state(self) -> None:
         """Reset the Agent working state to initial unstarted state based on template sections."""
@@ -547,6 +574,290 @@ class BRDLeadAgent:
         response.state = self._state
         return response
 
+    def evaluate(
+        self,
+        action_result: Optional[ActionResult] = None,
+        objective: Optional[str] = None,
+        section: Optional[str] = None,
+        section_requirements: Optional[Sequence[str] | str] = None,
+        context: Optional[AgentContext] = None,
+        relevant_working_context: Optional[str] = None,
+    ) -> EvaluationResult:
+        """Evaluate an ActionResult against current objective and section requirements.
+
+        Workflow:
+        ActionResult -> Evaluation Sub-Agent -> EvaluationResult -> BRD Lead Agent State
+
+        Args:
+            action_result: Optional specific ActionResult to evaluate. Defaults to
+                self.state.latest_action_result.
+            objective: Optional objective. Defaults to self.state.current_task or self.state.objective.
+            section: Optional section. Defaults to self.state.current_section.
+            section_requirements: Optional section requirements. If omitted, extracted
+                from the authoritative template for current_section.
+            context: Optional AgentContext for tenant boundaries.
+            relevant_working_context: Optional additional working context.
+
+        Returns:
+            EvaluationResult: Structured evaluation with outcome, findings, and gaps.
+
+        Raises:
+            ValueError: If no ActionResult is provided or present in state.
+        """
+        target_result = action_result or self._state.latest_action_result
+        if target_result is None:
+            raise ValueError(
+                "No ActionResult provided or available in state to evaluate."
+            )
+
+        cur_obj = objective or self._state.current_task or self._state.objective
+        cur_sec = section or self._state.current_section or "Unspecified Section"
+
+        if section_requirements is not None:
+            if isinstance(section_requirements, str):
+                sec_reqs = [section_requirements]
+            else:
+                sec_reqs = list(section_requirements)
+        else:
+            sec_reqs = extract_section_requirements(cur_sec, self._template)
+
+        working_ctx = relevant_working_context or ""
+        if not working_ctx and self._state.evidence:
+            evidence_texts = [
+                str(e.get("content", e) if isinstance(e, dict) else e)
+                for e in self._state.evidence[-3:]
+            ]
+            working_ctx = "Prior Evidence Summary:\n" + "\n".join(evidence_texts)
+
+        effective_ctx = context or target_result.context or AgentContext()
+        eval_ctx = EvaluationContext(
+            current_objective=cur_obj,
+            current_section=cur_sec,
+            section_requirements=sec_reqs,
+            relevant_working_context=working_ctx,
+            action_result=target_result,
+            metadata={
+                "project_id": effective_ctx.project_id or self._state.metadata.get("project_id"),
+            },
+        )
+
+        eval_result = self.evaluator.evaluate(context=eval_ctx)
+        self._state.set_evaluation_result(eval_result)
+        return eval_result
+
+    async def evaluate_async(
+        self,
+        action_result: Optional[ActionResult] = None,
+        objective: Optional[str] = None,
+        section: Optional[str] = None,
+        section_requirements: Optional[Sequence[str] | str] = None,
+        context: Optional[AgentContext] = None,
+        relevant_working_context: Optional[str] = None,
+    ) -> EvaluationResult:
+        """Asynchronously evaluate an ActionResult against current objective and section requirements."""
+        target_result = action_result or self._state.latest_action_result
+        if target_result is None:
+            raise ValueError(
+                "No ActionResult provided or available in state to evaluate."
+            )
+
+        cur_obj = objective or self._state.current_task or self._state.objective
+        cur_sec = section or self._state.current_section or "Unspecified Section"
+
+        if section_requirements is not None:
+            if isinstance(section_requirements, str):
+                sec_reqs = [section_requirements]
+            else:
+                sec_reqs = list(section_requirements)
+        else:
+            sec_reqs = extract_section_requirements(cur_sec, self._template)
+
+        working_ctx = relevant_working_context or ""
+        if not working_ctx and self._state.evidence:
+            evidence_texts = [
+                str(e.get("content", e) if isinstance(e, dict) else e)
+                for e in self._state.evidence[-3:]
+            ]
+            working_ctx = "Prior Evidence Summary:\n" + "\n".join(evidence_texts)
+
+        effective_ctx = context or target_result.context or AgentContext()
+        eval_ctx = EvaluationContext(
+            current_objective=cur_obj,
+            current_section=cur_sec,
+            section_requirements=sec_reqs,
+            relevant_working_context=working_ctx,
+            action_result=target_result,
+            metadata={
+                "project_id": effective_ctx.project_id or self._state.metadata.get("project_id"),
+            },
+        )
+
+        eval_result = await self.evaluator.evaluate_async(context=eval_ctx)
+        self._state.set_evaluation_result(eval_result)
+        return eval_result
+
+    def decide_next_step(
+        self,
+        evaluation_result: Optional[EvaluationResult] = None,
+        can_rag_resolve: Optional[bool] = None,
+    ) -> WorkflowDecision:
+        """Decide the next workflow action based on an EvaluationResult.
+
+        Architectural Rule:
+        The Evaluation Sub-Agent evaluates. The BRD Lead Agent decides what happens next:
+        - If SUFFICIENT: Proceed toward BRD section generation.
+        - If INSUFFICIENT:
+            - If RAG can reasonably provide the missing information: execute RAG.
+            - If RAG cannot reasonably provide it: ask the user for clarification.
+
+        Args:
+            evaluation_result: Optional specific EvaluationResult to base the decision on.
+                Defaults to self.state.latest_evaluation_result.
+            can_rag_resolve: Optional explicit boolean flag indicating whether RAG can
+                resolve the gaps. If omitted, heuristic assessment is performed.
+
+        Returns:
+            WorkflowDecision: PROCEED_TO_SECTION_GENERATION, RAG, or ASK_USER.
+
+        Raises:
+            ValueError: If no EvaluationResult is provided or available in state.
+        """
+        eval_res = evaluation_result or self._state.latest_evaluation_result
+        if eval_res is None:
+            raise ValueError(
+                "No EvaluationResult provided or available in state to decide next step."
+            )
+
+        if eval_res.is_sufficient:
+            logger.info("Evaluation outcome is SUFFICIENT -> Proceeding toward section generation")
+            return WorkflowDecision.PROCEED_TO_SECTION_GENERATION
+
+        logger.info("Evaluation outcome is INSUFFICIENT -> Assessing gap resolution path")
+
+        if not self.has_rag_capability:
+            logger.info("RAG capability not equipped -> Choosing ASK_USER")
+            return WorkflowDecision.ASK_USER
+
+        if can_rag_resolve is not None:
+            decision = WorkflowDecision.RAG if can_rag_resolve else WorkflowDecision.ASK_USER
+            logger.info("Explicit RAG feasibility provided -> Choosing %s", decision.value)
+            return decision
+
+        is_rag_feasible = self._can_rag_reasonably_provide(
+            missing_items=eval_res.missing_information,
+            unresolved_items=eval_res.unresolved_information,
+        )
+        decision = WorkflowDecision.RAG if is_rag_feasible else WorkflowDecision.ASK_USER
+        logger.info("Lead Agent assessed gap feasibility -> Choosing %s", decision.value)
+        return decision
+
+    def _can_rag_reasonably_provide(
+        self,
+        missing_items: Sequence[str],
+        unresolved_items: Sequence[str],
+    ) -> bool:
+        """Determine whether missing/unresolved information can reasonably exist in project knowledge base.
+
+        Heuristic:
+        - Items regarding external user decisions, business approvals, personal preferences, or budget
+          agreements cannot be found in static project docs -> Ask User.
+        - Items regarding requirements, specs, workflows, architecture, personas, or integrations
+          typically exist in repository knowledge -> RAG.
+        """
+        all_gaps = list(missing_items) + list(unresolved_items)
+        if not all_gaps:
+            return False
+
+        user_decision_indicators = [
+            "user preference",
+            "user confirmation",
+            "stakeholder sign-off",
+            "budget approval",
+            "confirm with user",
+            "ask user",
+            "client preference",
+            "pricing decision",
+            "timeline agreement",
+        ]
+
+        for gap in all_gaps:
+            gap_lower = gap.lower()
+            for indicator in user_decision_indicators:
+                if indicator in gap_lower:
+                    return False
+
+        return True
+
+    def retry_with_rag(
+        self,
+        query: Optional[str] = None,
+        context: Optional[AgentContext] = None,
+        evaluate_after: bool = True,
+    ) -> tuple[AgentRunResponse, Optional[EvaluationResult]]:
+        """Execute RAG retry path when Lead Agent determines RAG can resolve missing information.
+
+        Workflow:
+        Lead Agent -> search_project_knowledge -> ActionResult -> (optional re-evaluation) -> EvaluationResult
+
+        Args:
+            query: Focused knowledge search query. If omitted, synthesized from missing information.
+            context: Optional tenant AgentContext.
+            evaluate_after: If True, immediately re-evaluates the resulting ActionResult with Evaluation Sub-Agent.
+
+        Returns:
+            tuple[AgentRunResponse, Optional[EvaluationResult]]: Response and optional re-evaluation result.
+        """
+        effective_ctx = context or AgentContext()
+        if effective_ctx.project_id:
+            self._state.metadata["project_id"] = effective_ctx.project_id
+
+        if not query:
+            latest_eval = self._state.latest_evaluation_result
+            if latest_eval and latest_eval.missing_information:
+                query = f"Retrieve project details for: {', '.join(latest_eval.missing_information[:3])}"
+            else:
+                query = f"Retrieve relevant project knowledge for section {self._state.current_section or 'BRD'}"
+
+        logger.info("Executing RAG retry path with query: %s", query)
+        request = AgentRunRequest(input_text=query, context=effective_ctx)
+        response = self.execute(request=request, context=effective_ctx)
+
+        eval_result = None
+        if evaluate_after and response.action_result:
+            eval_result = self.evaluate(
+                action_result=response.action_result,
+                context=effective_ctx,
+            )
+
+        return response, eval_result
+
+    def receive_user_clarification(
+        self,
+        answer: str,
+        resolved_item: Optional[str] = None,
+        context: Optional[AgentContext] = None,
+    ) -> None:
+        """Incorporate user clarification into Agent State and context.
+
+        Args:
+            answer: User's clarifying answer or decision.
+            resolved_item: Optional specific unresolved or missing item that this answer resolves.
+            context: Optional tenant AgentContext.
+        """
+        logger.info("Received user clarification (len: %d)", len(answer))
+        effective_ctx = context or AgentContext()
+        if effective_ctx.project_id:
+            self._state.metadata["project_id"] = effective_ctx.project_id
+
+        self._state.add_evidence({
+            "source": "user_clarification",
+            "content": answer,
+            "resolved_item": resolved_item,
+        })
+
+        if resolved_item:
+            self._state.resolve_unresolved(resolved_item)
+
 
 def create_brd_lead_agent(
     runtime: Optional[AgentRuntime] = None,
@@ -559,6 +870,7 @@ def create_brd_lead_agent(
     state: Optional[BRDAgentState] = None,
     rag_service: Optional[RAGService] = None,
     enable_rag: bool = True,
+    evaluator: Optional[BRDEvaluationAgent] = None,
 ) -> BRDLeadAgent:
     """Factory function to instantiate the BRD Lead Agent.
 
@@ -573,6 +885,7 @@ def create_brd_lead_agent(
         state: Optional BRDAgentState working state instance.
         rag_service: Optional pre-configured RAGService instance to inject for knowledge retrieval.
         enable_rag: Whether to equip RAG knowledge retrieval tool (defaults to True).
+        evaluator: Optional pre-configured BRDEvaluationAgent instance.
 
     Returns:
         Configured BRDLeadAgent instance.
@@ -588,4 +901,5 @@ def create_brd_lead_agent(
         state=state,
         rag_service=rag_service,
         enable_rag=enable_rag,
+        evaluator=evaluator,
     )

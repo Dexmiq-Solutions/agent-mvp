@@ -18,6 +18,7 @@ from typing import Any, Optional, Sequence, Union
 from deepagents import DeepAgentState
 
 from agents.brd.delegation import DelegatedTask, DelegationResult, TaskResult
+from agents.brd.evaluation.agent import EvaluationResult
 from agents.runtime.state import ActionResult
 
 
@@ -109,6 +110,8 @@ class BRDAgentState:
     task_results: list[TaskResult] = field(default_factory=list)
     delegation_result: Optional[DelegationResult] = None
     latest_action_result: Optional[ActionResult] = None
+    latest_evaluation_result: Optional[EvaluationResult] = None
+    evaluation_history: list[EvaluationResult] = field(default_factory=list)
 
     @classmethod
     def initialize_from_template(
@@ -154,6 +157,16 @@ class BRDAgentState:
     def set_action_result(self, action_result: Optional[ActionResult]) -> None:
         """Store the latest unified action result (converging Direct Work, RAG, or Delegation)."""
         self.latest_action_result = action_result
+
+    def set_evaluation_result(self, result: Optional[EvaluationResult]) -> None:
+        """Store the latest evaluation result and record it in history."""
+        self.latest_evaluation_result = result
+        if result is not None:
+            self.evaluation_history.append(result)
+
+    def get_latest_evaluation_result(self) -> Optional[EvaluationResult]:
+        """Retrieve the latest evaluation result."""
+        return self.latest_evaluation_result
 
     def clear_delegation(self) -> None:
         """Clear delegated execution state for the next workflow cycle."""
@@ -268,6 +281,11 @@ class BRDAgentState:
             data["delegation_result"] = self.delegation_result.to_dict()
         if self.latest_action_result is not None:
             data["latest_action_result"] = self.latest_action_result.to_dict()
+        if self.latest_evaluation_result is not None:
+            data["latest_evaluation_result"] = self.latest_evaluation_result.to_dict()
+        data["evaluation_history"] = [
+            e.to_dict() if hasattr(e, "to_dict") else e for e in self.evaluation_history
+        ]
         return data
 
     @classmethod
@@ -298,6 +316,17 @@ class BRDAgentState:
             if isinstance(act_res_raw, dict)
             else act_res_raw
         )
+        eval_res_raw = data.get("latest_evaluation_result")
+        latest_evaluation_result = (
+            EvaluationResult.from_dict(eval_res_raw)
+            if isinstance(eval_res_raw, dict)
+            else eval_res_raw
+        )
+        eval_hist_raw = data.get("evaluation_history", [])
+        evaluation_history = [
+            EvaluationResult.from_dict(e) if isinstance(e, dict) else e
+            for e in eval_hist_raw
+        ]
 
         return cls(
             objective=data.get("objective", "Produce an evidence-grounded Business Requirements Document"),
@@ -312,6 +341,8 @@ class BRDAgentState:
             task_results=task_results,
             delegation_result=delegation_result,
             latest_action_result=latest_action_result,
+            latest_evaluation_result=latest_evaluation_result,
+            evaluation_history=evaluation_history,
         )
 
 
@@ -332,3 +363,5 @@ class BRDDeepAgentState(DeepAgentState, total=False):
     task_results: Optional[list[dict[str, Any]]]
     delegation_result: Optional[dict[str, Any]]
     latest_action_result: Optional[dict[str, Any]]
+    latest_evaluation_result: Optional[dict[str, Any]]
+    evaluation_history: Optional[list[dict[str, Any]]]
