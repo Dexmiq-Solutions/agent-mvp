@@ -12,7 +12,7 @@ from exceptions.agent import AgentConfigurationError
 def test_agent_config_defaults():
     """Verify AgentConfig initializes with safe default parameters."""
     config = AgentConfig()
-    assert config.model == "gpt-4o"
+    assert config.model == "gemini-2.5-flash"
     assert config.api_key is None
     assert config.base_url is None
     assert config.temperature == 0.0

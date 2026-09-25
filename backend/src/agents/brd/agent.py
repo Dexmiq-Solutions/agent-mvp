@@ -22,7 +22,10 @@ from agents.runtime.agent import AgentRuntime
 from agents.runtime.config import AgentConfig
 from agents.runtime.state import AgentContext, AgentRunRequest, AgentRunResponse
 from observability.logging import get_logger
+from services.rag_service import RAGService
 from tools import get_default_tools
+from tools.diagnostic import echo_diagnostic_tool
+from tools.rag import create_search_project_knowledge_tool, search_project_knowledge
 
 logger = get_logger(__name__)
 
@@ -166,6 +169,8 @@ class BRDLeadAgent:
         system_prompt: Optional[str] = None,
         template: Optional[str] = None,
         state: Optional[BRDAgentState] = None,
+        rag_service: Optional[RAGService] = None,
+        enable_rag: bool = True,
     ) -> None:
         """Initialize the BRD Lead Agent.
 
@@ -181,6 +186,9 @@ class BRDLeadAgent:
             template: Optional BRD template override. If omitted, loaded from brd_template.md.
             state: Optional BRDAgentState working state instance. If omitted, initialized
                 from the template structure.
+            rag_service: Optional pre-configured RAGService instance to inject for knowledge retrieval.
+            enable_rag: Whether to equip the search_project_knowledge tool when constructing runtime.
+                Defaults to True.
         """
         resolved_instruction = system_instruction or system_prompt or load_system_instruction()
         self._system_instruction = resolved_instruction
@@ -200,13 +208,32 @@ class BRDLeadAgent:
             if getattr(self._runtime, "_system_prompt", None) != resolved_instruction:
                 self._runtime._system_prompt = resolved_instruction
         else:
-            resolved_tools = list(tools) if tools is not None else get_default_tools()
+            if tools is not None:
+                resolved_tools = list(tools)
+            elif not enable_rag:
+                resolved_tools = [echo_diagnostic_tool]
+            elif rag_service is not None:
+                resolved_tools = [
+                    echo_diagnostic_tool,
+                    create_search_project_knowledge_tool(rag_service=rag_service),
+                ]
+            else:
+                resolved_tools = get_default_tools()
+
             self._runtime = AgentRuntime(
                 config=config,
                 model=model,
                 tools=resolved_tools,
                 system_prompt=resolved_instruction,
             )
+
+    @property
+    def has_rag_capability(self) -> bool:
+        """Return True if the search_project_knowledge tool is equipped on this agent."""
+        return any(
+            getattr(tool, "name", "") == "search_project_knowledge"
+            for tool in self.tools
+        )
 
     @property
     def runtime(self) -> AgentRuntime:
@@ -315,6 +342,8 @@ def create_brd_lead_agent(
     system_prompt: Optional[str] = None,
     template: Optional[str] = None,
     state: Optional[BRDAgentState] = None,
+    rag_service: Optional[RAGService] = None,
+    enable_rag: bool = True,
 ) -> BRDLeadAgent:
     """Factory function to instantiate the BRD Lead Agent.
 
@@ -327,6 +356,8 @@ def create_brd_lead_agent(
         system_prompt: Deprecated alias for system_instruction for backward compatibility.
         template: Optional BRD template override.
         state: Optional BRDAgentState working state instance.
+        rag_service: Optional pre-configured RAGService instance to inject for knowledge retrieval.
+        enable_rag: Whether to equip RAG knowledge retrieval tool (defaults to True).
 
     Returns:
         Configured BRDLeadAgent instance.
@@ -340,4 +371,6 @@ def create_brd_lead_agent(
         system_prompt=system_prompt,
         template=template,
         state=state,
+        rag_service=rag_service,
+        enable_rag=enable_rag,
     )
