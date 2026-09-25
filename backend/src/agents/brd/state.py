@@ -19,6 +19,7 @@ from deepagents import DeepAgentState
 
 from agents.brd.delegation import DelegatedTask, DelegationResult, TaskResult
 from agents.brd.evaluation.agent import EvaluationResult
+from agents.brd.section_validation.agent import ValidationResult
 from agents.runtime.state import ActionResult
 
 
@@ -115,6 +116,8 @@ class BRDAgentState:
     section_content: dict[str, str] = field(default_factory=dict)
     rework_feedback: dict[str, str] = field(default_factory=dict)
     latest_section_result: Optional[Any] = None
+    latest_validation_result: Optional[ValidationResult] = None
+    validation_history: list[ValidationResult] = field(default_factory=list)
 
     @classmethod
     def initialize_from_template(
@@ -208,6 +211,16 @@ class BRDAgentState:
     def set_section_result(self, result: Optional[Any]) -> None:
         """Store the latest section generation / update result."""
         self.latest_section_result = result
+
+    def set_validation_result(self, result: Optional[ValidationResult]) -> None:
+        """Store the latest section validation result and record it in validation history."""
+        self.latest_validation_result = result
+        if result is not None:
+            self.validation_history.append(result)
+
+    def get_latest_validation_result(self) -> Optional[ValidationResult]:
+        """Retrieve the latest section validation result."""
+        return self.latest_validation_result
 
     def clear_delegation(self) -> None:
         """Clear delegated execution state for the next workflow cycle."""
@@ -333,6 +346,15 @@ class BRDAgentState:
                 if hasattr(self.latest_section_result, "to_dict")
                 else self.latest_section_result
             )
+        if self.latest_validation_result is not None:
+            data["latest_validation_result"] = (
+                self.latest_validation_result.to_dict()
+                if hasattr(self.latest_validation_result, "to_dict")
+                else self.latest_validation_result
+            )
+        data["validation_history"] = [
+            v.to_dict() if hasattr(v, "to_dict") else v for v in self.validation_history
+        ]
         data["section_content"] = dict(self.section_content)
         data["rework_feedback"] = dict(self.rework_feedback)
         return data
@@ -385,6 +407,18 @@ class BRDAgentState:
             except Exception:
                 latest_section_result = sec_res_raw
 
+        val_res_raw = data.get("latest_validation_result")
+        latest_validation_result = (
+            ValidationResult.from_dict(val_res_raw)
+            if isinstance(val_res_raw, dict)
+            else val_res_raw
+        )
+        val_hist_raw = data.get("validation_history", [])
+        validation_history = [
+            ValidationResult.from_dict(v) if isinstance(v, dict) else v
+            for v in val_hist_raw
+        ]
+
         return cls(
             objective=data.get("objective", "Produce an evidence-grounded Business Requirements Document"),
             current_task=data.get("current_task"),
@@ -403,6 +437,8 @@ class BRDAgentState:
             section_content=dict(data.get("section_content", {})),
             rework_feedback=dict(data.get("rework_feedback", {})),
             latest_section_result=latest_section_result,
+            latest_validation_result=latest_validation_result,
+            validation_history=validation_history,
         )
 
 
@@ -428,3 +464,5 @@ class BRDDeepAgentState(DeepAgentState, total=False):
     section_content: Optional[dict[str, str]]
     rework_feedback: Optional[dict[str, str]]
     latest_section_result: Optional[dict[str, Any]]
+    latest_validation_result: Optional[dict[str, Any]]
+    validation_history: Optional[list[dict[str, Any]]]

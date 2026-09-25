@@ -39,6 +39,14 @@ from agents.brd.section_generation import (
     SectionGenerationResult,
     SectionOperation,
 )
+from agents.brd.section_validation import (
+    BRDSectionValidationAgent,
+    SectionValidationContext,
+    ValidationCategory,
+    ValidationFinding,
+    ValidationOutcome,
+    ValidationResult,
+)
 from agents.brd.template import (
     extract_brd_sections,
     extract_section_requirements,
@@ -46,7 +54,7 @@ from agents.brd.template import (
     get_brd_template_path,
     load_brd_template,
 )
-from agents.brd.state import BRDAgentState
+from agents.brd.state import BRDAgentState, BRDSectionStatus
 from agents.runtime.agent import AgentRuntime
 from agents.runtime.config import AgentConfig
 from agents.runtime.state import (
@@ -165,6 +173,7 @@ class BRDLeadAgent:
         enable_rag: bool = True,
         evaluator: Optional[BRDEvaluationAgent] = None,
         section_generator: Optional[BRDSectionGenerationAgent] = None,
+        section_validator: Optional[BRDSectionValidationAgent] = None,
     ) -> None:
         """Initialize the BRD Lead Agent.
 
@@ -187,11 +196,14 @@ class BRDLeadAgent:
                 on demand using the active model.
             section_generator: Optional pre-configured BRDSectionGenerationAgent instance. If omitted,
                 instantiated on demand using the active model.
+            section_validator: Optional pre-configured BRDSectionValidationAgent instance. If omitted,
+                instantiated on demand using the active model.
         """
         resolved_instruction = system_instruction or system_prompt or load_system_instruction()
         self._system_instruction = resolved_instruction
         self._evaluator = evaluator
         self._section_generator = section_generator
+        self._section_validator = section_validator
 
         resolved_template = template or load_brd_template()
         self._template = resolved_template
@@ -283,6 +295,13 @@ class BRDLeadAgent:
         if self._section_generator is None:
             self._section_generator = BRDSectionGenerationAgent(model=self.model)
         return self._section_generator
+
+    @property
+    def section_validator(self) -> BRDSectionValidationAgent:
+        """Return the attached Section Validation Sub-Agent capability."""
+        if self._section_validator is None:
+            self._section_validator = BRDSectionValidationAgent(model=self.model)
+        return self._section_validator
 
     def reset_state(self) -> None:
         """Reset the Agent working state to initial unstarted state based on template sections."""
@@ -1068,6 +1087,404 @@ class BRDLeadAgent:
             context=context,
         )
 
+    def validate_section(
+        self,
+        section: Optional[str] = None,
+        section_content: Optional[str] = None,
+        available_information: Optional[Sequence[Any] | str] = None,
+        section_requirements: Optional[Sequence[str] | str] = None,
+        template_structure: Optional[str] = None,
+        prior_rework_feedback: Optional[str] = None,
+        context: Optional[AgentContext] = None,
+    ) -> ValidationResult:
+        """Validate a generated or updated BRD section via the Section Validation Sub-Agent.
+
+        Workflow:
+        BRD Lead Agent (prepares validation context/evidence) -> Section Validation Sub-Agent ->
+        ValidationResult -> Lead Agent inspects outcome, updates state and section status,
+        and records rework feedback if rework is required.
+
+        Args:
+            section: Target section name (e.g. "5. Stakeholders & Personas"). Defaults to
+                self.state.current_section.
+            section_content: Complete section Markdown to validate. If omitted, retrieved
+                from state.get_section_content().
+            available_information: Optional specific information or evidence to validate against.
+                If omitted, gathered from state (latest action result, working evidence, task results).
+            section_requirements: Optional specific requirements/criteria. If omitted,
+                extracted dynamically from the authoritative BRD template.
+            template_structure: Optional template snippet. If omitted, extracted dynamically
+                from the authoritative BRD template.
+            prior_rework_feedback: Optional prior rework feedback if re-validating. If omitted,
+                retrieved from state.get_rework_feedback().
+            context: Optional tenant AgentContext.
+
+        Returns:
+            ValidationResult: Structured validation result with outcome, findings, and rework feedback.
+
+        Raises:
+            ValueError: If no target section can be identified or no content is available to validate.
+        """
+        target_sec = section or self._state.current_section
+        if not target_sec:
+            raise ValueError(
+                "No target section specified or set as current_section in Agent State."
+            )
+        self._state.set_current_section(target_sec)
+        canonical_sec = self._state.current_section or target_sec
+
+        content_to_validate = (
+            section_content
+            if section_content is not None
+            else self._state.get_section_content(canonical_sec)
+        )
+        if not content_to_validate or not content_to_validate.strip():
+            raise ValueError(
+                f"No section content available to validate for '{canonical_sec}'."
+            )
+
+        if section_requirements is not None:
+            sec_reqs = (
+                [section_requirements]
+                if isinstance(section_requirements, str)
+                else list(section_requirements)
+            )
+        else:
+            sec_reqs = extract_section_requirements(canonical_sec, self._template)
+
+        sec_template = (
+            template_structure
+            or extract_section_template(canonical_sec, self._template)
+        )
+
+        if available_information is not None:
+            info_payload = available_information
+        else:
+            info_parts: list[Any] = []
+            if self._state.latest_action_result and self._state.latest_action_result.content:
+                info_parts.append({
+                    "source": str(self._state.latest_action_result.source),
+                    "content": self._state.latest_action_result.content,
+                })
+            if self._state.evidence:
+                info_parts.extend(self._state.evidence)
+            if self._state.task_results:
+                for tr in self._state.task_results:
+                    info_parts.append({
+                        "source": f"delegated_task:{tr.task_id}",
+                        "content": tr.output,
+                    })
+            info_payload = info_parts if info_parts else "*(No prior evidence collected)*"
+
+        resolved_prior_rework = (
+            prior_rework_feedback
+            if prior_rework_feedback is not None
+            else self._state.get_rework_feedback(canonical_sec)
+        )
+
+        effective_ctx = context or AgentContext()
+        if effective_ctx.project_id:
+            self._state.metadata["project_id"] = effective_ctx.project_id
+
+        val_ctx = SectionValidationContext(
+            section_name=canonical_sec,
+            section_content=content_to_validate,
+            section_requirements=sec_reqs,
+            template_structure=sec_template,
+            available_information=info_payload,
+            prior_rework_feedback=resolved_prior_rework,
+            metadata={
+                "project_id": effective_ctx.project_id or self._state.metadata.get("project_id"),
+            },
+        )
+
+        result = self.section_validator.validate(val_ctx)
+        self._state.set_validation_result(result)
+
+        if result.is_valid:
+            self._state.update_section_status(canonical_sec, BRDSectionStatus.COMPLETED)
+            self._state.clear_rework_feedback(canonical_sec)
+            logger.info("Section accepted (section: %s)", canonical_sec)
+        else:
+            self._state.update_section_status(canonical_sec, BRDSectionStatus.NEEDS_REVISION)
+            if result.rework_feedback:
+                self._state.set_rework_feedback(canonical_sec, result.rework_feedback)
+            logger.warning(
+                "Rework required for section: %s (findings: %d)",
+                canonical_sec,
+                len(result.findings),
+            )
+
+        return result
+
+    async def validate_section_async(
+        self,
+        section: Optional[str] = None,
+        section_content: Optional[str] = None,
+        available_information: Optional[Sequence[Any] | str] = None,
+        section_requirements: Optional[Sequence[str] | str] = None,
+        template_structure: Optional[str] = None,
+        prior_rework_feedback: Optional[str] = None,
+        context: Optional[AgentContext] = None,
+    ) -> ValidationResult:
+        """Asynchronously validate a generated or updated BRD section via Section Validation Sub-Agent."""
+        target_sec = section or self._state.current_section
+        if not target_sec:
+            raise ValueError(
+                "No target section specified or set as current_section in Agent State."
+            )
+        self._state.set_current_section(target_sec)
+        canonical_sec = self._state.current_section or target_sec
+
+        content_to_validate = (
+            section_content
+            if section_content is not None
+            else self._state.get_section_content(canonical_sec)
+        )
+        if not content_to_validate or not content_to_validate.strip():
+            raise ValueError(
+                f"No section content available to validate for '{canonical_sec}'."
+            )
+
+        if section_requirements is not None:
+            sec_reqs = (
+                [section_requirements]
+                if isinstance(section_requirements, str)
+                else list(section_requirements)
+            )
+        else:
+            sec_reqs = extract_section_requirements(canonical_sec, self._template)
+
+        sec_template = (
+            template_structure
+            or extract_section_template(canonical_sec, self._template)
+        )
+
+        if available_information is not None:
+            info_payload = available_information
+        else:
+            info_parts: list[Any] = []
+            if self._state.latest_action_result and self._state.latest_action_result.content:
+                info_parts.append({
+                    "source": str(self._state.latest_action_result.source),
+                    "content": self._state.latest_action_result.content,
+                })
+            if self._state.evidence:
+                info_parts.extend(self._state.evidence)
+            if self._state.task_results:
+                for tr in self._state.task_results:
+                    info_parts.append({
+                        "source": f"delegated_task:{tr.task_id}",
+                        "content": tr.output,
+                    })
+            info_payload = info_parts if info_parts else "*(No prior evidence collected)*"
+
+        resolved_prior_rework = (
+            prior_rework_feedback
+            if prior_rework_feedback is not None
+            else self._state.get_rework_feedback(canonical_sec)
+        )
+
+        effective_ctx = context or AgentContext()
+        if effective_ctx.project_id:
+            self._state.metadata["project_id"] = effective_ctx.project_id
+
+        val_ctx = SectionValidationContext(
+            section_name=canonical_sec,
+            section_content=content_to_validate,
+            section_requirements=sec_reqs,
+            template_structure=sec_template,
+            available_information=info_payload,
+            prior_rework_feedback=resolved_prior_rework,
+            metadata={
+                "project_id": effective_ctx.project_id or self._state.metadata.get("project_id"),
+            },
+        )
+
+        result = await self.section_validator.validate_async(val_ctx)
+        self._state.set_validation_result(result)
+
+        if result.is_valid:
+            self._state.update_section_status(canonical_sec, BRDSectionStatus.COMPLETED)
+            self._state.clear_rework_feedback(canonical_sec)
+            logger.info("Section accepted (section: %s)", canonical_sec)
+        else:
+            self._state.update_section_status(canonical_sec, BRDSectionStatus.NEEDS_REVISION)
+            if result.rework_feedback:
+                self._state.set_rework_feedback(canonical_sec, result.rework_feedback)
+            logger.warning(
+                "Rework required for section: %s (findings: %d)",
+                canonical_sec,
+                len(result.findings),
+            )
+
+        return result
+
+    def generate_and_validate_section(
+        self,
+        section: Optional[str] = None,
+        available_information: Optional[Sequence[Any] | str] = None,
+        section_requirements: Optional[Sequence[str] | str] = None,
+        template_structure: Optional[str] = None,
+        existing_content: Optional[str] = None,
+        rework_feedback: Optional[str] = None,
+        context: Optional[AgentContext] = None,
+        max_rework_attempts: int = 2,
+    ) -> tuple[SectionGenerationResult, ValidationResult]:
+        """Execute the generate -> validate -> rework retry loop for a BRD section.
+
+        Workflow:
+        1. Generate initial section via Section Generation Sub-Agent.
+        2. Validate section via Section Validation Sub-Agent.
+        3. If VALID: accept section, mark completed, and return.
+        4. If NEEDS_REWORK: store feedback, update section, re-validate up to max_rework_attempts.
+        5. Protect against uncontrolled infinite retry loops via max_rework_attempts safeguard.
+
+        Args:
+            section: Target section name. Defaults to self.state.current_section.
+            available_information: Optional specific information/evidence.
+            section_requirements: Optional specific requirements.
+            template_structure: Optional template structure.
+            existing_content: Optional baseline content for updates.
+            rework_feedback: Optional initial rework feedback.
+            context: Optional tenant AgentContext.
+            max_rework_attempts: Maximum number of rework/retry cycles if validation fails. Defaults to 2.
+
+        Returns:
+            tuple[SectionGenerationResult, ValidationResult]: Latest generation and validation results.
+        """
+        # Step 1: Initial generation (or update if existing_content was provided)
+        gen_result = self.generate_section(
+            section=section,
+            available_information=available_information,
+            section_requirements=section_requirements,
+            template_structure=template_structure,
+            existing_content=existing_content,
+            rework_feedback=rework_feedback,
+            context=context,
+        )
+
+        target_sec = section or self._state.current_section or gen_result.section_name
+
+        # Step 2: Validate generated section
+        val_result = self.validate_section(
+            section=target_sec,
+            section_content=gen_result.content,
+            available_information=available_information,
+            section_requirements=section_requirements,
+            template_structure=template_structure,
+            context=context,
+        )
+
+        if val_result.is_valid:
+            return gen_result, val_result
+
+        # Step 3: Rework loop if validation indicated NEEDS_REWORK
+        canonical_sec = self._state.current_section or target_sec
+        for attempt in range(1, max_rework_attempts + 1):
+            logger.info(
+                "Rework started for section: %s (attempt %d/%d)",
+                canonical_sec,
+                attempt,
+                max_rework_attempts,
+            )
+            # Re-generate/update with rework feedback
+            gen_result = self.update_section(
+                section=canonical_sec,
+                new_information=available_information,
+                rework_feedback=val_result.rework_feedback,
+                existing_content=gen_result.content,
+                context=context,
+            )
+
+            # Re-validate updated section
+            val_result = self.validate_section(
+                section=canonical_sec,
+                section_content=gen_result.content,
+                available_information=available_information,
+                section_requirements=section_requirements,
+                template_structure=template_structure,
+                prior_rework_feedback=val_result.rework_feedback,
+                context=context,
+            )
+
+            if val_result.is_valid:
+                break
+
+        return gen_result, val_result
+
+    async def generate_and_validate_section_async(
+        self,
+        section: Optional[str] = None,
+        available_information: Optional[Sequence[Any] | str] = None,
+        section_requirements: Optional[Sequence[str] | str] = None,
+        template_structure: Optional[str] = None,
+        existing_content: Optional[str] = None,
+        rework_feedback: Optional[str] = None,
+        context: Optional[AgentContext] = None,
+        max_rework_attempts: int = 2,
+    ) -> tuple[SectionGenerationResult, ValidationResult]:
+        """Asynchronously execute the generate -> validate -> rework retry loop for a BRD section."""
+        # Step 1: Initial generation (or update if existing_content was provided)
+        gen_result = await self.generate_section_async(
+            section=section,
+            available_information=available_information,
+            section_requirements=section_requirements,
+            template_structure=template_structure,
+            existing_content=existing_content,
+            rework_feedback=rework_feedback,
+            context=context,
+        )
+
+        target_sec = section or self._state.current_section or gen_result.section_name
+
+        # Step 2: Validate generated section
+        val_result = await self.validate_section_async(
+            section=target_sec,
+            section_content=gen_result.content,
+            available_information=available_information,
+            section_requirements=section_requirements,
+            template_structure=template_structure,
+            context=context,
+        )
+
+        if val_result.is_valid:
+            return gen_result, val_result
+
+        # Step 3: Rework loop if validation indicated NEEDS_REWORK
+        canonical_sec = self._state.current_section or target_sec
+        for attempt in range(1, max_rework_attempts + 1):
+            logger.info(
+                "Rework started for section: %s (attempt %d/%d)",
+                canonical_sec,
+                attempt,
+                max_rework_attempts,
+            )
+            # Re-generate/update with rework feedback
+            gen_result = await self.update_section_async(
+                section=canonical_sec,
+                new_information=available_information,
+                rework_feedback=val_result.rework_feedback,
+                existing_content=gen_result.content,
+                context=context,
+            )
+
+            # Re-validate updated section
+            val_result = await self.validate_section_async(
+                section=canonical_sec,
+                section_content=gen_result.content,
+                available_information=available_information,
+                section_requirements=section_requirements,
+                template_structure=template_structure,
+                prior_rework_feedback=val_result.rework_feedback,
+                context=context,
+            )
+
+            if val_result.is_valid:
+                break
+
+        return gen_result, val_result
+
 
 def create_brd_lead_agent(
     runtime: Optional[AgentRuntime] = None,
@@ -1082,6 +1499,7 @@ def create_brd_lead_agent(
     enable_rag: bool = True,
     evaluator: Optional[BRDEvaluationAgent] = None,
     section_generator: Optional[BRDSectionGenerationAgent] = None,
+    section_validator: Optional[BRDSectionValidationAgent] = None,
 ) -> BRDLeadAgent:
     """Factory function to instantiate the BRD Lead Agent.
 
@@ -1098,6 +1516,7 @@ def create_brd_lead_agent(
         enable_rag: Whether to equip RAG knowledge retrieval tool (defaults to True).
         evaluator: Optional pre-configured BRDEvaluationAgent instance.
         section_generator: Optional pre-configured BRDSectionGenerationAgent instance.
+        section_validator: Optional pre-configured BRDSectionValidationAgent instance.
 
     Returns:
         Configured BRDLeadAgent instance.
@@ -1115,4 +1534,5 @@ def create_brd_lead_agent(
         enable_rag=enable_rag,
         evaluator=evaluator,
         section_generator=section_generator,
+        section_validator=section_validator,
     )
