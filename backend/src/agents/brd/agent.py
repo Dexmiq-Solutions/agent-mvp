@@ -278,12 +278,14 @@ class BRDLeadAgent:
         self,
         request: AgentRunRequest | str,
         context: Optional[AgentContext] = None,
+        current_task: Optional[str] = None,
     ) -> AgentRunResponse:
         """Execute a synchronous interaction cycle via the DeepAgents harness.
 
         Args:
             request: AgentRunRequest or raw input string prompt.
             context: Optional AgentContext for project isolation.
+            current_task: Optional immediate task context override to associate with this execution.
 
         Returns:
             AgentRunResponse: Normalized response containing output text, artifacts, and state.
@@ -294,6 +296,10 @@ class BRDLeadAgent:
                 self._state = request.state
             elif isinstance(request.state, dict):
                 self._state = BRDAgentState.from_dict(request.state)
+
+        # Update current task on working state if provided
+        if current_task is not None:
+            self._state.current_task = current_task
 
         # Preserve project context in state metadata
         effective_ctx = request.context if isinstance(request, AgentRunRequest) else context
@@ -308,12 +314,14 @@ class BRDLeadAgent:
         self,
         request: AgentRunRequest | str,
         context: Optional[AgentContext] = None,
+        current_task: Optional[str] = None,
     ) -> AgentRunResponse:
         """Execute an asynchronous interaction cycle via the DeepAgents harness.
 
         Args:
             request: AgentRunRequest or raw input string prompt.
             context: Optional AgentContext for project isolation.
+            current_task: Optional immediate task context override to associate with this execution.
 
         Returns:
             AgentRunResponse: Normalized response containing output text, artifacts, and state.
@@ -323,6 +331,9 @@ class BRDLeadAgent:
                 self._state = request.state
             elif isinstance(request.state, dict):
                 self._state = BRDAgentState.from_dict(request.state)
+
+        if current_task is not None:
+            self._state.current_task = current_task
 
         effective_ctx = request.context if isinstance(request, AgentRunRequest) else context
         if effective_ctx and effective_ctx.project_id:

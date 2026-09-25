@@ -128,6 +128,10 @@ class BRDAgentState:
             metadata=dict(metadata or {}),
         )
 
+    def set_current_task(self, task: Optional[str]) -> None:
+        """Set the immediate task or objective context currently being executed."""
+        self.current_task = task
+
     def get_section_status(self, section: str) -> Optional[BRDSectionStatus]:
         """Get the current progress status for a given section."""
         canonical = _match_section_name(section, self.template_sections or list(self.section_progress.keys()))

@@ -61,3 +61,13 @@ class AgentRunResponse:
     success: bool = True
     error: Optional[str] = None
     state: Optional[Any] = None
+
+    @property
+    def is_direct_work(self) -> bool:
+        """Return True if execution completed directly without external tool calls."""
+        return len(self.tool_calls) == 0
+
+    @property
+    def used_rag(self) -> bool:
+        """Return True if search_project_knowledge was invoked during execution."""
+        return any(tc.get("name") == "search_project_knowledge" for tc in self.tool_calls)
