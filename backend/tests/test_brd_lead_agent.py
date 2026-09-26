@@ -22,9 +22,8 @@ from agents.brd import (
     get_system_instruction_path,
     load_system_instruction,
 )
-from agents.runtime.agent import AgentRuntime
-from agents.runtime.config import AgentConfig
-from agents.runtime.state import AgentContext, AgentRunRequest, AgentRunResponse
+from agents.brd.config import AgentConfig
+from agents.brd.context import AgentContext, AgentRunRequest, AgentRunResponse
 from tools.diagnostic import echo_diagnostic_tool
 from tools.rag import search_project_knowledge
 
@@ -57,33 +56,29 @@ class MockChatModel(BaseChatModel):
         return "mock-chat-model"
 
 
-def test_brd_lead_agent_initialization_with_runtime():
-    """Verify BRDLeadAgent can be instantiated wrapping an existing AgentRuntime."""
+def test_brd_lead_agent_initialization_with_tools():
+    """Verify BRDLeadAgent can be instantiated directly with tools."""
     model = MockChatModel(messages_to_return=[AIMessage(content="BRD response")])
     config = AgentConfig(model="test-model", api_key="test-key")
-    runtime = AgentRuntime(config=config, model=model, tools=[echo_diagnostic_tool])
 
-    agent = BRDLeadAgent(runtime=runtime)
+    agent = BRDLeadAgent(config=config, model=model, tools=[echo_diagnostic_tool])
 
-    assert agent.runtime is runtime
     assert agent.agent_name == "BRDLeadAgent"
     assert agent.config.model == "test-model"
     assert agent.model is model
     assert len(agent.tools) == 1
     assert agent.tools[0].name == "echo_diagnostic_tool"
-    assert agent.graph is runtime.graph
+    assert agent.graph is not None
 
 
-def test_brd_lead_agent_instantiated_through_agent_runtime():
-    """Verify BRDLeadAgent can be instantiated directly via AgentRuntime.create_brd_lead_agent."""
+def test_brd_lead_agent_instantiated_through_factory():
+    """Verify BRDLeadAgent can be instantiated directly via create_brd_lead_agent."""
     model = MockChatModel(messages_to_return=[AIMessage(content="BRD response")])
     config = AgentConfig(model="test-model", api_key="test-key")
-    runtime = AgentRuntime(config=config, model=model, tools=[echo_diagnostic_tool])
 
-    agent = runtime.create_brd_lead_agent()
+    agent = create_brd_lead_agent(config=config, model=model, tools=[echo_diagnostic_tool])
 
     assert isinstance(agent, BRDLeadAgent)
-    assert agent.runtime is runtime
     assert agent.agent_name == "BRDLeadAgent"
     assert agent.config.model == "test-model"
 
@@ -201,13 +196,11 @@ def test_brd_lead_agent_project_isolation():
 
 
 def test_brd_lead_agent_no_duplicate_architectures():
-    """Verify that BRDLeadAgent is a specialization using existing AgentRuntime, not a parallel runtime."""
+    """Verify that BRDLeadAgent is a direct agent using standard components."""
     model = MockChatModel(messages_to_return=[AIMessage(content="OK")])
     config = AgentConfig(model="test-model", api_key="test-key")
     agent = BRDLeadAgent(config=config, model=model)
 
-    # Runtime is an existing AgentRuntime instance
-    assert isinstance(agent.runtime, AgentRuntime)
     # Model is standard BaseChatModel
     assert isinstance(agent.model, BaseChatModel)
     # Config is standard AgentConfig
@@ -260,30 +253,14 @@ def test_brd_lead_agent_loads_system_instruction_property():
     assert "BRD Lead Agent" in agent.system_instruction
 
 
-def test_system_instruction_supplied_to_runtime_and_model():
-    """Verify system instruction is actually supplied to the underlying AgentRuntime."""
+def test_system_instruction_supplied_to_model():
+    """Verify system instruction is properly loaded and set on agent."""
     model = MockChatModel(messages_to_return=[AIMessage(content="Ready")])
     config = AgentConfig(model="test-model", api_key="test-key")
     agent = BRDLeadAgent(config=config, model=model)
 
-    assert agent.runtime.system_prompt == agent.system_instruction
-    assert agent.runtime.system_instruction == agent.system_instruction
-    assert "BRD Lead Agent" in agent.runtime.system_prompt
-
-
-def test_system_instruction_supplied_when_wrapping_runtime():
-    """Verify system instruction is supplied when wrapping an existing AgentRuntime."""
-    model = MockChatModel(messages_to_return=[AIMessage(content="Ready")])
-    config = AgentConfig(model="test-model", api_key="test-key")
-    # Runtime initially created with default generic assistant prompt
-    runtime = AgentRuntime(config=config, model=model, tools=[echo_diagnostic_tool])
-    assert runtime.system_prompt == config.system_prompt
-
-    agent = BRDLeadAgent(runtime=runtime)
-    # Wrapping in BRDLeadAgent configures the BRD system instruction
-    assert agent.runtime is runtime
-    assert agent.runtime.system_prompt == agent.system_instruction
-    assert "BRD Lead Agent" in agent.runtime.system_prompt
+    assert agent.system_instruction == load_system_instruction()
+    assert "BRD Lead Agent" in agent.system_instruction
 
 
 def test_brd_lead_agent_custom_instruction_override():
@@ -295,7 +272,6 @@ def test_brd_lead_agent_custom_instruction_override():
     agent = BRDLeadAgent(config=config, model=model, system_instruction=custom_instruction)
 
     assert agent.system_instruction == custom_instruction
-    assert agent.runtime.system_prompt == custom_instruction
 
 
 def test_missing_system_instruction_file_raises_error(monkeypatch):

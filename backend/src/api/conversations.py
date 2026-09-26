@@ -1,8 +1,18 @@
-"""FastAPI router for project-scoped Conversation and Message operations."""
+import asyncio
+from collections.abc import AsyncIterator
+import json
+import time
+from typing import Any, Optional, Union
+import uuid
 
 from fastapi import APIRouter, Depends, Query, Response, status
+from fastapi.responses import StreamingResponse
+from langchain_core.messages import AIMessage, HumanMessage
 
-from api.dependencies import get_conversation_service
+from agents.brd.agent import BRDLeadAgent
+from agents.brd.context import AgentContext
+from api.dependencies import get_brd_lead_agent, get_conversation_service
+from observability.logging import get_logger
 from schemas.conversation import (
     ConversationCreate,
     ConversationDetailResponse,
@@ -12,6 +22,8 @@ from schemas.conversation import (
     MessageResponse,
 )
 from services.conversation_service import ConversationService
+
+logger = get_logger(__name__)
 
 
 router = APIRouter(prefix="/projects/{project_id}/conversations", tags=["Conversations"])
@@ -155,24 +167,172 @@ async def delete_conversation(
 @router.post(
     "/{conversation_id}/messages",
     status_code=status.HTTP_201_CREATED,
-    response_model=MessageResponse,
-    summary="Send and persist a message turn",
+    summary="Send a message turn and optionally stream the BRD Agent response",
 )
 async def create_message(
     project_id: str,
     conversation_id: str,
     payload: MessageCreate,
+    stream: bool = Query(default=True, description="Whether to stream the agent response for user messages"),
     service: ConversationService = Depends(get_conversation_service),
-) -> MessageResponse:
-    """Persist a message turn within a conversation under project boundary isolation."""
-    message = await service.create_message(
+    agent: BRDLeadAgent = Depends(get_brd_lead_agent),
+) -> Any:
+    """Send and persist a message turn within a conversation under project boundary isolation.
+
+    When a user message is sent with streaming enabled, the BRD Lead Agent is invoked directly
+    through DeepAgents. The response is streamed back via Server-Sent Events (SSE).
+    The final assistant response is automatically persisted in the conversation message history.
+    Non-user messages or requests with stream=false are persisted directly and return HTTP 201.
+    """
+    # 1. Enforce Project Isolation & Conversation validation using existing services
+    conversation = await service.get_conversation(
+        project_id=project_id,
+        conversation_id=conversation_id,
+    )
+
+    # Determine streaming mode: only user messages trigger the agent execution
+    if payload.role != "user":
+        effective_stream = False
+    elif payload.stream is not None:
+        effective_stream = payload.stream
+    else:
+        effective_stream = stream
+
+    # 2. Persist message turn
+    # If not streaming (e.g. assistant message turn or stream=false), persist and return immediately
+    if not effective_stream:
+        message = await service.create_message(
+            project_id=project_id,
+            conversation_id=conversation_id,
+            content=payload.content,
+            role=payload.role,
+            metadata=payload.metadata,
+        )
+        return MessageResponse.from_model(message)
+
+    # Persist the user message first using existing message infrastructure
+    user_message = await service.create_message(
         project_id=project_id,
         conversation_id=conversation_id,
         content=payload.content,
-        role=payload.role,
+        role="user",
         metadata=payload.metadata,
     )
-    return MessageResponse.from_model(message)
+
+    # 3. Create agent execution context preserving application-controlled project_id and conversation_id
+    agent_run_id = str(uuid.uuid4())
+    agent_context = AgentContext(
+        project_id=project_id,
+        conversation_id=conversation_id,
+        user_id=payload.metadata.get("user_id") if payload.metadata else None,
+        metadata={
+            "user_message_id": user_message.id,
+            "conversation_id": conversation_id,
+            "agent_run_id": agent_run_id,
+            **(payload.metadata or {}),
+        },
+    )
+
+    # 4. BRDLeadAgent executes under project boundary isolation
+
+    # 5. Retrieve prior conversation message history for multi-turn thread continuity
+    existing_messages = await service.list_messages(
+        project_id=project_id,
+        conversation_id=conversation_id,
+    )
+    prior_messages: list[Any] = []
+    for m in existing_messages:
+        if m.id == user_message.id:
+            continue
+        if m.role == "user":
+            prior_messages.append(HumanMessage(content=m.content))
+        elif m.role == "assistant":
+            prior_messages.append(AIMessage(content=m.content))
+
+    # 6. Stream agent response back to frontend and collect assistant output
+    async def event_generator() -> AsyncIterator[str]:
+        accumulated_parts: list[str] = []
+        start_time = time.perf_counter()
+        try:
+            async for event in agent.stream_async(
+                request=payload.content,
+                context=agent_context,
+                prior_messages=prior_messages,
+            ):
+                if event.get("type") == "content":
+                    token = event.get("content", "")
+                    accumulated_parts.append(token)
+                    chunk_data = json.dumps({"type": "content", "content": token})
+                    yield f"event: message\ndata: {chunk_data}\n\n"
+
+            final_text = "".join(accumulated_parts).strip()
+            if not final_text:
+                final_text = "*(No response generated)*"
+
+            # 7. Persist final assistant response using existing message infrastructure
+            assistant_message = await service.create_message(
+                project_id=project_id,
+                conversation_id=conversation_id,
+                content=final_text,
+                role="assistant",
+                metadata={
+                    "user_message_id": user_message.id,
+                    "agent_run_id": agent_run_id,
+                    "conversation_id": conversation_id,
+                    "project_id": project_id,
+                    "duration_seconds": round(time.perf_counter() - start_time, 3),
+                },
+            )
+
+            logger.info(
+                "Assistant response persisted (project_id: %s, conversation_id: %s, user_msg_id: %s, asst_msg_id: %s, agent_run_id: %s, duration: %.2fs)",
+                project_id,
+                conversation_id,
+                user_message.id,
+                assistant_message.id,
+                agent_run_id,
+                time.perf_counter() - start_time,
+            )
+
+            # 8. Return completion event to the frontend
+            done_data = json.dumps({
+                "type": "done",
+                "message": MessageResponse.from_model(assistant_message).model_dump(mode="json"),
+            })
+            yield f"event: done\ndata: {done_data}\n\n"
+
+        except asyncio.CancelledError:
+            logger.warning(
+                "Client disconnected during streaming response (project_id: %s, conversation_id: %s, agent_run_id: %s)",
+                project_id,
+                conversation_id,
+                agent_run_id,
+            )
+            raise
+        except Exception as exc:
+            logger.error(
+                "Error during agent streaming response (project_id: %s, conversation_id: %s, agent_run_id: %s): %s",
+                project_id,
+                conversation_id,
+                agent_run_id,
+                exc,
+                exc_info=True,
+            )
+            error_data = json.dumps({
+                "type": "error",
+                "error": f"Agent execution failed: {str(exc)}",
+            })
+            yield f"event: error\ndata: {error_data}\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 

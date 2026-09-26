@@ -97,5 +97,30 @@ def get_rag_service_dependency() -> "RAGService":
     return get_rag_service()
 
 
+_brd_lead_agent = None
+
+
+def get_brd_lead_agent() -> "BRDLeadAgent":
+    """Dependency provider returning default BRDLeadAgent instance."""
+    global _brd_lead_agent
+    if _brd_lead_agent is None:
+        from agents.brd.agent import BRDLeadAgent
+        from tools.diagnostic import echo_diagnostic_tool
+        from tools.rag import create_search_project_knowledge_tool
+
+        try:
+            rag_service = get_rag_service_dependency()
+            tools = [
+                echo_diagnostic_tool,
+                create_search_project_knowledge_tool(rag_service=rag_service),
+            ]
+        except Exception:
+            tools = [echo_diagnostic_tool]
+
+        _brd_lead_agent = BRDLeadAgent(tools=tools)
+    return _brd_lead_agent
+
+
+
 
 
