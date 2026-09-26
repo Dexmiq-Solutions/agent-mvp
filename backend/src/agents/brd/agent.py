@@ -75,6 +75,12 @@ from agents.brd.final_validation import (
     FinalValidationResult,
     FinalValidationSeverity,
 )
+from agents.brd.recovery import (
+    FinalValidationRecoveryResult,
+    MAX_FINAL_VALIDATION_RECOVERY_CYCLES,
+    format_section_rework_guidance,
+    resolve_affected_sections,
+)
 from agents.brd.state import BRDAgentState, BRDSectionStatus
 from agents.runtime.agent import AgentRuntime
 from agents.runtime.config import AgentConfig
@@ -364,6 +370,16 @@ class BRDLeadAgent:
         """Retrieve the latest final BRD validation result."""
         return self._state.get_latest_final_validation_result()
 
+    @property
+    def final_validation_recovery_cycles(self) -> int:
+        """Current number of final-validation recovery cycles executed."""
+        return self._state.final_validation_recovery_cycles
+
+    @property
+    def is_final_validation_recovery_exhausted(self) -> bool:
+        """True if final-validation recovery was attempted and exhausted the maximum limit without success."""
+        return self._state.final_validation_recovery_exhausted
+
     def get_remaining_sections(self) -> list[str]:
         """Return dynamically derived list of uncompleted template sections."""
         return get_remaining_sections(self._state, self.sections)
@@ -414,6 +430,8 @@ class BRDLeadAgent:
         available_project_information: Optional[Sequence[Any] | str] = None,
         template_structure: Optional[str] = None,
         context: Optional[AgentContext] = None,
+        auto_recover: bool = False,
+        max_recovery_cycles: int = MAX_FINAL_VALIDATION_RECOVERY_CYCLES,
     ) -> FinalValidationResult:
         """Perform document-level final validation on the assembled BRD.
 
@@ -425,6 +443,8 @@ class BRDLeadAgent:
             available_project_information: Optional project evidence override. Defaults to state evidence.
             template_structure: Optional template override. Defaults to self._template.
             context: Optional tenant AgentContext.
+            auto_recover: If True and validation requires rework, automatically executes the recovery loop.
+            max_recovery_cycles: Maximum recovery cycles if auto_recover is enabled (default 3).
 
         Returns:
             FinalValidationResult: Structured result with outcome, findings, and rework feedback.
@@ -499,6 +519,15 @@ class BRDLeadAgent:
                 result.affected_sections,
             )
 
+        if auto_recover and result.needs_rework:
+            return self.recover_final_validation(
+                initial_result=result,
+                max_cycles=max_recovery_cycles,
+                available_project_information=available_project_information,
+                template_structure=template_structure,
+                context=context,
+            )
+
         return result
 
     async def validate_final_brd_async(
@@ -507,6 +536,8 @@ class BRDLeadAgent:
         available_project_information: Optional[Sequence[Any] | str] = None,
         template_structure: Optional[str] = None,
         context: Optional[AgentContext] = None,
+        auto_recover: bool = False,
+        max_recovery_cycles: int = MAX_FINAL_VALIDATION_RECOVERY_CYCLES,
     ) -> FinalValidationResult:
         """Asynchronously perform document-level final validation on the assembled BRD."""
         doc = assembled_document if assembled_document is not None else self._state.get_assembled_brd()
@@ -576,7 +607,515 @@ class BRDLeadAgent:
                 result.affected_sections,
             )
 
+        if auto_recover and result.needs_rework:
+            return await self.recover_final_validation_async(
+                initial_result=result,
+                max_cycles=max_recovery_cycles,
+                available_project_information=available_project_information,
+                template_structure=template_structure,
+                context=context,
+            )
+
         return result
+
+    def recover_final_validation(
+        self,
+        initial_result: Optional[FinalValidationResult] = None,
+        max_cycles: int = MAX_FINAL_VALIDATION_RECOVERY_CYCLES,
+        max_section_rework_attempts: int = 2,
+        available_project_information: Optional[Sequence[Any] | str] = None,
+        template_structure: Optional[str] = None,
+        context: Optional[AgentContext] = None,
+    ) -> FinalValidationRecoveryResult:
+        """Execute the bounded document-level final validation recovery loop.
+
+        When Final Validation determines that the assembled BRD needs rework:
+        1. Reads the final-validation findings and diagnoses.
+        2. Identifies all affected BRD template sections.
+        3. Sends each affected section through the existing Section Generation/Update
+           capability with actionable validation feedback and findings.
+        4. Runs existing Section Validation on the updated section (with existing retry mechanism).
+        5. Once all affected sections are valid, deterministically reassembles the BRD.
+        6. Runs Final Validation again on the newly assembled document.
+        7. Repeats this recovery cycle up to max_cycles (bounded limit of 3).
+        8. Stops safely if any section cannot be validated or max cycles are exhausted.
+
+        Args:
+            initial_result: Optional initial FinalValidationResult. If omitted, retrieved from state
+                or computed via validate_final_brd().
+            max_cycles: Maximum final validation recovery cycles (default 3).
+            max_section_rework_attempts: Maximum retry attempts during section-level validation (default 2).
+            available_project_information: Optional project evidence override.
+            template_structure: Optional template structure override.
+            context: Optional tenant AgentContext.
+
+        Returns:
+            FinalValidationRecoveryResult: The outcome of recovery with cycle count and status.
+        """
+        effective_ctx = context or AgentContext()
+        project_id = effective_ctx.project_id or self._state.metadata.get("project_id", "unknown")
+
+        current_result = initial_result or self._state.get_latest_final_validation_result()
+        if current_result is None:
+            current_result = self.validate_final_brd(
+                available_project_information=available_project_information,
+                template_structure=template_structure,
+                context=effective_ctx,
+                auto_recover=False,
+            )
+
+        if current_result.is_valid:
+            logger.info(
+                "BRD final validation already VALID; no recovery needed (project_id: %s)",
+                project_id,
+            )
+            self._state.final_validation_recovery_exhausted = False
+            return FinalValidationRecoveryResult.from_validation_result(
+                result=current_result,
+                recovery_cycles=self._state.final_validation_recovery_cycles,
+                exhausted=False,
+                reworked_sections=[],
+            )
+
+        logger.info(
+            "BRD final validation recovery started (project_id: %s, max_cycles: %d)",
+            project_id,
+            max_cycles,
+        )
+
+        all_reworked_sections: list[str] = []
+        cycle = 0
+
+        try:
+            while cycle < max_cycles:
+                cycle += 1
+                self._state.increment_final_validation_recovery_cycle()
+
+                # 1. Identify affected sections from current validation findings
+                candidate_affected = current_result.affected_sections
+                resolved_affected = resolve_affected_sections(candidate_affected, self.sections)
+
+                if not resolved_affected:
+                    logger.warning(
+                        "Final validation recovery identified no resolvable affected sections (project_id: %s, cycle: %d, candidates: %s); stopping recovery safely",
+                        project_id,
+                        cycle,
+                        candidate_affected,
+                    )
+                    break
+
+                logger.info(
+                    "Final validation recovery identified affected sections (project_id: %s, cycle: %d, affected_sections: %s)",
+                    project_id,
+                    cycle,
+                    resolved_affected,
+                )
+
+                # 2. Rework each affected section sequentially
+                cycle_sections_passed = True
+                for sec in resolved_affected:
+                    if sec not in all_reworked_sections:
+                        all_reworked_sections.append(sec)
+
+                    logger.info(
+                        "Final validation section rework started (project_id: %s, section: %s, cycle: %d)",
+                        project_id,
+                        sec,
+                        cycle,
+                    )
+
+                    sec_feedback = format_section_rework_guidance(sec, current_result)
+
+                    try:
+                        gen_res, sec_val_res = self.generate_and_validate_section(
+                            section=sec,
+                            rework_feedback=sec_feedback,
+                            existing_content=self._state.get_section_content(sec),
+                            context=effective_ctx,
+                            max_rework_attempts=max_section_rework_attempts,
+                            auto_progress=False,
+                        )
+                    except Exception as exc:
+                        logger.error(
+                            "Error during final validation recovery section rework for '%s' (project_id: %s, cycle: %d): %s",
+                            sec,
+                            project_id,
+                            cycle,
+                            exc,
+                            exc_info=True,
+                        )
+                        cycle_sections_passed = False
+                        break
+
+                    logger.info(
+                        "Final validation section rework completed (project_id: %s, section: %s, cycle: %d)",
+                        project_id,
+                        sec,
+                        cycle,
+                    )
+                    logger.info(
+                        "Final validation section validation completed (project_id: %s, section: %s, outcome: %s)",
+                        project_id,
+                        sec,
+                        sec_val_res.outcome,
+                    )
+
+                    if not sec_val_res.is_valid:
+                        logger.warning(
+                            "Final validation recovery section validation failed for '%s' (project_id: %s, cycle: %d); stopping recovery safely",
+                            sec,
+                            project_id,
+                            cycle,
+                        )
+                        cycle_sections_passed = False
+                        break
+
+                if not cycle_sections_passed:
+                    # Affected section cannot safely be updated -> stop recovery attempt safely
+                    break
+
+                # 3. Deterministically reassemble the BRD
+                try:
+                    asmb_res = self.assemble_brd(context=effective_ctx)
+                except Exception as exc:
+                    logger.error(
+                        "Error during BRD reassembly in final validation recovery (project_id: %s, cycle: %d): %s",
+                        project_id,
+                        cycle,
+                        exc,
+                        exc_info=True,
+                    )
+                    break
+
+                # 4. Run Final Validation again on the newly assembled document
+                try:
+                    current_result = self.validate_final_brd(
+                        assembled_document=asmb_res.assembled_document,
+                        available_project_information=available_project_information,
+                        template_structure=template_structure,
+                        context=effective_ctx,
+                        auto_recover=False,
+                    )
+                except Exception as exc:
+                    logger.error(
+                        "Error during BRD final re-validation (project_id: %s, cycle: %d): %s",
+                        project_id,
+                        cycle,
+                        exc,
+                        exc_info=True,
+                    )
+                    break
+
+                logger.info(
+                    "Final validation recovery cycle %d completed (project_id: %s, outcome: %s)",
+                    cycle,
+                    project_id,
+                    current_result.outcome,
+                )
+
+                if current_result.is_valid:
+                    logger.info(
+                        "BRD final validation passed after recovery (project_id: %s, total_cycles: %d)",
+                        project_id,
+                        cycle,
+                    )
+                    self._state.final_validation_recovery_exhausted = False
+                    return FinalValidationRecoveryResult.from_validation_result(
+                        result=current_result,
+                        recovery_cycles=self._state.final_validation_recovery_cycles,
+                        exhausted=False,
+                        reworked_sections=all_reworked_sections,
+                    )
+        except Exception as exc:
+            logger.error(
+                "Error during final validation recovery (project_id: %s, cycle: %d): %s",
+                project_id,
+                cycle,
+                exc,
+                exc_info=True,
+            )
+
+        # Loop completed without VALID outcome
+        is_exhausted = (cycle >= max_cycles) and (not current_result.is_valid)
+        if is_exhausted:
+            self._state.final_validation_recovery_exhausted = True
+            logger.warning(
+                "BRD final validation recovery exhausted (project_id: %s, max_cycles: %d reached without VALID outcome)",
+                project_id,
+                max_cycles,
+            )
+
+        return FinalValidationRecoveryResult.from_validation_result(
+            result=current_result,
+            recovery_cycles=self._state.final_validation_recovery_cycles,
+            exhausted=is_exhausted,
+            reworked_sections=all_reworked_sections,
+        )
+
+    async def recover_final_validation_async(
+        self,
+        initial_result: Optional[FinalValidationResult] = None,
+        max_cycles: int = MAX_FINAL_VALIDATION_RECOVERY_CYCLES,
+        max_section_rework_attempts: int = 2,
+        available_project_information: Optional[Sequence[Any] | str] = None,
+        template_structure: Optional[str] = None,
+        context: Optional[AgentContext] = None,
+    ) -> FinalValidationRecoveryResult:
+        """Asynchronously execute the bounded document-level final validation recovery loop."""
+        effective_ctx = context or AgentContext()
+        project_id = effective_ctx.project_id or self._state.metadata.get("project_id", "unknown")
+
+        current_result = initial_result or self._state.get_latest_final_validation_result()
+        if current_result is None:
+            current_result = await self.validate_final_brd_async(
+                available_project_information=available_project_information,
+                template_structure=template_structure,
+                context=effective_ctx,
+                auto_recover=False,
+            )
+
+        if current_result.is_valid:
+            logger.info(
+                "BRD final validation already VALID; no recovery needed (project_id: %s)",
+                project_id,
+            )
+            self._state.final_validation_recovery_exhausted = False
+            return FinalValidationRecoveryResult.from_validation_result(
+                result=current_result,
+                recovery_cycles=self._state.final_validation_recovery_cycles,
+                exhausted=False,
+                reworked_sections=[],
+            )
+
+        logger.info(
+            "Async BRD final validation recovery started (project_id: %s, max_cycles: %d)",
+            project_id,
+            max_cycles,
+        )
+
+        all_reworked_sections: list[str] = []
+        cycle = 0
+
+        try:
+            while cycle < max_cycles:
+                cycle += 1
+                self._state.increment_final_validation_recovery_cycle()
+
+                candidate_affected = current_result.affected_sections
+                resolved_affected = resolve_affected_sections(candidate_affected, self.sections)
+
+                if not resolved_affected:
+                    logger.warning(
+                        "Async final validation recovery identified no resolvable affected sections (project_id: %s, cycle: %d, candidates: %s); stopping recovery safely",
+                        project_id,
+                        cycle,
+                        candidate_affected,
+                    )
+                    break
+
+                logger.info(
+                    "Final validation recovery identified affected sections (project_id: %s, cycle: %d, affected_sections: %s)",
+                    project_id,
+                    cycle,
+                    resolved_affected,
+                )
+
+                cycle_sections_passed = True
+                for sec in resolved_affected:
+                    if sec not in all_reworked_sections:
+                        all_reworked_sections.append(sec)
+
+                    logger.info(
+                        "Final validation section rework started (project_id: %s, section: %s, cycle: %d)",
+                        project_id,
+                        sec,
+                        cycle,
+                    )
+
+                    sec_feedback = format_section_rework_guidance(sec, current_result)
+
+                    try:
+                        gen_res, sec_val_res = await self.generate_and_validate_section_async(
+                            section=sec,
+                            rework_feedback=sec_feedback,
+                            existing_content=self._state.get_section_content(sec),
+                            context=effective_ctx,
+                            max_rework_attempts=max_section_rework_attempts,
+                            auto_progress=False,
+                        )
+                    except Exception as exc:
+                        logger.error(
+                            "Error during async final validation recovery section rework for '%s' (project_id: %s, cycle: %d): %s",
+                            sec,
+                            project_id,
+                            cycle,
+                            exc,
+                            exc_info=True,
+                        )
+                        cycle_sections_passed = False
+                        break
+
+                    logger.info(
+                        "Final validation section rework completed (project_id: %s, section: %s, cycle: %d)",
+                        project_id,
+                        sec,
+                        cycle,
+                    )
+                    logger.info(
+                        "Final validation section validation completed (project_id: %s, section: %s, outcome: %s)",
+                        project_id,
+                        sec,
+                        sec_val_res.outcome,
+                    )
+
+                    if not sec_val_res.is_valid:
+                        logger.warning(
+                            "Async final validation recovery section validation failed for '%s' (project_id: %s, cycle: %d); stopping recovery safely",
+                            sec,
+                            project_id,
+                            cycle,
+                        )
+                        cycle_sections_passed = False
+                        break
+
+                if not cycle_sections_passed:
+                    break
+
+                try:
+                    asmb_res = await self.assemble_brd_async(context=effective_ctx)
+                except Exception as exc:
+                    logger.error(
+                        "Error during BRD reassembly in async final validation recovery (project_id: %s, cycle: %d): %s",
+                        project_id,
+                        cycle,
+                        exc,
+                        exc_info=True,
+                    )
+                    break
+
+                try:
+                    current_result = await self.validate_final_brd_async(
+                        assembled_document=asmb_res.assembled_document,
+                        available_project_information=available_project_information,
+                        template_structure=template_structure,
+                        context=effective_ctx,
+                        auto_recover=False,
+                    )
+                except Exception as exc:
+                    logger.error(
+                        "Error during async BRD final re-validation (project_id: %s, cycle: %d): %s",
+                        project_id,
+                        cycle,
+                        exc,
+                        exc_info=True,
+                    )
+                    break
+
+                logger.info(
+                    "Final validation recovery cycle %d completed (project_id: %s, outcome: %s)",
+                    cycle,
+                    project_id,
+                    current_result.outcome,
+                )
+
+                if current_result.is_valid:
+                    logger.info(
+                        "BRD final validation passed after recovery (project_id: %s, total_cycles: %d)",
+                        project_id,
+                        cycle,
+                    )
+                    self._state.final_validation_recovery_exhausted = False
+                    return FinalValidationRecoveryResult.from_validation_result(
+                        result=current_result,
+                        recovery_cycles=self._state.final_validation_recovery_cycles,
+                        exhausted=False,
+                        reworked_sections=all_reworked_sections,
+                    )
+        except Exception as exc:
+            logger.error(
+                "Error during async final validation recovery (project_id: %s, cycle: %d): %s",
+                project_id,
+                cycle,
+                exc,
+                exc_info=True,
+            )
+
+        is_exhausted = (cycle >= max_cycles) and (not current_result.is_valid)
+        if is_exhausted:
+            self._state.final_validation_recovery_exhausted = True
+            logger.warning(
+                "BRD final validation recovery exhausted (project_id: %s, max_cycles: %d reached without VALID outcome)",
+                project_id,
+                max_cycles,
+            )
+
+        return FinalValidationRecoveryResult.from_validation_result(
+            result=current_result,
+            recovery_cycles=self._state.final_validation_recovery_cycles,
+            exhausted=is_exhausted,
+            reworked_sections=all_reworked_sections,
+        )
+
+    def validate_and_recover_final_brd(
+        self,
+        assembled_document: Optional[str] = None,
+        available_project_information: Optional[Sequence[Any] | str] = None,
+        template_structure: Optional[str] = None,
+        context: Optional[AgentContext] = None,
+        max_recovery_cycles: int = MAX_FINAL_VALIDATION_RECOVERY_CYCLES,
+    ) -> FinalValidationRecoveryResult:
+        """Validate the assembled BRD and automatically execute recovery if rework is needed."""
+        val_res = self.validate_final_brd(
+            assembled_document=assembled_document,
+            available_project_information=available_project_information,
+            template_structure=template_structure,
+            context=context,
+            auto_recover=False,
+        )
+        if val_res.is_valid:
+            return FinalValidationRecoveryResult.from_validation_result(
+                result=val_res,
+                recovery_cycles=self._state.final_validation_recovery_cycles,
+                exhausted=False,
+            )
+        return self.recover_final_validation(
+            initial_result=val_res,
+            max_cycles=max_recovery_cycles,
+            available_project_information=available_project_information,
+            template_structure=template_structure,
+            context=context,
+        )
+
+    async def validate_and_recover_final_brd_async(
+        self,
+        assembled_document: Optional[str] = None,
+        available_project_information: Optional[Sequence[Any] | str] = None,
+        template_structure: Optional[str] = None,
+        context: Optional[AgentContext] = None,
+        max_recovery_cycles: int = MAX_FINAL_VALIDATION_RECOVERY_CYCLES,
+    ) -> FinalValidationRecoveryResult:
+        """Asynchronously validate the assembled BRD and automatically execute recovery if rework is needed."""
+        val_res = await self.validate_final_brd_async(
+            assembled_document=assembled_document,
+            available_project_information=available_project_information,
+            template_structure=template_structure,
+            context=context,
+            auto_recover=False,
+        )
+        if val_res.is_valid:
+            return FinalValidationRecoveryResult.from_validation_result(
+                result=val_res,
+                recovery_cycles=self._state.final_validation_recovery_cycles,
+                exhausted=False,
+            )
+        return await self.recover_final_validation_async(
+            initial_result=val_res,
+            max_cycles=max_recovery_cycles,
+            available_project_information=available_project_information,
+            template_structure=template_structure,
+            context=context,
+        )
+
 
     def progress_section(
         self,
@@ -1890,6 +2429,8 @@ class BRDLeadAgent:
         context: Optional[AgentContext] = None,
         max_rework_attempts: int = 2,
         auto_assemble: bool = False,
+        auto_validate_final: bool = False,
+        auto_recover_final: bool = False,
     ) -> list[tuple[SectionGenerationResult, ValidationResult, SectionProgressionResult]]:
         """Deterministically iterate through and process all top-level template sections sequentially.
 
@@ -1899,6 +2440,7 @@ class BRDLeadAgent:
         3. If VALID: deterministically advance to the next section.
         4. Terminates when section_processing_complete is True or when a section fails validation.
         5. If auto_assemble is True and all sections completed, automatically assembles the full BRD.
+        6. If auto_validate_final is True, executes final validation (with optional auto_recover_final).
 
         Returns:
             list[tuple[SectionGenerationResult, ValidationResult, SectionProgressionResult]]:
@@ -1924,6 +2466,11 @@ class BRDLeadAgent:
 
         if auto_assemble and self.is_section_processing_complete:
             self.assemble_brd(context=context)
+            if auto_validate_final:
+                if auto_recover_final:
+                    self.validate_and_recover_final_brd(context=context)
+                else:
+                    self.validate_final_brd(context=context)
 
         return results
 
@@ -1932,6 +2479,8 @@ class BRDLeadAgent:
         context: Optional[AgentContext] = None,
         max_rework_attempts: int = 2,
         auto_assemble: bool = False,
+        auto_validate_final: bool = False,
+        auto_recover_final: bool = False,
     ) -> list[tuple[SectionGenerationResult, ValidationResult, SectionProgressionResult]]:
         """Asynchronously iterate through and process all top-level template sections sequentially."""
         results: list[tuple[SectionGenerationResult, ValidationResult, SectionProgressionResult]] = []
@@ -1952,7 +2501,12 @@ class BRDLeadAgent:
                 break
 
         if auto_assemble and self.is_section_processing_complete:
-            self.assemble_brd(context=context)
+            await self.assemble_brd_async(context=context)
+            if auto_validate_final:
+                if auto_recover_final:
+                    await self.validate_and_recover_final_brd_async(context=context)
+                else:
+                    await self.validate_final_brd_async(context=context)
 
         return results
 

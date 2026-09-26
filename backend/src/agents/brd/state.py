@@ -129,6 +129,8 @@ class BRDAgentState:
     latest_assembly_result: Optional[BRDAssemblyResult] = None
     latest_final_validation_result: Optional[FinalValidationResult] = None
     final_validation_history: list[FinalValidationResult] = field(default_factory=list)
+    final_validation_recovery_cycles: int = 0
+    final_validation_recovery_exhausted: bool = False
 
     @classmethod
     def initialize_from_template(
@@ -276,10 +278,26 @@ class BRDAgentState:
         """Retrieve the latest final BRD validation result."""
         return self.latest_final_validation_result
 
+    def increment_final_validation_recovery_cycle(self) -> int:
+        """Increment the count of executed final validation recovery cycles and return the new count."""
+        self.final_validation_recovery_cycles += 1
+        return self.final_validation_recovery_cycles
+
+    def reset_final_validation_recovery_cycles(self) -> None:
+        """Reset final validation recovery cycle counters."""
+        self.final_validation_recovery_cycles = 0
+        self.final_validation_recovery_exhausted = False
+
+    def set_final_validation_recovery_exhausted(self, exhausted: bool = True) -> None:
+        """Set whether final validation recovery limit was exhausted."""
+        self.final_validation_recovery_exhausted = exhausted
+
     def clear_final_validation_history(self) -> None:
         """Clear final validation history and latest result."""
         self.final_validation_history.clear()
         self.latest_final_validation_result = None
+        self.final_validation_recovery_cycles = 0
+        self.final_validation_recovery_exhausted = False
 
     def get_remaining_sections(self, template_sections: Optional[Sequence[str]] = None) -> list[str]:
         """Return dynamically derived list of template sections not yet COMPLETED."""
@@ -456,6 +474,8 @@ class BRDAgentState:
         data["final_validation_history"] = [
             v.to_dict() if hasattr(v, "to_dict") else v for v in self.final_validation_history
         ]
+        data["final_validation_recovery_cycles"] = self.final_validation_recovery_cycles
+        data["final_validation_recovery_exhausted"] = self.final_validation_recovery_exhausted
         data["section_content"] = dict(self.section_content)
         data["rework_feedback"] = dict(self.rework_feedback)
         return data
@@ -548,6 +568,8 @@ class BRDAgentState:
             FinalValidationResult.from_dict(v) if isinstance(v, dict) else v
             for v in fval_hist_raw
         ]
+        final_validation_recovery_cycles = int(data.get("final_validation_recovery_cycles", 0))
+        final_validation_recovery_exhausted = bool(data.get("final_validation_recovery_exhausted", False))
 
         return cls(
             objective=data.get("objective", "Produce an evidence-grounded Business Requirements Document"),
@@ -575,6 +597,8 @@ class BRDAgentState:
             latest_assembly_result=latest_assembly_result,
             latest_final_validation_result=latest_final_validation_result,
             final_validation_history=final_validation_history,
+            final_validation_recovery_cycles=final_validation_recovery_cycles,
+            final_validation_recovery_exhausted=final_validation_recovery_exhausted,
         )
 
 
@@ -608,3 +632,5 @@ class BRDDeepAgentState(DeepAgentState, total=False):
     latest_assembly_result: Optional[dict[str, Any]]
     latest_final_validation_result: Optional[dict[str, Any]]
     final_validation_history: Optional[list[dict[str, Any]]]
+    final_validation_recovery_cycles: Optional[int]
+    final_validation_recovery_exhausted: Optional[bool]

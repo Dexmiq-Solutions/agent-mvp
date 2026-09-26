@@ -69,6 +69,12 @@ from agents.brd.final_validation import (
     get_final_validation_system_instruction_path,
     load_final_validation_system_instruction,
 )
+from agents.brd.recovery import (
+    FinalValidationRecoveryResult,
+    MAX_FINAL_VALIDATION_RECOVERY_CYCLES,
+    format_section_rework_guidance,
+    resolve_affected_sections,
+)
 from agents.brd.template import (
     extract_brd_sections,
     extract_section_requirements,
@@ -106,9 +112,11 @@ __all__ = [
     "FinalValidationContext",
     "FinalValidationFinding",
     "FinalValidationOutcome",
+    "FinalValidationRecoveryResult",
     "FinalValidationResult",
     "FinalValidationSeverity",
     "InformationStatus",
+    "MAX_FINAL_VALIDATION_RECOVERY_CYCLES",
     "SectionGenerationContext",
     "SectionGenerationResult",
     "SectionOperation",
@@ -132,6 +140,7 @@ __all__ = [
     "extract_section_requirements",
     "extract_section_template",
     "format_section_for_assembly",
+    "format_section_rework_guidance",
     "get_brd_template_path",
     "get_evaluation_system_instruction_path",
     "get_final_validation_system_instruction_path",
@@ -149,5 +158,6 @@ __all__ = [
     "load_system_instruction",
     "load_validation_system_instruction",
     "progress_to_next_section",
+    "resolve_affected_sections",
 ]
 
