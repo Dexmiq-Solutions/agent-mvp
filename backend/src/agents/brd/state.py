@@ -81,6 +81,9 @@ def _match_section_name(name: str, available_sections: Sequence[str]) -> str:
     return cleaned_input
 
 
+from agents.brd.progression import SectionProgressionResult
+
+
 @dataclass
 class BRDAgentState:
     """Working context and operational state for the BRD Lead Agent.
@@ -118,6 +121,8 @@ class BRDAgentState:
     latest_section_result: Optional[Any] = None
     latest_validation_result: Optional[ValidationResult] = None
     validation_history: list[ValidationResult] = field(default_factory=list)
+    latest_progression_result: Optional[SectionProgressionResult] = None
+    progression_history: list[SectionProgressionResult] = field(default_factory=list)
 
     @classmethod
     def initialize_from_template(
@@ -222,6 +227,28 @@ class BRDAgentState:
         """Retrieve the latest section validation result."""
         return self.latest_validation_result
 
+    def set_progression_result(self, result: Optional[SectionProgressionResult]) -> None:
+        """Store the latest section progression result and record it in progression history."""
+        self.latest_progression_result = result
+        if result is not None:
+            self.progression_history.append(result)
+
+    def get_latest_progression_result(self) -> Optional[SectionProgressionResult]:
+        """Retrieve the latest section progression result."""
+        return self.latest_progression_result
+
+    def get_remaining_sections(self, template_sections: Optional[Sequence[str]] = None) -> list[str]:
+        """Return dynamically derived list of template sections not yet COMPLETED."""
+        sections = (
+            list(template_sections)
+            if template_sections is not None
+            else list(self.template_sections)
+        )
+        return [
+            s for s in sections
+            if self.get_section_status(s) != BRDSectionStatus.COMPLETED
+        ]
+
     def clear_delegation(self) -> None:
         """Clear delegated execution state for the next workflow cycle."""
         self.delegated_tasks.clear()
@@ -323,6 +350,11 @@ class BRDAgentState:
             for s in self.template_sections
         )
 
+    @property
+    def section_processing_complete(self) -> bool:
+        """True when every required top-level template section has reached COMPLETED status."""
+        return self.is_complete
+
     def to_dict(self) -> dict[str, Any]:
         """Serialize state to a JSON-serializable dictionary."""
         data = asdict(self)
@@ -354,6 +386,15 @@ class BRDAgentState:
             )
         data["validation_history"] = [
             v.to_dict() if hasattr(v, "to_dict") else v for v in self.validation_history
+        ]
+        if self.latest_progression_result is not None:
+            data["latest_progression_result"] = (
+                self.latest_progression_result.to_dict()
+                if hasattr(self.latest_progression_result, "to_dict")
+                else self.latest_progression_result
+            )
+        data["progression_history"] = [
+            p.to_dict() if hasattr(p, "to_dict") else p for p in self.progression_history
         ]
         data["section_content"] = dict(self.section_content)
         data["rework_feedback"] = dict(self.rework_feedback)
@@ -418,6 +459,17 @@ class BRDAgentState:
             ValidationResult.from_dict(v) if isinstance(v, dict) else v
             for v in val_hist_raw
         ]
+        prog_res_raw = data.get("latest_progression_result")
+        latest_progression_result = (
+            SectionProgressionResult.from_dict(prog_res_raw)
+            if isinstance(prog_res_raw, dict)
+            else prog_res_raw
+        )
+        prog_hist_raw = data.get("progression_history", [])
+        progression_history = [
+            SectionProgressionResult.from_dict(p) if isinstance(p, dict) else p
+            for p in prog_hist_raw
+        ]
 
         return cls(
             objective=data.get("objective", "Produce an evidence-grounded Business Requirements Document"),
@@ -439,6 +491,8 @@ class BRDAgentState:
             latest_section_result=latest_section_result,
             latest_validation_result=latest_validation_result,
             validation_history=validation_history,
+            latest_progression_result=latest_progression_result,
+            progression_history=progression_history,
         )
 
 
@@ -466,3 +520,5 @@ class BRDDeepAgentState(DeepAgentState, total=False):
     latest_section_result: Optional[dict[str, Any]]
     latest_validation_result: Optional[dict[str, Any]]
     validation_history: Optional[list[dict[str, Any]]]
+    latest_progression_result: Optional[dict[str, Any]]
+    progression_history: Optional[list[dict[str, Any]]]

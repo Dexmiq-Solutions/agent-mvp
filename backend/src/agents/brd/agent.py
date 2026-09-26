@@ -54,6 +54,14 @@ from agents.brd.template import (
     get_brd_template_path,
     load_brd_template,
 )
+from agents.brd.progression import (
+    SectionProgressionResult,
+    determine_next_section,
+    get_remaining_sections,
+    initialize_progression,
+    is_section_processing_complete,
+    progress_to_next_section,
+)
 from agents.brd.state import BRDAgentState, BRDSectionStatus
 from agents.runtime.agent import AgentRuntime
 from agents.runtime.config import AgentConfig
@@ -306,6 +314,69 @@ class BRDLeadAgent:
     def reset_state(self) -> None:
         """Reset the Agent working state to initial unstarted state based on template sections."""
         self._state = BRDAgentState.initialize_from_template(sections=self.sections)
+
+    @property
+    def is_section_processing_complete(self) -> bool:
+        """Check whether all template sections have completed validation."""
+        return is_section_processing_complete(self._state, self.sections)
+
+    def get_remaining_sections(self) -> list[str]:
+        """Return dynamically derived list of uncompleted template sections."""
+        return get_remaining_sections(self._state, self.sections)
+
+    def progress_section(
+        self,
+        section: Optional[str] = None,
+        context: Optional[AgentContext] = None,
+    ) -> SectionProgressionResult:
+        """Deterministically progress from current completed section to the next template section.
+
+        Workflow:
+        1. Verifies current section is COMPLETED.
+        2. Advances to the next section in authoritative template order.
+        3. Marks next section IN_PROGRESS.
+        4. If no more sections remain, marks section processing as complete.
+        5. Records result in state.latest_progression_result and progression_history.
+
+        Args:
+            section: Optional section override. Defaults to state.current_section.
+            context: Optional tenant AgentContext.
+
+        Returns:
+            SectionProgressionResult: Progression outcome detailing transition and completion state.
+
+        Raises:
+            ValueError: If current_section is missing, not in template, or not completed.
+        """
+        if section:
+            self._state.set_current_section(section, auto_in_progress=False)
+
+        effective_ctx = context or AgentContext()
+        project_id = effective_ctx.project_id or self._state.metadata.get("project_id")
+
+        result = progress_to_next_section(
+            state=self._state,
+            template_sections=self.sections,
+            project_id=project_id,
+        )
+        self._state.set_progression_result(result)
+        return result
+
+    def initialize_section_progression(
+        self,
+        context: Optional[AgentContext] = None,
+    ) -> SectionProgressionResult:
+        """Initialize or resume section progression by activating the first uncompleted section."""
+        effective_ctx = context or AgentContext()
+        project_id = effective_ctx.project_id or self._state.metadata.get("project_id")
+
+        result = initialize_progression(
+            state=self._state,
+            template_sections=self.sections,
+            project_id=project_id,
+        )
+        self._state.set_progression_result(result)
+        return result
 
     def decompose_objective(
         self,
@@ -1330,13 +1401,14 @@ class BRDLeadAgent:
         rework_feedback: Optional[str] = None,
         context: Optional[AgentContext] = None,
         max_rework_attempts: int = 2,
+        auto_progress: bool = False,
     ) -> tuple[SectionGenerationResult, ValidationResult]:
         """Execute the generate -> validate -> rework retry loop for a BRD section.
 
         Workflow:
         1. Generate initial section via Section Generation Sub-Agent.
         2. Validate section via Section Validation Sub-Agent.
-        3. If VALID: accept section, mark completed, and return.
+        3. If VALID: accept section, mark completed, optionally auto-progress, and return.
         4. If NEEDS_REWORK: store feedback, update section, re-validate up to max_rework_attempts.
         5. Protect against uncontrolled infinite retry loops via max_rework_attempts safeguard.
 
@@ -1349,6 +1421,7 @@ class BRDLeadAgent:
             rework_feedback: Optional initial rework feedback.
             context: Optional tenant AgentContext.
             max_rework_attempts: Maximum number of rework/retry cycles if validation fails. Defaults to 2.
+            auto_progress: Whether to automatically advance to next section upon VALID validation. Defaults to False.
 
         Returns:
             tuple[SectionGenerationResult, ValidationResult]: Latest generation and validation results.
@@ -1377,6 +1450,8 @@ class BRDLeadAgent:
         )
 
         if val_result.is_valid:
+            if auto_progress:
+                self.progress_section(context=context)
             return gen_result, val_result
 
         # Step 3: Rework loop if validation indicated NEEDS_REWORK
@@ -1411,6 +1486,9 @@ class BRDLeadAgent:
             if val_result.is_valid:
                 break
 
+        if val_result.is_valid and auto_progress:
+            self.progress_section(context=context)
+
         return gen_result, val_result
 
     async def generate_and_validate_section_async(
@@ -1423,6 +1501,7 @@ class BRDLeadAgent:
         rework_feedback: Optional[str] = None,
         context: Optional[AgentContext] = None,
         max_rework_attempts: int = 2,
+        auto_progress: bool = False,
     ) -> tuple[SectionGenerationResult, ValidationResult]:
         """Asynchronously execute the generate -> validate -> rework retry loop for a BRD section."""
         # Step 1: Initial generation (or update if existing_content was provided)
@@ -1449,6 +1528,8 @@ class BRDLeadAgent:
         )
 
         if val_result.is_valid:
+            if auto_progress:
+                self.progress_section(context=context)
             return gen_result, val_result
 
         # Step 3: Rework loop if validation indicated NEEDS_REWORK
@@ -1483,7 +1564,134 @@ class BRDLeadAgent:
             if val_result.is_valid:
                 break
 
+        if val_result.is_valid and auto_progress:
+            self.progress_section(context=context)
+
         return gen_result, val_result
+
+    def process_current_section(
+        self,
+        section: Optional[str] = None,
+        available_information: Optional[Sequence[Any] | str] = None,
+        section_requirements: Optional[Sequence[str] | str] = None,
+        template_structure: Optional[str] = None,
+        existing_content: Optional[str] = None,
+        rework_feedback: Optional[str] = None,
+        context: Optional[AgentContext] = None,
+        max_rework_attempts: int = 2,
+    ) -> tuple[SectionGenerationResult, ValidationResult, Optional[SectionProgressionResult]]:
+        """Process current section through generate -> validate -> rework, then progress if VALID.
+
+        Workflow:
+        1. Generate and validate current section (with rework retry up to max_rework_attempts).
+        2. If VALID: deterministically progress to the next section and record progression result.
+        3. If NEEDS_REWORK: return without progressing.
+        """
+        gen_result, val_result = self.generate_and_validate_section(
+            section=section,
+            available_information=available_information,
+            section_requirements=section_requirements,
+            template_structure=template_structure,
+            existing_content=existing_content,
+            rework_feedback=rework_feedback,
+            context=context,
+            max_rework_attempts=max_rework_attempts,
+            auto_progress=False,
+        )
+        prog_result: Optional[SectionProgressionResult] = None
+        if val_result.is_valid:
+            prog_result = self.progress_section(context=context)
+        return gen_result, val_result, prog_result
+
+    async def process_current_section_async(
+        self,
+        section: Optional[str] = None,
+        available_information: Optional[Sequence[Any] | str] = None,
+        section_requirements: Optional[Sequence[str] | str] = None,
+        template_structure: Optional[str] = None,
+        existing_content: Optional[str] = None,
+        rework_feedback: Optional[str] = None,
+        context: Optional[AgentContext] = None,
+        max_rework_attempts: int = 2,
+    ) -> tuple[SectionGenerationResult, ValidationResult, Optional[SectionProgressionResult]]:
+        """Asynchronously process current section through generate -> validate -> rework, then progress if VALID."""
+        gen_result, val_result = await self.generate_and_validate_section_async(
+            section=section,
+            available_information=available_information,
+            section_requirements=section_requirements,
+            template_structure=template_structure,
+            existing_content=existing_content,
+            rework_feedback=rework_feedback,
+            context=context,
+            max_rework_attempts=max_rework_attempts,
+            auto_progress=False,
+        )
+        prog_result: Optional[SectionProgressionResult] = None
+        if val_result.is_valid:
+            prog_result = self.progress_section(context=context)
+        return gen_result, val_result, prog_result
+
+    def process_all_sections(
+        self,
+        context: Optional[AgentContext] = None,
+        max_rework_attempts: int = 2,
+    ) -> list[tuple[SectionGenerationResult, ValidationResult, SectionProgressionResult]]:
+        """Deterministically iterate through and process all top-level template sections sequentially.
+
+        Workflow:
+        1. Initialize progression at first uncompleted section.
+        2. Iteratively generate and validate each section.
+        3. If VALID: deterministically advance to the next section.
+        4. Terminates when section_processing_complete is True or when a section fails validation.
+
+        Returns:
+            list[tuple[SectionGenerationResult, ValidationResult, SectionProgressionResult]]:
+                Ordered execution trace of all processed sections.
+        """
+        results: list[tuple[SectionGenerationResult, ValidationResult, SectionProgressionResult]] = []
+
+        if not self._state.current_section and not self.is_section_processing_complete:
+            self.initialize_section_progression(context=context)
+
+        while not self.is_section_processing_complete and self._state.current_section:
+            cur_sec = self._state.current_section
+            gen_res, val_res, prog_res = self.process_current_section(
+                section=cur_sec,
+                context=context,
+                max_rework_attempts=max_rework_attempts,
+            )
+            if prog_res is not None:
+                results.append((gen_res, val_res, prog_res))
+            else:
+                # Validation failed after max reworks; stop sequence
+                break
+
+        return results
+
+    async def process_all_sections_async(
+        self,
+        context: Optional[AgentContext] = None,
+        max_rework_attempts: int = 2,
+    ) -> list[tuple[SectionGenerationResult, ValidationResult, SectionProgressionResult]]:
+        """Asynchronously iterate through and process all top-level template sections sequentially."""
+        results: list[tuple[SectionGenerationResult, ValidationResult, SectionProgressionResult]] = []
+
+        if not self._state.current_section and not self.is_section_processing_complete:
+            self.initialize_section_progression(context=context)
+
+        while not self.is_section_processing_complete and self._state.current_section:
+            cur_sec = self._state.current_section
+            gen_res, val_res, prog_res = await self.process_current_section_async(
+                section=cur_sec,
+                context=context,
+                max_rework_attempts=max_rework_attempts,
+            )
+            if prog_res is not None:
+                results.append((gen_res, val_res, prog_res))
+            else:
+                break
+
+        return results
 
 
 def create_brd_lead_agent(

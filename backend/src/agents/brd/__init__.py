@@ -44,6 +44,14 @@ from agents.brd.section_validation import (
     get_validation_system_instruction_path,
     load_validation_system_instruction,
 )
+from agents.brd.progression import (
+    SectionProgressionResult,
+    determine_next_section,
+    get_remaining_sections,
+    initialize_progression,
+    is_section_processing_complete,
+    progress_to_next_section,
+)
 from agents.brd.template import (
     extract_brd_sections,
     extract_section_requirements,
@@ -79,6 +87,7 @@ __all__ = [
     "SectionGenerationContext",
     "SectionGenerationResult",
     "SectionOperation",
+    "SectionProgressionResult",
     "SectionStatus",
     "SectionValidationContext",
     "TaskResult",
@@ -90,6 +99,7 @@ __all__ = [
     "collect_task_results",
     "create_brd_lead_agent",
     "decompose_objective",
+    "determine_next_section",
     "execute_subagent_task",
     "execute_subagent_task_async",
     "extract_brd_sections",
@@ -98,12 +108,16 @@ __all__ = [
     "get_brd_template_path",
     "get_evaluation_system_instruction_path",
     "get_generation_system_instruction_path",
+    "get_remaining_sections",
     "get_system_instruction_path",
     "get_validation_system_instruction_path",
+    "initialize_progression",
+    "is_section_processing_complete",
     "load_brd_template",
     "load_evaluation_system_instruction",
     "load_generation_system_instruction",
     "load_system_instruction",
     "load_validation_system_instruction",
+    "progress_to_next_section",
 ]
 

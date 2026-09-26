@@ -33,7 +33,13 @@ def load_brd_template() -> str:
         FileNotFoundError: If the BRD template Markdown file does not exist.
         ValueError: If the BRD template Markdown file is empty.
     """
-    template_path = get_brd_template_path()
+    import sys
+    agent_mod = sys.modules.get("agents.brd.agent")
+    template_path = (
+        agent_mod.get_brd_template_path()
+        if agent_mod is not None and hasattr(agent_mod, "get_brd_template_path")
+        else get_brd_template_path()
+    )
     if not template_path.is_file():
         raise FileNotFoundError(
             f"Required BRD template file not found: {template_path}"
@@ -54,7 +60,18 @@ def load_brd_template() -> str:
 
 
 def extract_brd_sections(content: Optional[str] = None) -> list[str]:
-    """Extract required BRD sections dynamically from the BRD template Markdown.
+    """Extract required top-level BRD sections dynamically from the BRD template Markdown.
+
+    The Markdown template is the single source of truth for the required BRD structure.
+    Top-level section headings define the required sections in exact document order
+    without duplicating them in Python code.
+
+    Supports:
+    1. Templates where sections are level-1 headings (# Section 1, # Section 2, ...),
+       with child subsections at level-2 (## 5.1 Subsection).
+    2. Templates where document title is level-1 (# Doc Title) and sections are
+       level-2 headings (## Section 1, ## Section 2, ...).
+    3. Templates with only level-2 headings.
 
     Args:
         content: Optional raw Markdown string. If omitted, loaded from load_brd_template().
@@ -63,8 +80,26 @@ def extract_brd_sections(content: Optional[str] = None) -> list[str]:
         list[str]: Ordered list of section headings extracted from the template.
     """
     raw_content = load_brd_template() if content is None else content
-    matches = re.findall(r"^##\s+(.+)$", raw_content, re.MULTILINE)
-    return [m.strip() for m in matches if m.strip()]
+    if not raw_content or not raw_content.strip():
+        return []
+
+    h1_matches = [m.strip() for m in re.findall(r"^#\s+(.+)$", raw_content, re.MULTILINE) if m.strip()]
+    h2_matches = [m.strip() for m in re.findall(r"^##\s+(.+)$", raw_content, re.MULTILINE) if m.strip()]
+
+    # If there are multiple level-1 headers (e.g. Dexmiq brd_template.md),
+    # they represent the authoritative top-level sections.
+    if len(h1_matches) > 1:
+        return h1_matches
+
+    # If there is at most one level-1 header (e.g. document title) and level-2 headers exist,
+    # the level-2 headers are the top-level sections.
+    if h2_matches:
+        return h2_matches
+
+    if h1_matches:
+        return h1_matches
+
+    return []
 
 
 def extract_section_template(
