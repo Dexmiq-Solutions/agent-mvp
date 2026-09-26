@@ -77,6 +77,12 @@ class AgentRuntime:
         model: Optional[BaseChatModel] = None,
         tools: Optional[Sequence[Any]] = None,
         system_prompt: Optional[str] = None,
+        store: Optional[Any] = None,
+        backend: Optional[Any] = None,
+        memory: Optional[Sequence[str]] = None,
+        permissions: Optional[Sequence[Any]] = None,
+        middleware: Optional[Sequence[Any]] = None,
+        **kwargs: Any,
     ) -> None:
         """Initialize AgentRuntime.
 
@@ -85,19 +91,43 @@ class AgentRuntime:
             model: Optional pre-configured BaseChatModel instance.
             tools: Optional sequence of tools to equip the agent with.
             system_prompt: Optional system prompt override.
+            store: Optional LangGraph BaseStore instance for long-term memory.
+            backend: Optional DeepAgents BackendProtocol instance (e.g. StoreBackend).
+            memory: Optional sequence of memory file paths (e.g. ['/memory/project_context.md']).
+            permissions: Optional sequence of FilesystemPermission rules (e.g. read-only enforcement).
+            middleware: Optional sequence of custom DeepAgents/LangChain middleware.
+            **kwargs: Additional parameters forwarded to create_runtime_agent / create_deep_agent.
         """
         self._config = config or AgentConfig.from_settings()
         self._tools = list(tools) if tools else []
         self._system_prompt = system_prompt or self._config.system_prompt
+        self._store = store
+        self._backend = backend
+        self._memory = list(memory) if memory is not None else None
+        self._permissions = list(permissions) if permissions is not None else None
+        self._middleware = list(middleware) if middleware is not None else []
 
         # Initialize model if not injected
         self._model = model or create_agent_model(self._config)
 
         # Build DeepAgents execution harness
+        runtime_kwargs: dict[str, Any] = {**kwargs}
+        if self._store is not None:
+            runtime_kwargs["store"] = self._store
+        if self._backend is not None:
+            runtime_kwargs["backend"] = self._backend
+        if self._memory is not None:
+            runtime_kwargs["memory"] = self._memory
+        if self._permissions is not None:
+            runtime_kwargs["permissions"] = self._permissions
+        if self._middleware:
+            runtime_kwargs["middleware"] = self._middleware
+
         self._graph = create_runtime_agent(
             model=self._model,
             tools=self._tools,
             system_prompt=self._system_prompt,
+            **runtime_kwargs,
         )
 
     @property
@@ -121,6 +151,26 @@ class AgentRuntime:
         return self._graph
 
     @property
+    def store(self) -> Optional[Any]:
+        """Return the attached LangGraph BaseStore instance."""
+        return self._store
+
+    @property
+    def backend(self) -> Optional[Any]:
+        """Return the attached storage backend instance."""
+        return self._backend
+
+    @property
+    def memory(self) -> Optional[list[str]]:
+        """Return the configured memory sources if memory is enabled."""
+        return list(self._memory) if self._memory is not None else None
+
+    @property
+    def permissions(self) -> Optional[list[Any]]:
+        """Return the configured filesystem permission rules."""
+        return list(self._permissions) if self._permissions is not None else None
+
+    @property
     def system_prompt(self) -> str:
         """Return the active system prompt/instruction configured for the runtime."""
         return self._system_prompt
@@ -136,6 +186,8 @@ class AgentRuntime:
         system_prompt: Optional[str] = None,
         template: Optional[str] = None,
         state: Optional[Any] = None,
+        store: Optional[Any] = None,
+        project_id: Optional[str] = None,
         **kwargs: Any,
     ) -> Any:
         """Instantiate a domain-specific BRD Lead Agent backed by this runtime harness.
@@ -145,6 +197,8 @@ class AgentRuntime:
             system_prompt: Deprecated alias for system_instruction for backward compatibility.
             template: Optional BRD template override.
             state: Optional BRDAgentState working state instance.
+            store: Optional LangGraph BaseStore instance.
+            project_id: Optional project identifier for project-scoped memory.
             **kwargs: Additional parameters forwarded to BRDLeadAgent.
 
         Returns:
@@ -158,6 +212,8 @@ class AgentRuntime:
             system_prompt=system_prompt,
             template=template,
             state=state,
+            store=store or self._store,
+            project_id=project_id,
             **kwargs,
         )
 

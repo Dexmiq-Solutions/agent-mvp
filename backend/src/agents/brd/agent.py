@@ -90,12 +90,25 @@ from agents.runtime.state import (
     AgentContext,
     AgentRunRequest,
     AgentRunResponse,
+    reset_current_agent_context,
+    set_current_agent_context,
 )
 from observability.logging import get_logger
 from services.rag_service import RAGService
 from tools import get_default_tools
 from tools.diagnostic import echo_diagnostic_tool
 from tools.rag import create_search_project_knowledge_tool, search_project_knowledge
+from deepagents.backends.protocol import BackendProtocol
+from langgraph.store.base import BaseStore
+from agents.runtime.memory import (
+    DEFAULT_PROJECT_MEMORY_FILE,
+    ProjectMemoryStoreBackend,
+    create_project_namespace_factory,
+    create_readonly_memory_middleware,
+    create_readonly_memory_permissions,
+    get_default_memory_store,
+    normalize_memory_path,
+)
 
 logger = get_logger(__name__)
 
@@ -202,6 +215,10 @@ class BRDLeadAgent:
         section_generator: Optional[BRDSectionGenerationAgent] = None,
         section_validator: Optional[BRDSectionValidationAgent] = None,
         final_validator: Optional[BRDFinalValidationAgent] = None,
+        store: Optional[BaseStore] = None,
+        project_id: Optional[str] = None,
+        memory_sources: Optional[Sequence[str]] = None,
+        enable_memory: bool = True,
     ) -> None:
         """Initialize the BRD Lead Agent.
 
@@ -228,6 +245,10 @@ class BRDLeadAgent:
                 instantiated on demand using the active model.
             final_validator: Optional pre-configured BRDFinalValidationAgent instance. If omitted,
                 instantiated on demand using the active model.
+            store: Optional LangGraph BaseStore instance for long-term memory.
+            project_id: Optional application-supplied project identifier for memory scoping.
+            memory_sources: Optional sequence of memory file paths to preload (defaults to ['/memory/project_context.md']).
+            enable_memory: Whether to equip long-term project memory on the Lead Agent (defaults to True).
         """
         resolved_instruction = system_instruction or system_prompt or load_system_instruction()
         self._system_instruction = resolved_instruction
@@ -244,6 +265,43 @@ class BRDLeadAgent:
             self._state = state
         else:
             self._state = BRDAgentState.initialize_from_template(sections=self.sections)
+
+        # Configure project identity and long-term memory
+        self._enable_memory = enable_memory
+        self._project_id = project_id
+        if project_id and "project_id" not in self._state.metadata:
+            self._state.metadata["project_id"] = project_id
+
+        if enable_memory:
+            self._store = store if store is not None else (
+                getattr(runtime, "store", None) or get_default_memory_store()
+            )
+            self._memory_sources = [
+                normalize_memory_path(p) for p in (memory_sources or [DEFAULT_PROJECT_MEMORY_FILE])
+            ]
+            ns_factory = create_project_namespace_factory(
+                bound_project_id=self._project_id,
+                agent=self,
+            )
+            self._memory_backend = (
+                getattr(runtime, "backend", None)
+                if runtime is not None and getattr(runtime, "backend", None) is not None
+                else ProjectMemoryStoreBackend(
+                    namespace=ns_factory,
+                    store=self._store,
+                )
+            )
+            self._memory_permissions = create_readonly_memory_permissions()
+            self._memory_middleware = create_readonly_memory_middleware(
+                backend=self._memory_backend,
+                sources=self._memory_sources,
+            )
+        else:
+            self._store = None
+            self._memory_sources = []
+            self._memory_backend = None
+            self._memory_permissions = None
+            self._memory_middleware = None
 
         if runtime is not None:
             self._runtime = runtime
@@ -263,11 +321,20 @@ class BRDLeadAgent:
             else:
                 resolved_tools = get_default_tools()
 
+            runtime_kwargs: dict[str, Any] = {}
+            if self._enable_memory:
+                runtime_kwargs["store"] = self._store
+                runtime_kwargs["backend"] = self._memory_backend
+                runtime_kwargs["memory"] = self._memory_sources
+                runtime_kwargs["permissions"] = self._memory_permissions
+                runtime_kwargs["middleware"] = [self._memory_middleware]
+
             self._runtime = AgentRuntime(
                 config=config,
                 model=model,
                 tools=resolved_tools,
                 system_prompt=resolved_instruction,
+                **runtime_kwargs,
             )
 
     @property
@@ -277,6 +344,31 @@ class BRDLeadAgent:
             getattr(tool, "name", "") == "search_project_knowledge"
             for tool in self.tools
         )
+
+    @property
+    def has_memory_capability(self) -> bool:
+        """Return True if long-term memory is enabled and equipped on this agent."""
+        return self._enable_memory and self._store is not None
+
+    @property
+    def store(self) -> Optional[BaseStore]:
+        """Return the attached LangGraph BaseStore instance for long-term memory."""
+        return self._store
+
+    @property
+    def memory_backend(self) -> Optional[BackendProtocol]:
+        """Return the attached DeepAgents StoreBackend adapter."""
+        return self._memory_backend
+
+    @property
+    def project_id(self) -> Optional[str]:
+        """Return the active project identifier for this agent."""
+        return self._project_id or self._state.metadata.get("project_id")
+
+    @property
+    def memory_sources(self) -> list[str]:
+        """Return the list of configured memory source paths."""
+        return list(self._memory_sources)
 
     @property
     def runtime(self) -> AgentRuntime:
@@ -1355,6 +1447,16 @@ class BRDLeadAgent:
 
         # Preserve project context in state metadata
         effective_ctx = request.context if isinstance(request, AgentRunRequest) else context
+        if effective_ctx is None:
+            effective_ctx = AgentContext(project_id=self.project_id)
+        elif not effective_ctx.project_id and self.project_id:
+            effective_ctx = AgentContext(
+                project_id=self.project_id,
+                conversation_id=effective_ctx.conversation_id,
+                user_id=effective_ctx.user_id,
+                metadata=effective_ctx.metadata,
+            )
+
         if effective_ctx and effective_ctx.project_id:
             self._state.metadata["project_id"] = effective_ctx.project_id
 
@@ -1371,7 +1473,7 @@ class BRDLeadAgent:
                 current_task=current_task,
             )
 
-        response = self._runtime.execute(request=request, context=context)
+        response = self._runtime.execute(request=request, context=effective_ctx)
         # Converge onto common Action Result boundary
         action_res = response.to_action_result()
         response.action_result = action_res
@@ -1407,6 +1509,16 @@ class BRDLeadAgent:
             self._state.current_task = current_task
 
         effective_ctx = request.context if isinstance(request, AgentRunRequest) else context
+        if effective_ctx is None:
+            effective_ctx = AgentContext(project_id=self.project_id)
+        elif not effective_ctx.project_id and self.project_id:
+            effective_ctx = AgentContext(
+                project_id=self.project_id,
+                conversation_id=effective_ctx.conversation_id,
+                user_id=effective_ctx.user_id,
+                metadata=effective_ctx.metadata,
+            )
+
         if effective_ctx and effective_ctx.project_id:
             self._state.metadata["project_id"] = effective_ctx.project_id
 
@@ -1422,12 +1534,415 @@ class BRDLeadAgent:
                 current_task=current_task,
             )
 
-        response = await self._runtime.execute_async(request=request, context=context)
+        response = await self._runtime.execute_async(request=request, context=effective_ctx)
         action_res = response.to_action_result()
         response.action_result = action_res
         self._state.set_action_result(action_res)
         response.state = self._state
         return response
+
+    def set_project_memory(
+        self,
+        key: str,
+        content: str | bytes,
+        project_id: Optional[str] = None,
+    ) -> bool:
+        """Application-controlled write of authoritative project memory.
+
+        Persists content into the framework BaseStore under the project's namespace.
+        The Lead Agent has read-only access to this memory during execution.
+
+        Args:
+            key: Memory path or identifier (e.g., 'project_context.md' or '/memory/project_context.md').
+            content: Text or binary content to persist.
+            project_id: Optional project identifier override. If omitted, uses agent project_id.
+
+        Returns:
+            bool: True if write succeeded, False otherwise.
+
+        Raises:
+            ValueError: If project_id is not specified and cannot be resolved.
+        """
+        if not self._enable_memory or self._memory_backend is None:
+            logger.warning("Cannot write project memory: memory capability is disabled on this agent")
+            return False
+
+        resolved_pid = project_id or self.project_id
+        if not resolved_pid:
+            raise ValueError("project_id must be provided to write project-scoped memory")
+
+        normalized_path = normalize_memory_path(key)
+        content_bytes = content.encode("utf-8") if isinstance(content, str) else content
+
+        logger.info(
+            "Writing authoritative project memory (project_id: %s, key: %s, size: %d bytes)",
+            resolved_pid,
+            normalized_path,
+            len(content_bytes),
+        )
+
+        tok = set_current_agent_context(AgentContext(project_id=resolved_pid))
+        try:
+            responses = self._memory_backend.upload_files([(normalized_path, content_bytes)])
+            for resp in responses:
+                if resp.error is not None:
+                    logger.error(
+                        "Failed to write project memory (project_id: %s, key: %s): %s",
+                        resolved_pid,
+                        resp.path,
+                        resp.error,
+                    )
+                    return False
+            logger.info(
+                "Authoritative project memory write succeeded (project_id: %s, key: %s)",
+                resolved_pid,
+                normalized_path,
+            )
+            return True
+        except Exception as exc:
+            logger.error(
+                "Error writing authoritative project memory (project_id: %s, key: %s): %s",
+                resolved_pid,
+                normalized_path,
+                exc,
+                exc_info=True,
+            )
+            return False
+        finally:
+            reset_current_agent_context(tok)
+
+    async def set_project_memory_async(
+        self,
+        key: str,
+        content: str | bytes,
+        project_id: Optional[str] = None,
+    ) -> bool:
+        """Asynchronous application-controlled write of authoritative project memory.
+
+        Args:
+            key: Memory path or identifier.
+            content: Text or binary content to persist.
+            project_id: Optional project identifier override.
+
+        Returns:
+            bool: True if write succeeded, False otherwise.
+
+        Raises:
+            ValueError: If project_id is not specified and cannot be resolved.
+        """
+        if not self._enable_memory or self._memory_backend is None:
+            logger.warning("Cannot write project memory: memory capability is disabled on this agent")
+            return False
+
+        resolved_pid = project_id or self.project_id
+        if not resolved_pid:
+            raise ValueError("project_id must be provided to write project-scoped memory")
+
+        normalized_path = normalize_memory_path(key)
+        content_bytes = content.encode("utf-8") if isinstance(content, str) else content
+
+        logger.info(
+            "Async writing authoritative project memory (project_id: %s, key: %s, size: %d bytes)",
+            resolved_pid,
+            normalized_path,
+            len(content_bytes),
+        )
+
+        tok = set_current_agent_context(AgentContext(project_id=resolved_pid))
+        try:
+            responses = await self._memory_backend.aupload_files([(normalized_path, content_bytes)])
+            for resp in responses:
+                if resp.error is not None:
+                    logger.error(
+                        "Async failed to write project memory (project_id: %s, key: %s): %s",
+                        resolved_pid,
+                        resp.path,
+                        resp.error,
+                    )
+                    return False
+            logger.info(
+                "Async authoritative project memory write succeeded (project_id: %s, key: %s)",
+                resolved_pid,
+                normalized_path,
+            )
+            return True
+        except Exception as exc:
+            logger.error(
+                "Async error writing authoritative project memory (project_id: %s, key: %s): %s",
+                resolved_pid,
+                normalized_path,
+                exc,
+                exc_info=True,
+            )
+            return False
+        finally:
+            reset_current_agent_context(tok)
+
+    def get_project_memory(
+        self,
+        key: str,
+        project_id: Optional[str] = None,
+    ) -> Optional[str]:
+        """Application-controlled read of authoritative project memory.
+
+        Args:
+            key: Memory path or identifier.
+            project_id: Optional project identifier override.
+
+        Returns:
+            Optional[str]: Memory content as string if found, None otherwise.
+
+        Raises:
+            ValueError: If project_id is not specified and cannot be resolved.
+        """
+        if not self._enable_memory or self._memory_backend is None:
+            return None
+
+        resolved_pid = project_id or self.project_id
+        if not resolved_pid:
+            raise ValueError("project_id must be provided to read project-scoped memory")
+
+        normalized_path = normalize_memory_path(key)
+        tok = set_current_agent_context(AgentContext(project_id=resolved_pid))
+        try:
+            responses = self._memory_backend.download_files([normalized_path])
+            if responses and responses[0].content is not None:
+                logger.debug(
+                    "Read project memory (project_id: %s, key: %s, found: True)",
+                    resolved_pid,
+                    normalized_path,
+                )
+                return responses[0].content.decode("utf-8")
+            logger.debug(
+                "Read project memory (project_id: %s, key: %s, found: False)",
+                resolved_pid,
+                normalized_path,
+            )
+            return None
+        except Exception as exc:
+            logger.error(
+                "Error reading project memory (project_id: %s, key: %s): %s",
+                resolved_pid,
+                normalized_path,
+                exc,
+                exc_info=True,
+            )
+            return None
+        finally:
+            reset_current_agent_context(tok)
+
+    async def get_project_memory_async(
+        self,
+        key: str,
+        project_id: Optional[str] = None,
+    ) -> Optional[str]:
+        """Asynchronous application-controlled read of authoritative project memory.
+
+        Args:
+            key: Memory path or identifier.
+            project_id: Optional project identifier override.
+
+        Returns:
+            Optional[str]: Memory content as string if found, None otherwise.
+
+        Raises:
+            ValueError: If project_id is not specified and cannot be resolved.
+        """
+        if not self._enable_memory or self._memory_backend is None:
+            return None
+
+        resolved_pid = project_id or self.project_id
+        if not resolved_pid:
+            raise ValueError("project_id must be provided to read project-scoped memory")
+
+        normalized_path = normalize_memory_path(key)
+        tok = set_current_agent_context(AgentContext(project_id=resolved_pid))
+        try:
+            responses = await self._memory_backend.adownload_files([normalized_path])
+            if responses and responses[0].content is not None:
+                logger.debug(
+                    "Async read project memory (project_id: %s, key: %s, found: True)",
+                    resolved_pid,
+                    normalized_path,
+                )
+                return responses[0].content.decode("utf-8")
+            logger.debug(
+                "Async read project memory (project_id: %s, key: %s, found: False)",
+                resolved_pid,
+                normalized_path,
+            )
+            return None
+        except Exception as exc:
+            logger.error(
+                "Async error reading project memory (project_id: %s, key: %s): %s",
+                resolved_pid,
+                normalized_path,
+                exc,
+                exc_info=True,
+            )
+            return None
+        finally:
+            reset_current_agent_context(tok)
+
+    def list_project_memory(
+        self,
+        pattern: str = "*",
+        project_id: Optional[str] = None,
+    ) -> list[str]:
+        """List stored memory file paths for the specified project.
+
+        Args:
+            pattern: Glob matching pattern (defaults to '*').
+            project_id: Optional project identifier override.
+
+        Returns:
+            list[str]: Matching memory file paths.
+
+        Raises:
+            ValueError: If project_id is not specified and cannot be resolved.
+        """
+        if not self._enable_memory or self._memory_backend is None:
+            return []
+
+        resolved_pid = project_id or self.project_id
+        if not resolved_pid:
+            raise ValueError("project_id must be provided to list project-scoped memory")
+
+        tok = set_current_agent_context(AgentContext(project_id=resolved_pid))
+        try:
+            res = self._memory_backend.glob(pattern)
+            return [m["path"] for m in res.matches]
+        except Exception as exc:
+            logger.error(
+                "Error listing project memory (project_id: %s): %s",
+                resolved_pid,
+                exc,
+                exc_info=True,
+            )
+            return []
+        finally:
+            reset_current_agent_context(tok)
+
+    async def list_project_memory_async(
+        self,
+        pattern: str = "*",
+        project_id: Optional[str] = None,
+    ) -> list[str]:
+        """Asynchronously list stored memory file paths for the specified project.
+
+        Args:
+            pattern: Glob matching pattern (defaults to '*').
+            project_id: Optional project identifier override.
+
+        Returns:
+            list[str]: Matching memory file paths.
+
+        Raises:
+            ValueError: If project_id is not specified and cannot be resolved.
+        """
+        if not self._enable_memory or self._memory_backend is None:
+            return []
+
+        resolved_pid = project_id or self.project_id
+        if not resolved_pid:
+            raise ValueError("project_id must be provided to list project-scoped memory")
+
+        tok = set_current_agent_context(AgentContext(project_id=resolved_pid))
+        try:
+            res = await self._memory_backend.aglob(pattern)
+            return [m["path"] for m in res.matches]
+        except Exception as exc:
+            logger.error(
+                "Async error listing project memory (project_id: %s): %s",
+                resolved_pid,
+                exc,
+                exc_info=True,
+            )
+            return []
+        finally:
+            reset_current_agent_context(tok)
+
+    def delete_project_memory(
+        self,
+        key: str,
+        project_id: Optional[str] = None,
+    ) -> bool:
+        """Application-controlled deletion of project memory.
+
+        Args:
+            key: Memory path or identifier.
+            project_id: Optional project identifier override.
+
+        Returns:
+            bool: True if deletion succeeded, False otherwise.
+
+        Raises:
+            ValueError: If project_id is not specified and cannot be resolved.
+        """
+        if not self._enable_memory or self._memory_backend is None:
+            return False
+
+        resolved_pid = project_id or self.project_id
+        if not resolved_pid:
+            raise ValueError("project_id must be provided to delete project-scoped memory")
+
+        normalized_path = normalize_memory_path(key)
+        tok = set_current_agent_context(AgentContext(project_id=resolved_pid))
+        try:
+            res = self._memory_backend.delete(normalized_path)
+            return res.error is None
+        except Exception as exc:
+            logger.error(
+                "Error deleting project memory (project_id: %s, key: %s): %s",
+                resolved_pid,
+                normalized_path,
+                exc,
+                exc_info=True,
+            )
+            return False
+        finally:
+            reset_current_agent_context(tok)
+
+    async def delete_project_memory_async(
+        self,
+        key: str,
+        project_id: Optional[str] = None,
+    ) -> bool:
+        """Asynchronous application-controlled deletion of project memory.
+
+        Args:
+            key: Memory path or identifier.
+            project_id: Optional project identifier override.
+
+        Returns:
+            bool: True if deletion succeeded, False otherwise.
+
+        Raises:
+            ValueError: If project_id is not specified and cannot be resolved.
+        """
+        if not self._enable_memory or self._memory_backend is None:
+            return False
+
+        resolved_pid = project_id or self.project_id
+        if not resolved_pid:
+            raise ValueError("project_id must be provided to delete project-scoped memory")
+
+        normalized_path = normalize_memory_path(key)
+        tok = set_current_agent_context(AgentContext(project_id=resolved_pid))
+        try:
+            res = await self._memory_backend.adelete(normalized_path)
+            return res.error is None
+        except Exception as exc:
+            logger.error(
+                "Async error deleting project memory (project_id: %s, key: %s): %s",
+                resolved_pid,
+                normalized_path,
+                exc,
+                exc_info=True,
+            )
+            return False
+        finally:
+            reset_current_agent_context(tok)
 
     def evaluate(
         self,
@@ -2526,6 +3041,10 @@ def create_brd_lead_agent(
     section_generator: Optional[BRDSectionGenerationAgent] = None,
     section_validator: Optional[BRDSectionValidationAgent] = None,
     final_validator: Optional[BRDFinalValidationAgent] = None,
+    store: Optional[BaseStore] = None,
+    project_id: Optional[str] = None,
+    memory_sources: Optional[Sequence[str]] = None,
+    enable_memory: bool = True,
 ) -> BRDLeadAgent:
     """Factory function to instantiate the BRD Lead Agent.
 
@@ -2544,6 +3063,10 @@ def create_brd_lead_agent(
         section_generator: Optional pre-configured BRDSectionGenerationAgent instance.
         section_validator: Optional pre-configured BRDSectionValidationAgent instance.
         final_validator: Optional pre-configured BRDFinalValidationAgent instance.
+        store: Optional LangGraph BaseStore instance for long-term memory.
+        project_id: Optional project identifier for project-scoped memory.
+        memory_sources: Optional sequence of memory file paths to preload.
+        enable_memory: Whether to enable long-term memory (defaults to True).
 
     Returns:
         Configured BRDLeadAgent instance.
@@ -2563,4 +3086,8 @@ def create_brd_lead_agent(
         section_generator=section_generator,
         section_validator=section_validator,
         final_validator=final_validator,
+        store=store,
+        project_id=project_id,
+        memory_sources=memory_sources,
+        enable_memory=enable_memory,
     )
