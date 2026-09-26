@@ -82,6 +82,7 @@ def _match_section_name(name: str, available_sections: Sequence[str]) -> str:
 
 
 from agents.brd.progression import SectionProgressionResult
+from agents.brd.assembly import BRDAssemblyResult
 
 
 @dataclass
@@ -123,6 +124,8 @@ class BRDAgentState:
     validation_history: list[ValidationResult] = field(default_factory=list)
     latest_progression_result: Optional[SectionProgressionResult] = None
     progression_history: list[SectionProgressionResult] = field(default_factory=list)
+    assembled_brd: Optional[str] = None
+    latest_assembly_result: Optional[BRDAssemblyResult] = None
 
     @classmethod
     def initialize_from_template(
@@ -236,6 +239,29 @@ class BRDAgentState:
     def get_latest_progression_result(self) -> Optional[SectionProgressionResult]:
         """Retrieve the latest section progression result."""
         return self.latest_progression_result
+
+    def set_assembled_brd(self, document: Optional[str]) -> None:
+        """Store the complete assembled BRD document."""
+        self.assembled_brd = document
+
+    def get_assembled_brd(self) -> Optional[str]:
+        """Retrieve the complete assembled BRD document if available."""
+        return self.assembled_brd
+
+    def set_assembly_result(self, result: Optional[BRDAssemblyResult]) -> None:
+        """Store the latest BRD assembly result and update assembled_brd."""
+        self.latest_assembly_result = result
+        if result is not None and result.assembled_document:
+            self.assembled_brd = result.assembled_document
+
+    def get_latest_assembly_result(self) -> Optional[BRDAssemblyResult]:
+        """Retrieve the latest BRD assembly result."""
+        return self.latest_assembly_result
+
+    @property
+    def is_assembled(self) -> bool:
+        """True if a non-empty assembled BRD document is stored in state."""
+        return bool(self.assembled_brd and self.assembled_brd.strip())
 
     def get_remaining_sections(self, template_sections: Optional[Sequence[str]] = None) -> list[str]:
         """Return dynamically derived list of template sections not yet COMPLETED."""
@@ -396,6 +422,13 @@ class BRDAgentState:
         data["progression_history"] = [
             p.to_dict() if hasattr(p, "to_dict") else p for p in self.progression_history
         ]
+        data["assembled_brd"] = self.assembled_brd
+        if self.latest_assembly_result is not None:
+            data["latest_assembly_result"] = (
+                self.latest_assembly_result.to_dict()
+                if hasattr(self.latest_assembly_result, "to_dict")
+                else self.latest_assembly_result
+            )
         data["section_content"] = dict(self.section_content)
         data["rework_feedback"] = dict(self.rework_feedback)
         return data
@@ -470,6 +503,13 @@ class BRDAgentState:
             SectionProgressionResult.from_dict(p) if isinstance(p, dict) else p
             for p in prog_hist_raw
         ]
+        asmb_res_raw = data.get("latest_assembly_result")
+        latest_assembly_result = (
+            BRDAssemblyResult.from_dict(asmb_res_raw)
+            if isinstance(asmb_res_raw, dict)
+            else asmb_res_raw
+        )
+        assembled_brd = data.get("assembled_brd")
 
         return cls(
             objective=data.get("objective", "Produce an evidence-grounded Business Requirements Document"),
@@ -493,6 +533,8 @@ class BRDAgentState:
             validation_history=validation_history,
             latest_progression_result=latest_progression_result,
             progression_history=progression_history,
+            assembled_brd=assembled_brd,
+            latest_assembly_result=latest_assembly_result,
         )
 
 
@@ -522,3 +564,5 @@ class BRDDeepAgentState(DeepAgentState, total=False):
     validation_history: Optional[list[dict[str, Any]]]
     latest_progression_result: Optional[dict[str, Any]]
     progression_history: Optional[list[dict[str, Any]]]
+    assembled_brd: Optional[str]
+    latest_assembly_result: Optional[dict[str, Any]]

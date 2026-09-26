@@ -52,6 +52,12 @@ from agents.brd.progression import (
     is_section_processing_complete,
     progress_to_next_section,
 )
+from agents.brd.assembly import (
+    BRDAssemblyResult,
+    assemble_brd_document,
+    format_section_for_assembly,
+    get_heading_prefix_for_section,
+)
 from agents.brd.template import (
     extract_brd_sections,
     extract_section_requirements,
@@ -71,6 +77,7 @@ __all__ = [
     "ActionResult",
     "ActionSource",
     "BRDAgentState",
+    "BRDAssemblyResult",
     "BRDDeepAgentState",
     "BRDEvaluationAgent",
     "BRDLeadAgent",
@@ -96,6 +103,7 @@ __all__ = [
     "ValidationOutcome",
     "ValidationResult",
     "WorkflowDecision",
+    "assemble_brd_document",
     "collect_task_results",
     "create_brd_lead_agent",
     "decompose_objective",
@@ -105,9 +113,11 @@ __all__ = [
     "extract_brd_sections",
     "extract_section_requirements",
     "extract_section_template",
+    "format_section_for_assembly",
     "get_brd_template_path",
     "get_evaluation_system_instruction_path",
     "get_generation_system_instruction_path",
+    "get_heading_prefix_for_section",
     "get_remaining_sections",
     "get_system_instruction_path",
     "get_validation_system_instruction_path",

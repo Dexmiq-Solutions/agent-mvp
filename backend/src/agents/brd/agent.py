@@ -62,6 +62,10 @@ from agents.brd.progression import (
     is_section_processing_complete,
     progress_to_next_section,
 )
+from agents.brd.assembly import (
+    BRDAssemblyResult,
+    assemble_brd_document,
+)
 from agents.brd.state import BRDAgentState, BRDSectionStatus
 from agents.runtime.agent import AgentRuntime
 from agents.runtime.config import AgentConfig
@@ -320,9 +324,64 @@ class BRDLeadAgent:
         """Check whether all template sections have completed validation."""
         return is_section_processing_complete(self._state, self.sections)
 
+    @property
+    def assembled_brd(self) -> Optional[str]:
+        """Complete assembled BRD Markdown document if assembly has been performed."""
+        return self._state.get_assembled_brd()
+
+    @property
+    def is_assembled(self) -> bool:
+        """True if a complete assembled BRD document is available in state."""
+        return self._state.is_assembled
+
+    @property
+    def latest_assembly_result(self) -> Optional[BRDAssemblyResult]:
+        """Retrieve the latest BRD assembly result."""
+        return self._state.get_latest_assembly_result()
+
     def get_remaining_sections(self) -> list[str]:
         """Return dynamically derived list of uncompleted template sections."""
         return get_remaining_sections(self._state, self.sections)
+
+    def assemble_brd(
+        self,
+        context: Optional[AgentContext] = None,
+    ) -> BRDAssemblyResult:
+        """Deterministically assemble all completed BRD sections into the complete document.
+
+        Workflow:
+        1. Verifies that all required top-level template sections are COMPLETED.
+        2. Retrieves validated content for each section from state in exact template order.
+        3. Preserves section boundaries and headings without modifying semantic content.
+        4. Combines sections into the final BRD document and stores it in state.assembled_brd.
+        5. Returns BRDAssemblyResult.
+
+        Args:
+            context: Optional tenant AgentContext.
+
+        Returns:
+            BRDAssemblyResult: The complete assembled BRD document and execution metadata.
+
+        Raises:
+            ValueError: If section processing is incomplete, sections are missing content,
+                or the template contains no valid sections.
+        """
+        effective_ctx = context or AgentContext()
+        project_id = effective_ctx.project_id or self._state.metadata.get("project_id")
+
+        return assemble_brd_document(
+            state=self._state,
+            template_sections=self.sections,
+            template_content=self._template,
+            project_id=project_id,
+        )
+
+    async def assemble_brd_async(
+        self,
+        context: Optional[AgentContext] = None,
+    ) -> BRDAssemblyResult:
+        """Asynchronously assemble all completed BRD sections into the complete document."""
+        return self.assemble_brd(context=context)
 
     def progress_section(
         self,
@@ -1635,6 +1694,7 @@ class BRDLeadAgent:
         self,
         context: Optional[AgentContext] = None,
         max_rework_attempts: int = 2,
+        auto_assemble: bool = False,
     ) -> list[tuple[SectionGenerationResult, ValidationResult, SectionProgressionResult]]:
         """Deterministically iterate through and process all top-level template sections sequentially.
 
@@ -1643,6 +1703,7 @@ class BRDLeadAgent:
         2. Iteratively generate and validate each section.
         3. If VALID: deterministically advance to the next section.
         4. Terminates when section_processing_complete is True or when a section fails validation.
+        5. If auto_assemble is True and all sections completed, automatically assembles the full BRD.
 
         Returns:
             list[tuple[SectionGenerationResult, ValidationResult, SectionProgressionResult]]:
@@ -1666,12 +1727,16 @@ class BRDLeadAgent:
                 # Validation failed after max reworks; stop sequence
                 break
 
+        if auto_assemble and self.is_section_processing_complete:
+            self.assemble_brd(context=context)
+
         return results
 
     async def process_all_sections_async(
         self,
         context: Optional[AgentContext] = None,
         max_rework_attempts: int = 2,
+        auto_assemble: bool = False,
     ) -> list[tuple[SectionGenerationResult, ValidationResult, SectionProgressionResult]]:
         """Asynchronously iterate through and process all top-level template sections sequentially."""
         results: list[tuple[SectionGenerationResult, ValidationResult, SectionProgressionResult]] = []
@@ -1690,6 +1755,9 @@ class BRDLeadAgent:
                 results.append((gen_res, val_res, prog_res))
             else:
                 break
+
+        if auto_assemble and self.is_section_processing_complete:
+            self.assemble_brd(context=context)
 
         return results
 
