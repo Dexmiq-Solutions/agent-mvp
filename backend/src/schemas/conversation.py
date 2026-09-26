@@ -20,6 +20,7 @@ class MessageCreate(BaseModel):
     content: str = Field(..., min_length=1, description="Message text content")
     role: str = Field(default="user", description="Message sender role ('user' or 'assistant')")
     metadata: Optional[dict[str, Any]] = Field(default=None, description="Optional structured metadata")
+    stream: Optional[bool] = Field(default=None, description="Whether to stream the agent response for user messages")
 
     @field_validator("content")
     @classmethod

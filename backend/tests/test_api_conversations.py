@@ -1,13 +1,67 @@
-"""End-to-end HTTP route tests for Project-scoped Conversation and Message API endpoints."""
-
 from collections.abc import AsyncIterator
+import json
+from typing import Any, Optional
 from httpx import ASGITransport, AsyncClient
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from langchain_core.language_models.chat_models import BaseChatModel
+from langchain_core.messages import AIMessage, AIMessageChunk
+from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
+
+from agents.runtime.agent import AgentRuntime
+from api.dependencies import get_agent_runtime
 from app.main import app
 from db.base import Base
 from db.session import get_db_session
+
+
+class MockStreamingChatModel(BaseChatModel):
+    """Deterministic mock chat model that streams tokens and records conversation turns."""
+
+    token_chunks: list[str] = ["The ", "BRD ", "section ", "is drafted."]
+    received_messages: list[list[Any]] = []
+
+    def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+        self.received_messages.append(list(messages))
+        content = "".join(self.token_chunks)
+        return ChatResult(generations=[ChatGeneration(message=AIMessage(content=content))])
+
+    async def _agenerate(self, messages, stop=None, run_manager=None, **kwargs):
+        return self._generate(messages, stop=stop, run_manager=run_manager, **kwargs)
+
+    async def _astream(self, messages, stop=None, run_manager=None, **kwargs):
+        self.received_messages.append(list(messages))
+        for token in self.token_chunks:
+            chunk = ChatGenerationChunk(message=AIMessageChunk(content=token))
+            if run_manager:
+                await run_manager.on_llm_new_token(token, chunk=chunk)
+            yield chunk
+
+    def bind_tools(self, tools, **kwargs):
+        return self
+
+    @property
+    def _llm_type(self) -> str:
+        return "mock-streaming-model"
+
+
+def parse_sse_events(lines: list[str]) -> list[dict[str, Any]]:
+    """Parse raw SSE line output into structured events."""
+    events = []
+    current_event = "message"
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        if line.startswith("event:"):
+            current_event = line.replace("event:", "").strip()
+        elif line.startswith("data:"):
+            data_str = line.replace("data:", "", 1).strip()
+            data_json = json.loads(data_str)
+            events.append({"event": current_event, "data": data_json})
+            current_event = "message"
+    return events
 
 
 @pytest.fixture
@@ -111,9 +165,9 @@ async def test_message_flow_endpoints(api_client: AsyncClient):
     )
     conversation_id = conv_resp.json()["id"]
 
-    # 2. Post a user message
+    # 2. Post a user message with stream=false for raw message CRUD test
     msg_user_resp = await api_client.post(
-        f"/projects/{project_id}/conversations/{conversation_id}/messages",
+        f"/projects/{project_id}/conversations/{conversation_id}/messages?stream=false",
         json={
             "role": "user",
             "content": "What are the company's Q2 milestones?",
@@ -179,7 +233,7 @@ async def test_api_project_isolation_enforcement(api_client: AsyncClient):
 
     # Create a message in Project A's conversation
     await api_client.post(
-        f"/projects/{proj_a_id}/conversations/{conv_a_id}/messages",
+        f"/projects/{proj_a_id}/conversations/{conv_a_id}/messages?stream=false",
         json={"role": "user", "content": "Confidential data for Tenant A"},
     )
 
@@ -235,3 +289,255 @@ async def test_message_validation_failure_handling(api_client: AsyncClient):
         json={"role": "user", "content": "   "},
     )
     assert content_resp.status_code == 422 or content_resp.status_code == 400
+
+
+@pytest.mark.anyio
+async def test_user_message_streaming_invokes_agent_and_persists_both_messages(api_client: AsyncClient):
+    """Verify that posting a user message invokes the BRD Agent, streams SSE tokens, and persists both turns."""
+    mock_model = MockStreamingChatModel(token_chunks=["The ", "BRD ", "Executive ", "Summary."])
+    test_runtime = AgentRuntime(model=mock_model)
+    app.dependency_overrides[get_agent_runtime] = lambda: test_runtime
+
+    try:
+        # 1. Create project and conversation
+        proj_resp = await api_client.post("/projects", json={"name": "Streaming Test Project"})
+        assert proj_resp.status_code == 201
+        project_id = proj_resp.json()["id"]
+
+        conv_resp = await api_client.post(f"/projects/{project_id}/conversations", json={"title": "BRD Chat"})
+        assert conv_resp.status_code == 201
+        conversation_id = conv_resp.json()["id"]
+
+        # 2. Post user message (default stream=True)
+        user_prompt = "Generate the Executive Summary for our cloud platform."
+        async with api_client.stream(
+            "POST",
+            f"/projects/{project_id}/conversations/{conversation_id}/messages",
+            json={"role": "user", "content": user_prompt, "metadata": {"source": "test-ui"}},
+        ) as stream_resp:
+            assert stream_resp.status_code == 200
+            assert "text/event-stream" in stream_resp.headers["content-type"]
+
+            lines = []
+            async for line in stream_resp.aiter_lines():
+                if line:
+                    lines.append(line)
+
+        events = parse_sse_events(lines)
+        assert len(events) >= 2
+
+        # Verify content chunk events
+        content_events = [e for e in events if e.get("event") == "message" and e["data"].get("type") == "content"]
+        assert len(content_events) == 4
+        streamed_text = "".join(e["data"]["content"] for e in content_events)
+        assert streamed_text == "The BRD Executive Summary."
+
+        # Verify completion event
+        done_events = [e for e in events if e.get("event") == "done" and e["data"].get("type") == "done"]
+        assert len(done_events) == 1
+        done_msg = done_events[0]["data"]["message"]
+        assert done_msg["role"] == "assistant"
+        assert done_msg["content"] == "The BRD Executive Summary."
+        assert done_msg["conversation_id"] == conversation_id
+        assert "user_message_id" in done_msg["metadata"]
+        assert "agent_run_id" in done_msg["metadata"]
+
+        # 3. Verify database persistence: both user message and assistant message must be present
+        hist_resp = await api_client.get(f"/projects/{project_id}/conversations/{conversation_id}/messages")
+        assert hist_resp.status_code == 200
+        messages = hist_resp.json()
+        assert len(messages) == 2
+
+        assert messages[0]["role"] == "user"
+        assert messages[0]["content"] == user_prompt
+        assert messages[0]["id"] == done_msg["metadata"]["user_message_id"]
+
+        assert messages[1]["role"] == "assistant"
+        assert messages[1]["content"] == "The BRD Executive Summary."
+        assert messages[1]["id"] == done_msg["id"]
+        assert messages[1]["metadata"]["user_message_id"] == messages[0]["id"]
+
+    finally:
+        app.dependency_overrides.pop(get_agent_runtime, None)
+
+
+@pytest.mark.anyio
+async def test_multi_turn_conversation_preserves_thread_context(api_client: AsyncClient):
+    """Verify multi-turn conversation maintains history across turns using thread_id/conversation_id."""
+    mock_model = MockStreamingChatModel(token_chunks=["Response ", "turn."])
+    test_runtime = AgentRuntime(model=mock_model)
+    app.dependency_overrides[get_agent_runtime] = lambda: test_runtime
+
+    try:
+        # Create project and conversation
+        proj_resp = await api_client.post("/projects", json={"name": "Multi-Turn Project"})
+        project_id = proj_resp.json()["id"]
+
+        conv_resp = await api_client.post(f"/projects/{project_id}/conversations", json={"title": "Multi-Turn Chat"})
+        conversation_id = conv_resp.json()["id"]
+
+        # Turn 1
+        async with api_client.stream(
+            "POST",
+            f"/projects/{project_id}/conversations/{conversation_id}/messages",
+            json={"role": "user", "content": "Turn 1 question"},
+        ) as resp1:
+            assert resp1.status_code == 200
+            async for _ in resp1.aiter_lines():
+                pass
+
+        # Turn 2
+        async with api_client.stream(
+            "POST",
+            f"/projects/{project_id}/conversations/{conversation_id}/messages",
+            json={"role": "user", "content": "Turn 2 question continuing previous context"},
+        ) as resp2:
+            assert resp2.status_code == 200
+            async for _ in resp2.aiter_lines():
+                pass
+
+        # Verify that mock model received turn 1 history in turn 2
+        assert len(mock_model.received_messages) >= 2
+        turn2_messages = mock_model.received_messages[-1]
+        turn2_contents = [m.content for m in turn2_messages]
+        assert any("Turn 1 question" in c for c in turn2_contents)
+        assert any("Turn 2 question" in c for c in turn2_contents)
+
+        # Verify all 4 messages persisted in database in chronological order
+        hist_resp = await api_client.get(f"/projects/{project_id}/conversations/{conversation_id}/messages")
+        assert hist_resp.status_code == 200
+        messages = hist_resp.json()
+        assert len(messages) == 4
+        assert [m["role"] for m in messages] == ["user", "assistant", "user", "assistant"]
+        assert messages[0]["content"] == "Turn 1 question"
+        assert messages[2]["content"] == "Turn 2 question continuing previous context"
+
+    finally:
+        app.dependency_overrides.pop(get_agent_runtime, None)
+
+
+@pytest.mark.anyio
+async def test_streaming_error_handling_emits_error_event_and_does_not_persist_assistant_message(api_client: AsyncClient):
+    """Verify that agent execution failures produce SSE error events without saving assistant responses."""
+
+    class FailingChatModel(BaseChatModel):
+        def _generate(self, messages, **kwargs):
+            raise RuntimeError("Provider connection reset by peer")
+
+        async def _agenerate(self, messages, **kwargs):
+            raise RuntimeError("Provider connection reset by peer")
+
+        async def _astream(self, messages, **kwargs):
+            yield ChatGenerationChunk(message=AIMessageChunk(content="Starting..."))
+            raise RuntimeError("Provider connection reset by peer")
+
+        def bind_tools(self, tools, **kwargs):
+            return self
+
+        @property
+        def _llm_type(self) -> str:
+            return "failing-model"
+
+    failing_runtime = AgentRuntime(model=FailingChatModel())
+    app.dependency_overrides[get_agent_runtime] = lambda: failing_runtime
+
+    try:
+        # Create project and conversation
+        proj_resp = await api_client.post("/projects", json={"name": "Error Handling Project"})
+        project_id = proj_resp.json()["id"]
+
+        conv_resp = await api_client.post(f"/projects/{project_id}/conversations", json={"title": "Error Chat"})
+        conversation_id = conv_resp.json()["id"]
+
+        async with api_client.stream(
+            "POST",
+            f"/projects/{project_id}/conversations/{conversation_id}/messages",
+            json={"role": "user", "content": "This prompt will trigger an agent error."},
+        ) as resp:
+            assert resp.status_code == 200
+            lines = []
+            async for line in resp.aiter_lines():
+                if line:
+                    lines.append(line)
+
+        events = parse_sse_events(lines)
+        error_events = [e for e in events if e.get("event") == "error"]
+        assert len(error_events) == 1
+        assert "Provider connection reset by peer" in error_events[0]["data"]["error"]
+
+        # Ensure NO completion event was emitted
+        done_events = [e for e in events if e.get("event") == "done"]
+        assert len(done_events) == 0
+
+        # Verify database: only the user message was persisted, NOT a broken assistant message
+        hist_resp = await api_client.get(f"/projects/{project_id}/conversations/{conversation_id}/messages")
+        assert hist_resp.status_code == 200
+        messages = hist_resp.json()
+        assert len(messages) == 1
+        assert messages[0]["role"] == "user"
+
+    finally:
+        app.dependency_overrides.pop(get_agent_runtime, None)
+
+
+@pytest.mark.anyio
+async def test_agent_receives_correct_project_context_and_stream_flag(api_client: AsyncClient):
+    """Verify that BRDLeadAgent receives application-controlled project_id and stream=false bypasses agent."""
+    captured_contexts: list[Any] = []
+
+    class ContextCapturingRuntime(AgentRuntime):
+        async def stream_async(self, request, context=None, prior_messages=None):
+            captured_contexts.append(context)
+            yield {"type": "content", "content": "Context verified."}
+
+    mock_runtime = ContextCapturingRuntime(model=MockStreamingChatModel())
+    app.dependency_overrides[get_agent_runtime] = lambda: mock_runtime
+
+    try:
+        proj_resp = await api_client.post("/projects", json={"name": "Context Isolation Project"})
+        project_id = proj_resp.json()["id"]
+
+        conv_resp = await api_client.post(f"/projects/{project_id}/conversations", json={"title": "Context Chat"})
+        conversation_id = conv_resp.json()["id"]
+
+        # 1. Test streaming call: verify captured context has application-controlled IDs
+        async with api_client.stream(
+            "POST",
+            f"/projects/{project_id}/conversations/{conversation_id}/messages",
+            json={"role": "user", "content": "Check context"},
+        ) as resp:
+            assert resp.status_code == 200
+            async for _ in resp.aiter_lines():
+                pass
+
+        assert len(captured_contexts) == 1
+        ctx = captured_contexts[0]
+        assert ctx.project_id == project_id
+        assert ctx.conversation_id == conversation_id
+        assert "user_message_id" in ctx.metadata
+        assert "agent_run_id" in ctx.metadata
+
+        # 2. Test stream=false in payload: should persist immediately with 201 without invoking stream_async
+        initial_capture_count = len(captured_contexts)
+        direct_resp = await api_client.post(
+            f"/projects/{project_id}/conversations/{conversation_id}/messages",
+            json={"role": "user", "content": "Direct persist message", "stream": False},
+        )
+        assert direct_resp.status_code == 201
+        assert direct_resp.json()["content"] == "Direct persist message"
+        # stream_async should NOT have been called
+        assert len(captured_contexts) == initial_capture_count
+
+        # 3. Test assistant role message: should persist immediately with 201 without invoking stream_async
+        asst_direct_resp = await api_client.post(
+            f"/projects/{project_id}/conversations/{conversation_id}/messages",
+            json={"role": "assistant", "content": "Manual assistant log"},
+        )
+        assert asst_direct_resp.status_code == 201
+        assert asst_direct_resp.json()["content"] == "Manual assistant log"
+        assert len(captured_contexts) == initial_capture_count
+
+    finally:
+        app.dependency_overrides.pop(get_agent_runtime, None)
+
+

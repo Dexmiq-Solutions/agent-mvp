@@ -11,6 +11,7 @@ Maintains its working context and progress via BRDAgentState.
 """
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from enum import Enum
 from pathlib import Path
 import re
@@ -1540,6 +1541,55 @@ class BRDLeadAgent:
         self._state.set_action_result(action_res)
         response.state = self._state
         return response
+
+    async def stream_async(
+        self,
+        request: AgentRunRequest | str,
+        context: Optional[AgentContext] = None,
+        prior_messages: Optional[Sequence[Any]] = None,
+        current_task: Optional[str] = None,
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Execute an asynchronous streaming interaction cycle via the DeepAgents harness.
+
+        Args:
+            request: AgentRunRequest or raw input string prompt.
+            context: Optional AgentContext for project isolation.
+            prior_messages: Optional sequence of prior BaseMessage instances to seed
+                thread state if uninitialized.
+            current_task: Optional immediate task context override to associate with this execution.
+
+        Yields:
+            dict[str, Any]: Incremental content chunks, e.g. {"type": "content", "content": "..."}.
+        """
+        if isinstance(request, AgentRunRequest) and request.state is not None:
+            if isinstance(request.state, BRDAgentState):
+                self._state = request.state
+            elif isinstance(request.state, dict):
+                self._state = BRDAgentState.from_dict(request.state)
+
+        if current_task is not None:
+            self._state.current_task = current_task
+
+        effective_ctx = request.context if isinstance(request, AgentRunRequest) else context
+        if effective_ctx is None:
+            effective_ctx = AgentContext(project_id=self.project_id)
+        elif not effective_ctx.project_id and self.project_id:
+            effective_ctx = AgentContext(
+                project_id=self.project_id,
+                conversation_id=effective_ctx.conversation_id,
+                user_id=effective_ctx.user_id,
+                metadata=effective_ctx.metadata,
+            )
+
+        if effective_ctx and effective_ctx.project_id:
+            self._state.metadata["project_id"] = effective_ctx.project_id
+
+        async for chunk in self._runtime.stream_async(
+            request=request,
+            context=effective_ctx,
+            prior_messages=prior_messages,
+        ):
+            yield chunk
 
     def set_project_memory(
         self,

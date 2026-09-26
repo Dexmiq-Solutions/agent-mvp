@@ -50,6 +50,13 @@ from exceptions.llm import (
     LLMRateLimitError,
     LLMTimeoutError,
 )
+from exceptions.agent import (
+    AgentConfigurationError,
+    AgentError,
+    AgentExecutionError,
+    AgentInitializationError,
+    AgentModelError,
+)
 from exceptions.storage import StorageError
 
 from fastapi.responses import JSONResponse
@@ -304,6 +311,39 @@ def create_application() -> FastAPI:
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             content={"detail": f"LLM inference error: {exc.message}"},
         )
+
+    @application.exception_handler(AgentConfigurationError)
+    async def agent_config_error_handler(request: Request, exc: AgentConfigurationError) -> JSONResponse:
+        logger.error("Agent configuration error: %s", exc)
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={"detail": f"Agent configuration error: {exc.message}"},
+        )
+
+    @application.exception_handler(AgentModelError)
+    async def agent_model_error_handler(request: Request, exc: AgentModelError) -> JSONResponse:
+        logger.error("Agent model provider error: %s", exc)
+        return JSONResponse(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            content={"detail": f"Agent model provider error: {exc.message}"},
+        )
+
+    @application.exception_handler(AgentExecutionError)
+    async def agent_execution_error_handler(request: Request, exc: AgentExecutionError) -> JSONResponse:
+        logger.error("Agent execution error: %s", exc)
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={"detail": f"Agent execution error: {exc.message}"},
+        )
+
+    @application.exception_handler(AgentError)
+    async def agent_generic_error_handler(request: Request, exc: AgentError) -> JSONResponse:
+        logger.error("Agent error: %s", exc)
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={"detail": f"Agent error: {exc.message}"},
+        )
+
 
 
 

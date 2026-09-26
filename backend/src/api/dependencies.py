@@ -97,5 +97,30 @@ def get_rag_service_dependency() -> "RAGService":
     return get_rag_service()
 
 
+_agent_runtime = None
+
+
+def get_agent_runtime() -> "AgentRuntime":
+    """Dependency provider returning default AgentRuntime instance."""
+    global _agent_runtime
+    if _agent_runtime is None:
+        from agents.runtime.agent import AgentRuntime
+        from tools.diagnostic import echo_diagnostic_tool
+        from tools.rag import create_search_project_knowledge_tool
+
+        try:
+            rag_service = get_rag_service_dependency()
+            tools = [
+                echo_diagnostic_tool,
+                create_search_project_knowledge_tool(rag_service=rag_service),
+            ]
+        except Exception:
+            tools = [echo_diagnostic_tool]
+
+        _agent_runtime = AgentRuntime(tools=tools)
+    return _agent_runtime
+
+
+
 
 

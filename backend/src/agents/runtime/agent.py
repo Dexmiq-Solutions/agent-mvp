@@ -1,11 +1,13 @@
 """Agent runtime harness encapsulating DeepAgents and model execution."""
 
+from collections.abc import AsyncIterator
 import time
 from typing import Any, Optional, Sequence
 
 from deepagents import create_deep_agent
 from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage
+from langgraph.checkpoint.memory import MemorySaver
 
 from agents.runtime.config import AgentConfig
 from agents.runtime.model import create_agent_model
@@ -82,6 +84,7 @@ class AgentRuntime:
         memory: Optional[Sequence[str]] = None,
         permissions: Optional[Sequence[Any]] = None,
         middleware: Optional[Sequence[Any]] = None,
+        checkpointer: Optional[Any] = None,
         **kwargs: Any,
     ) -> None:
         """Initialize AgentRuntime.
@@ -96,6 +99,7 @@ class AgentRuntime:
             memory: Optional sequence of memory file paths (e.g. ['/memory/project_context.md']).
             permissions: Optional sequence of FilesystemPermission rules (e.g. read-only enforcement).
             middleware: Optional sequence of custom DeepAgents/LangChain middleware.
+            checkpointer: Optional LangGraph checkpointer instance for multi-turn persistence.
             **kwargs: Additional parameters forwarded to create_runtime_agent / create_deep_agent.
         """
         self._config = config or AgentConfig.from_settings()
@@ -106,6 +110,7 @@ class AgentRuntime:
         self._memory = list(memory) if memory is not None else None
         self._permissions = list(permissions) if permissions is not None else None
         self._middleware = list(middleware) if middleware is not None else []
+        self._checkpointer = checkpointer
 
         # Initialize model if not injected
         self._model = model or create_agent_model(self._config)
@@ -122,6 +127,8 @@ class AgentRuntime:
             runtime_kwargs["permissions"] = self._permissions
         if self._middleware:
             runtime_kwargs["middleware"] = self._middleware
+        if self._checkpointer is not None:
+            runtime_kwargs["checkpointer"] = self._checkpointer
 
         self._graph = create_runtime_agent(
             model=self._model,
@@ -169,6 +176,11 @@ class AgentRuntime:
     def permissions(self) -> Optional[list[Any]]:
         """Return the configured filesystem permission rules."""
         return list(self._permissions) if self._permissions is not None else None
+
+    @property
+    def checkpointer(self) -> Optional[Any]:
+        """Return the attached checkpoint saver instance."""
+        return self._checkpointer
 
     @property
     def system_prompt(self) -> str:
@@ -247,7 +259,10 @@ class AgentRuntime:
 
         try:
             inputs = {"messages": [HumanMessage(content=run_req.input_text)]}
-            result = self._graph.invoke(inputs)
+            exec_config: dict[str, Any] = {}
+            if ctx.conversation_id:
+                exec_config["configurable"] = {"thread_id": ctx.conversation_id}
+            result = self._graph.invoke(inputs, config=exec_config if exec_config else None)
             response = self._process_result(result, ctx, start_time)
 
             logger.info(
@@ -304,7 +319,10 @@ class AgentRuntime:
 
         try:
             inputs = {"messages": [HumanMessage(content=run_req.input_text)]}
-            result = await self._graph.ainvoke(inputs)
+            exec_config: dict[str, Any] = {}
+            if ctx.conversation_id:
+                exec_config["configurable"] = {"thread_id": ctx.conversation_id}
+            result = await self._graph.ainvoke(inputs, config=exec_config if exec_config else None)
             response = self._process_result(result, ctx, start_time)
 
             logger.info(
@@ -326,6 +344,106 @@ class AgentRuntime:
             )
             raise AgentExecutionError(
                 f"Agent execution failed: {exc}",
+                original_error=exc,
+            ) from exc
+        finally:
+            reset_current_agent_context(token)
+
+    async def stream_async(
+        self,
+        request: AgentRunRequest | str,
+        context: Optional[AgentContext] = None,
+        prior_messages: Optional[Sequence[Any]] = None,
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Stream an asynchronous agent interaction cycle yielding incremental content deltas.
+
+        Args:
+            request: AgentRunRequest or raw input string prompt.
+            context: Optional AgentContext preserving project and conversation identity.
+            prior_messages: Optional sequence of prior BaseMessage instances to seed
+                thread state if uninitialized.
+
+        Yields:
+            dict[str, Any]: Incremental content chunks, e.g. {"type": "content", "content": "..."}.
+
+        Raises:
+            AgentExecutionError: If agent graph streaming fails.
+        """
+        run_req, ctx = self._normalize_request(request, context)
+        start_time = time.perf_counter()
+        token = set_current_agent_context(ctx)
+
+        logger.info(
+            "Agent execution streaming started [async] (model: %s, project_id: %s, conversation_id: %s, prompt_len: %d)",
+            self._config.model,
+            ctx.project_id or "unspecified",
+            ctx.conversation_id or "unspecified",
+            len(run_req.input_text),
+        )
+
+        exec_config: dict[str, Any] = {}
+        if ctx.conversation_id:
+            exec_config["configurable"] = {"thread_id": ctx.conversation_id}
+        elif self._checkpointer is not None:
+            exec_config["configurable"] = {"thread_id": "default"}
+
+        has_thread_state = False
+        if self._checkpointer is not None and exec_config.get("configurable"):
+            if hasattr(self._graph, "get_state"):
+                try:
+                    state = self._graph.get_state(exec_config)
+                    if state and state.values.get("messages"):
+                        has_thread_state = True
+                    elif prior_messages and hasattr(self._graph, "update_state"):
+                        self._graph.update_state(exec_config, {"messages": list(prior_messages)})
+                        has_thread_state = True
+                except Exception as seed_exc:
+                    logger.warning("Failed to inspect/seed checkpointer state: %s", seed_exc)
+
+        if has_thread_state:
+            inputs = {"messages": [HumanMessage(content=run_req.input_text)]}
+        elif prior_messages:
+            inputs = {"messages": list(prior_messages) + [HumanMessage(content=run_req.input_text)]}
+        else:
+            inputs = {"messages": [HumanMessage(content=run_req.input_text)]}
+
+        try:
+            async for msg, metadata in self._graph.astream(
+                inputs,
+                config=exec_config if exec_config else None,
+                stream_mode="messages",
+            ):
+                if isinstance(msg, (AIMessageChunk, AIMessage)):
+                    if not getattr(msg, "tool_calls", None):
+                        content = getattr(msg, "content", "")
+                        if isinstance(content, str) and content:
+                            yield {"type": "content", "content": content}
+                        elif isinstance(content, list):
+                            text_parts = [
+                                part.get("text", "") if isinstance(part, dict) else str(part)
+                                for part in content
+                            ]
+                            combined = "".join(text_parts)
+                            if combined:
+                                yield {"type": "content", "content": combined}
+
+            logger.info(
+                "Agent execution streaming completed [async] (model: %s, duration: %.2fs)",
+                self._config.model,
+                time.perf_counter() - start_time,
+            )
+        except (AgentConfigurationError, AgentInitializationError, AgentModelError):
+            raise
+        except Exception as exc:
+            duration = time.perf_counter() - start_time
+            logger.error(
+                "Agent streaming failure [async] after %.2fs: %s",
+                duration,
+                exc,
+                exc_info=True,
+            )
+            raise AgentExecutionError(
+                f"Agent streaming failed: {exc}",
                 original_error=exc,
             ) from exc
         finally:
