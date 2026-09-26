@@ -9,8 +9,8 @@ from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, AIMessageChunk
 from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
 
-from agents.runtime.agent import AgentRuntime
-from api.dependencies import get_agent_runtime
+from agents.brd import BRDLeadAgent
+from api.dependencies import get_brd_lead_agent
 from app.main import app
 from db.base import Base
 from db.session import get_db_session
@@ -295,8 +295,8 @@ async def test_message_validation_failure_handling(api_client: AsyncClient):
 async def test_user_message_streaming_invokes_agent_and_persists_both_messages(api_client: AsyncClient):
     """Verify that posting a user message invokes the BRD Agent, streams SSE tokens, and persists both turns."""
     mock_model = MockStreamingChatModel(token_chunks=["The ", "BRD ", "Executive ", "Summary."])
-    test_runtime = AgentRuntime(model=mock_model)
-    app.dependency_overrides[get_agent_runtime] = lambda: test_runtime
+    test_agent = BRDLeadAgent(model=mock_model)
+    app.dependency_overrides[get_brd_lead_agent] = lambda: test_agent
 
     try:
         # 1. Create project and conversation
@@ -358,15 +358,15 @@ async def test_user_message_streaming_invokes_agent_and_persists_both_messages(a
         assert messages[1]["metadata"]["user_message_id"] == messages[0]["id"]
 
     finally:
-        app.dependency_overrides.pop(get_agent_runtime, None)
+        app.dependency_overrides.pop(get_brd_lead_agent, None)
 
 
 @pytest.mark.anyio
 async def test_multi_turn_conversation_preserves_thread_context(api_client: AsyncClient):
     """Verify multi-turn conversation maintains history across turns using thread_id/conversation_id."""
     mock_model = MockStreamingChatModel(token_chunks=["Response ", "turn."])
-    test_runtime = AgentRuntime(model=mock_model)
-    app.dependency_overrides[get_agent_runtime] = lambda: test_runtime
+    test_agent = BRDLeadAgent(model=mock_model)
+    app.dependency_overrides[get_brd_lead_agent] = lambda: test_agent
 
     try:
         # Create project and conversation
@@ -413,7 +413,7 @@ async def test_multi_turn_conversation_preserves_thread_context(api_client: Asyn
         assert messages[2]["content"] == "Turn 2 question continuing previous context"
 
     finally:
-        app.dependency_overrides.pop(get_agent_runtime, None)
+        app.dependency_overrides.pop(get_brd_lead_agent, None)
 
 
 @pytest.mark.anyio
@@ -438,8 +438,8 @@ async def test_streaming_error_handling_emits_error_event_and_does_not_persist_a
         def _llm_type(self) -> str:
             return "failing-model"
 
-    failing_runtime = AgentRuntime(model=FailingChatModel())
-    app.dependency_overrides[get_agent_runtime] = lambda: failing_runtime
+    failing_agent = BRDLeadAgent(model=FailingChatModel())
+    app.dependency_overrides[get_brd_lead_agent] = lambda: failing_agent
 
     try:
         # Create project and conversation
@@ -477,7 +477,7 @@ async def test_streaming_error_handling_emits_error_event_and_does_not_persist_a
         assert messages[0]["role"] == "user"
 
     finally:
-        app.dependency_overrides.pop(get_agent_runtime, None)
+        app.dependency_overrides.pop(get_brd_lead_agent, None)
 
 
 @pytest.mark.anyio
@@ -485,13 +485,13 @@ async def test_agent_receives_correct_project_context_and_stream_flag(api_client
     """Verify that BRDLeadAgent receives application-controlled project_id and stream=false bypasses agent."""
     captured_contexts: list[Any] = []
 
-    class ContextCapturingRuntime(AgentRuntime):
+    class ContextCapturingAgent(BRDLeadAgent):
         async def stream_async(self, request, context=None, prior_messages=None):
             captured_contexts.append(context)
             yield {"type": "content", "content": "Context verified."}
 
-    mock_runtime = ContextCapturingRuntime(model=MockStreamingChatModel())
-    app.dependency_overrides[get_agent_runtime] = lambda: mock_runtime
+    mock_agent = ContextCapturingAgent(model=MockStreamingChatModel())
+    app.dependency_overrides[get_brd_lead_agent] = lambda: mock_agent
 
     try:
         proj_resp = await api_client.post("/projects", json={"name": "Context Isolation Project"})
@@ -538,6 +538,6 @@ async def test_agent_receives_correct_project_context_and_stream_flag(api_client
         assert len(captured_contexts) == initial_capture_count
 
     finally:
-        app.dependency_overrides.pop(get_agent_runtime, None)
+        app.dependency_overrides.pop(get_brd_lead_agent, None)
 
 

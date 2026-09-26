@@ -38,9 +38,8 @@ from agents.brd import (
     load_brd_template,
     load_system_instruction,
 )
-from agents.runtime.agent import AgentRuntime
-from agents.runtime.config import AgentConfig
-from agents.runtime.state import AgentContext, AgentRunRequest, AgentRunResponse
+from agents.brd.config import AgentConfig
+from agents.brd.context import AgentContext, AgentRunRequest, AgentRunResponse
 from tools.diagnostic import echo_diagnostic_tool
 from tools.rag import search_project_knowledge
 
@@ -484,17 +483,15 @@ def test_brd_lead_agent_execution_adopts_request_state():
     assert response.state.metadata.get("project_id") == "proj_incoming_003"
 
 
-def test_agent_runtime_factory_passes_template_and_state():
-    """Verify AgentRuntime.create_brd_lead_agent forwards custom template and state."""
+def test_create_brd_lead_agent_factory_passes_template_and_state():
+    """Verify create_brd_lead_agent forwards custom template and state."""
     model = MockChatModel(messages_to_return=[AIMessage(content="Factory ready")])
     config = AgentConfig(model="test-model", api_key="test-key")
-    runtime = AgentRuntime(config=config, model=model, tools=[echo_diagnostic_tool])
 
     custom_state = BRDAgentState(objective="Factory Objective")
-    agent = runtime.create_brd_lead_agent(state=custom_state)
+    agent = create_brd_lead_agent(config=config, model=model, tools=[echo_diagnostic_tool], state=custom_state)
 
     assert isinstance(agent, BRDLeadAgent)
-    assert agent.runtime is runtime
     assert agent.state.objective == "Factory Objective"
 
 

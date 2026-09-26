@@ -1,32 +1,19 @@
-"""Framework-native long-term memory support for agents via LangGraph Store and DeepAgents.
+"""Project-scoped long-term memory implementation for BRD Lead Agent.
 
-Implements project-scoped persistent memory using documented LangGraph BaseStore
-and DeepAgents StoreBackend / MemoryMiddleware abstractions.
+Integrates LangGraph BaseStore and DeepAgents MemoryMiddleware to persist and inject
+authoritative project context under strict project boundary isolation.
 """
 
-from collections.abc import Callable, Sequence
-import logging
-from typing import Any, Optional
+from typing import Any, Optional, Sequence
 
-from deepagents.backends.protocol import (
-    BackendProtocol,
-    DeleteResult,
-    FileDownloadResponse,
-    FileUploadResponse,
-    GlobResult,
-)
+from deepagents.backends.protocol import BackendProtocol, FileDownloadResponse
 from deepagents.backends.store import NamespaceFactory, StoreBackend
 from deepagents.middleware.filesystem import FilesystemPermission
 from deepagents.middleware.memory import MemoryMiddleware
-from langgraph.store.base import BaseStore, Item
+from langgraph.store.base import BaseStore
 from langgraph.store.memory import InMemoryStore
 
-from agents.runtime.state import (
-    AgentContext,
-    get_current_agent_context,
-    reset_current_agent_context,
-    set_current_agent_context,
-)
+from agents.brd.context import get_current_agent_context
 from observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -100,17 +87,10 @@ def create_project_namespace_factory(
         ("projects", <project_id>, "memory")
 
     Resolution precedence for <project_id>:
-    1. Active AgentContext in contextvars (set during runtime execution)
+    1. Active AgentContext in contextvars (set during agent execution)
     2. Explicitly bound project_id supplied at factory creation
     3. Associated agent's project_id or state metadata
     4. Fallback 'default' tenant
-
-    Args:
-        bound_project_id: Optional project identifier bound to this backend instance.
-        agent: Optional agent instance whose project_id or state metadata can be inspected.
-
-    Returns:
-        Callable[[Runtime], tuple[str, ...]] satisfying DeepAgents NamespaceFactory protocol.
     """
     def namespace_factory(_runtime: Any = None) -> tuple[str, ...]:
         ctx = get_current_agent_context()
@@ -156,7 +136,6 @@ class ProjectMemoryStoreBackend(StoreBackend):
                 exc,
                 exc_info=True,
             )
-            # Return safe file_not_found responses so MemoryMiddleware continues execution smoothly
             return [FileDownloadResponse(path=p, content=None, error="file_not_found") for p in paths]
 
     async def adownload_files(self, paths: list[str]) -> list[FileDownloadResponse]:
@@ -235,4 +214,3 @@ def create_project_memory_backend(
     resolved_store = store if store is not None else get_default_memory_store()
     ns_factory = create_project_namespace_factory(bound_project_id=project_id, agent=agent)
     return ProjectMemoryStoreBackend(namespace=ns_factory, store=resolved_store)
-

@@ -41,8 +41,8 @@ from agents.brd import (
     execute_subagent_task,
     execute_subagent_task_async,
 )
-from agents.runtime.config import AgentConfig
-from agents.runtime.state import (
+from agents.brd.config import AgentConfig
+from agents.brd.context import (
     ActionResult,
     ActionSource,
     AgentContext,
@@ -557,9 +557,8 @@ async def test_lead_agent_async_delegation_execution():
 def test_no_evaluation_or_permanent_specialist_agents():
     """Verify out-of-scope evaluation and permanent specialist agents are absent."""
     import agents.brd as brd_pkg
-    import agents.runtime as runtime_pkg
 
-    all_exported = dir(brd_pkg) + dir(runtime_pkg)
+    all_exported = dir(brd_pkg)
 
     # Permanent specialist agents must not exist
     assert "ResearchAgent" not in all_exported

@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field
 
 from langchain_core.tools import StructuredTool
 
-from agents.runtime.state import get_current_agent_context
+from agents.brd.context import get_current_agent_context
 from observability.logging import get_logger
 from services.rag_service import RAGService, RetrievalResult, get_rag_service
 

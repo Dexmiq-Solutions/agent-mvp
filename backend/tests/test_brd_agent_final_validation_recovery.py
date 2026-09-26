@@ -55,7 +55,7 @@ from agents.brd import (
     format_section_rework_guidance,
     resolve_affected_sections,
 )
-from agents.runtime.state import AgentContext
+from agents.brd.context import AgentContext
 
 
 # ---------------------------------------------------------------------------

@@ -24,10 +24,9 @@ from typing import Any, Optional, Sequence
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import HumanMessage
 
-from agents.runtime.agent import create_runtime_agent
-from agents.runtime.config import AgentConfig
-from agents.runtime.model import create_agent_model
-from agents.runtime.state import ActionResult, ActionSource, AgentContext
+from deepagents import create_deep_agent
+from agents.brd.config import AgentConfig, create_agent_model
+from agents.brd.context import ActionResult, ActionSource, AgentContext
 from agents.brd.template import extract_section_requirements
 from observability.logging import get_logger
 
@@ -437,8 +436,8 @@ class BRDEvaluationAgent:
         # Strict boundary: Evaluator has NO tools
         self._tools: list[Any] = []
 
-        # DeepAgents runtime graph without tools
-        self._graph = create_runtime_agent(
+        # DeepAgents graph without tools
+        self._graph = create_deep_agent(
             model=self._model,
             tools=self._tools,
             system_prompt=self._system_instruction,

@@ -16,8 +16,8 @@ from typing import Any, Optional, Sequence
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import HumanMessage
 
-from agents.runtime.agent import create_runtime_agent
-from agents.runtime.state import (
+from deepagents import create_deep_agent
+from agents.brd.context import (
     ActionResult,
     ActionSource,
     AgentContext,
@@ -255,7 +255,7 @@ def execute_subagent_task(
         # Give sub-agent only required capabilities; no recursive delegation
         subagent_tools = list(tools) if tools else []
 
-        subagent_graph = create_runtime_agent(
+        subagent_graph = create_deep_agent(
             model=model,
             tools=subagent_tools,
             system_prompt=subagent_prompt,
@@ -355,7 +355,7 @@ async def execute_subagent_task_async(
         task_input = _build_subagent_task_input(task)
         subagent_tools = list(tools) if tools else []
 
-        subagent_graph = create_runtime_agent(
+        subagent_graph = create_deep_agent(
             model=model,
             tools=subagent_tools,
             system_prompt=subagent_prompt,

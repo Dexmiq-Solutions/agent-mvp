@@ -42,8 +42,8 @@ from agents.brd import (
     is_section_processing_complete,
     progress_to_next_section,
 )
-from agents.runtime.config import AgentConfig
-from agents.runtime.state import AgentContext
+from agents.brd.config import AgentConfig
+from agents.brd.context import AgentContext
 
 
 # ---------------------------------------------------------------------------

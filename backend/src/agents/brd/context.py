@@ -1,7 +1,8 @@
-"""Agent execution context, state, and request/response models."""
+"""Agent execution context, state, and request/response models for BRD Agent subsystem."""
 
 import contextvars
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any, Optional
 
 _current_agent_context: contextvars.ContextVar[Optional["AgentContext"]] = (
@@ -47,9 +48,6 @@ class AgentRunRequest:
     context: AgentContext = field(default_factory=AgentContext)
     system_prompt: Optional[str] = None
     state: Optional[Any] = None
-
-
-from enum import Enum
 
 
 class ActionSource(str, Enum):
@@ -145,7 +143,7 @@ class ActionResult:
 
 @dataclass
 class AgentRunResponse:
-    """Normalized response payload produced by the agent runtime."""
+    """Normalized response payload produced by agent execution."""
 
     output_text: str
     messages: list[Any] = field(default_factory=list)

@@ -22,15 +22,15 @@ from agents.brd.final_validation import BRDFinalValidationAgent
 from agents.brd.section_generation import BRDSectionGenerationAgent
 from agents.brd.section_validation import BRDSectionValidationAgent
 from agents.brd.state import BRDAgentState
-from agents.runtime.config import AgentConfig
-from agents.runtime.memory import (
+from agents.brd.config import AgentConfig
+from agents.brd.memory import (
     DEFAULT_PROJECT_MEMORY_FILE,
     ProjectMemoryStoreBackend,
     get_default_memory_store,
     normalize_memory_path,
     reset_default_memory_store,
 )
-from agents.runtime.state import AgentContext, AgentRunRequest
+from agents.brd.context import AgentContext, AgentRunRequest
 
 
 class MockMemoryChatModel(BaseChatModel):

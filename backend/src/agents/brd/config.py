@@ -1,16 +1,21 @@
-"""Configuration settings for the Agent runtime and model providers."""
+"""Configuration and model provider helpers for the BRD Agent subsystem."""
 
 from dataclasses import dataclass
 import os
 from typing import Optional
 
+from langchain_core.language_models.chat_models import BaseChatModel
+from langchain_openai import ChatOpenAI
+
 from core.config import Settings, get_settings
-from exceptions.agent import AgentConfigurationError
+from observability.logging import get_logger
+
+logger = get_logger(__name__)
 
 
 @dataclass(frozen=True)
 class AgentConfig:
-    """Configuration settings for DeepAgents agent runtime and model provider execution.
+    """Configuration settings for agent execution and model providers.
 
     In accordance with security guidelines:
     - Sensitive credentials (API keys, authorization headers) are NEVER hard-coded.
@@ -19,7 +24,7 @@ class AgentConfig:
     - String representations (__repr__) mask sensitive credentials.
     """
 
-    model: str = "gemini-2.5-flash"
+    model: str = "gpt-4o"
     api_key: Optional[str] = None
     base_url: Optional[str] = None
     temperature: float = 0.0
@@ -36,7 +41,6 @@ class AgentConfig:
         """
         app_settings = settings or get_settings()
 
-        # Resolve credentials with fallback hierarchy
         api_key = (
             getattr(app_settings, "OPENROUTER_API_KEY", None)
             or os.getenv("OPENROUTER_API_KEY")
@@ -48,7 +52,6 @@ class AgentConfig:
             if not api_key:
                 api_key = None
 
-        # Resolve base URL with fallback hierarchy
         base_url = (
             getattr(app_settings, "OPENROUTER_BASE_URL", None)
             or os.getenv("OPENROUTER_BASE_URL")
@@ -61,7 +64,6 @@ class AgentConfig:
             if not base_url:
                 base_url = "https://openrouter.ai/api/v1"
 
-        # Resolve model name with fallback hierarchy
         model = (
             getattr(app_settings, "AGENT_MODEL", None)
             or os.getenv("AGENT_MODEL")
@@ -72,7 +74,6 @@ class AgentConfig:
         if model:
             model = model.strip()
 
-        # Operational parameters
         temperature = float(getattr(app_settings, "AGENT_TEMPERATURE", 0.0) or 0.0)
         max_tokens = getattr(app_settings, "AGENT_MAX_TOKENS", None)
         timeout = float(getattr(app_settings, "AGENT_TIMEOUT", 60.0) or 60.0)
@@ -94,17 +95,9 @@ class AgentConfig:
         return cls.from_settings()
 
     def validate(self) -> None:
-        """Validate configuration parameters.
-
-        Raises:
-            AgentConfigurationError: If required parameters or credentials are invalid.
-        """
+        """Validate configuration parameters."""
         if not self.model or not self.model.strip():
-            raise AgentConfigurationError("Agent model name must not be empty.")
-        if not self.api_key or not self.api_key.strip():
-            raise AgentConfigurationError(
-                "Missing API key for agent model provider. Configure OPENROUTER_API_KEY or OPENAI_API_KEY."
-            )
+            raise ValueError("Agent model name must not be empty.")
 
     def __repr__(self) -> str:
         """Safe representation masking sensitive credentials like API keys."""
@@ -117,3 +110,31 @@ class AgentConfig:
             f"max_retries={self.max_retries}, "
             f"temperature={self.temperature})"
         )
+
+
+def create_agent_model(config: Optional[AgentConfig] = None) -> BaseChatModel:
+    """Create and configure a LangChain-compatible chat model for the agent.
+
+    Connects to OpenRouter or any OpenAI-compatible provider using the specified configuration.
+    """
+    cfg = config or AgentConfig.from_settings()
+
+    logger.debug(
+        "Initializing Agent model provider (model: %s, base_url: %s)",
+        cfg.model,
+        cfg.base_url,
+    )
+
+    return ChatOpenAI(
+        model=cfg.model,
+        api_key=cfg.api_key or "sk-dummy-key",
+        base_url=cfg.base_url,
+        temperature=cfg.temperature,
+        max_tokens=cfg.max_tokens,
+        timeout=cfg.timeout,
+        max_retries=cfg.max_retries,
+        default_headers={
+            "HTTP-Referer": "https://agent-mvp.local",
+            "X-Title": "Agent MVP",
+        },
+    )

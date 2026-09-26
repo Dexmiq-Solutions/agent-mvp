@@ -42,8 +42,8 @@ from agents.brd import (
     format_section_for_assembly,
     get_heading_prefix_for_section,
 )
-from agents.runtime.config import AgentConfig
-from agents.runtime.state import AgentContext
+from agents.brd.config import AgentConfig
+from agents.brd.context import AgentContext
 
 
 # ---------------------------------------------------------------------------

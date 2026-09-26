@@ -9,9 +9,9 @@ from fastapi import APIRouter, Depends, Query, Response, status
 from fastapi.responses import StreamingResponse
 from langchain_core.messages import AIMessage, HumanMessage
 
-from agents.runtime.agent import AgentRuntime
-from agents.runtime.state import AgentContext
-from api.dependencies import get_agent_runtime, get_conversation_service
+from agents.brd.agent import BRDLeadAgent
+from agents.brd.context import AgentContext
+from api.dependencies import get_brd_lead_agent, get_conversation_service
 from observability.logging import get_logger
 from schemas.conversation import (
     ConversationCreate,
@@ -175,12 +175,12 @@ async def create_message(
     payload: MessageCreate,
     stream: bool = Query(default=True, description="Whether to stream the agent response for user messages"),
     service: ConversationService = Depends(get_conversation_service),
-    runtime: AgentRuntime = Depends(get_agent_runtime),
+    agent: BRDLeadAgent = Depends(get_brd_lead_agent),
 ) -> Any:
     """Send and persist a message turn within a conversation under project boundary isolation.
 
-    When a user message is sent with streaming enabled, the BRD Lead Agent is invoked through
-    the Agent Runtime / DeepAgents harness. The response is streamed back via Server-Sent Events (SSE).
+    When a user message is sent with streaming enabled, the BRD Lead Agent is invoked directly
+    through DeepAgents. The response is streamed back via Server-Sent Events (SSE).
     The final assistant response is automatically persisted in the conversation message history.
     Non-user messages or requests with stream=false are persisted directly and return HTTP 201.
     """
@@ -233,10 +233,7 @@ async def create_message(
         },
     )
 
-    # 4. Instantiate BRDLeadAgent backed by the runtime harness under project isolation
-    agent = runtime.create_brd_lead_agent(
-        project_id=project_id,
-    )
+    # 4. BRDLeadAgent executes under project boundary isolation
 
     # 5. Retrieve prior conversation message history for multi-turn thread continuity
     existing_messages = await service.list_messages(

@@ -26,9 +26,8 @@ from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import HumanMessage
 
 from agents.brd.section_validation.agent import ValidationOutcome
-from agents.runtime.agent import create_runtime_agent
-from agents.runtime.config import AgentConfig
-from agents.runtime.model import create_agent_model
+from deepagents import create_deep_agent
+from agents.brd.config import AgentConfig, create_agent_model
 from observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -544,8 +543,8 @@ class BRDFinalValidationAgent:
         # Strict boundary: Sub-Agent has NO tools
         self._tools: list[Any] = []
 
-        # DeepAgents runtime graph without tools
-        self._graph = create_runtime_agent(
+        # DeepAgents graph without tools
+        self._graph = create_deep_agent(
             model=self._model,
             tools=self._tools,
             system_prompt=self._system_instruction,

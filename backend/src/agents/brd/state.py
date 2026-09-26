@@ -20,7 +20,7 @@ from deepagents import DeepAgentState
 from agents.brd.delegation import DelegatedTask, DelegationResult, TaskResult
 from agents.brd.evaluation.agent import EvaluationResult
 from agents.brd.section_validation.agent import ValidationResult
-from agents.runtime.state import ActionResult
+from agents.brd.context import ActionResult
 
 
 class BRDSectionStatus(str, Enum):

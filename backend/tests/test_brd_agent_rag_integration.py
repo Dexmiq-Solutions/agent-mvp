@@ -25,9 +25,8 @@ from agents.brd import (
     create_brd_lead_agent,
     load_system_instruction,
 )
-from agents.runtime.agent import AgentRuntime
-from agents.runtime.config import AgentConfig
-from agents.runtime.state import AgentContext, AgentRunRequest, AgentRunResponse
+from agents.brd.config import AgentConfig
+from agents.brd.context import AgentContext, AgentRunRequest, AgentRunResponse
 from services.rag_service import RAGService, RetrievalResult, RetrievedChunk
 from tools.diagnostic import echo_diagnostic_tool
 from tools.rag import (
@@ -500,11 +499,11 @@ def test_brd_lead_agent_proceeds_without_rag_when_context_sufficient():
 # ---------------------------------------------------------------------------
 
 
-def test_existing_runtime_agent_rag_behavior_unaffected():
-    """Verify that existing AgentRuntime continues to use search_project_knowledge identically."""
+def test_agent_rag_behavior():
+    """Verify that agent continues to use search_project_knowledge identically."""
     mock_service = MagicMock(spec=RAGService)
-    mock_result = _create_mock_retrieval_result("runtime-proj-606", "general query", [
-        {"content": "Runtime knowledge chunk."}
+    mock_result = _create_mock_retrieval_result("agent-proj-606", "general query", [
+        {"content": "Agent knowledge chunk."}
     ])
     mock_service.retrieve = AsyncMock(return_value=mock_result)
 
@@ -513,21 +512,21 @@ def test_existing_runtime_agent_rag_behavior_unaffected():
         AIMessage(content="", tool_calls=[{
             "name": "search_project_knowledge",
             "args": {"query": "general query"},
-            "id": "runtime_call_1",
+            "id": "agent_call_1",
             "type": "tool_call",
         }]),
-        AIMessage(content="Runtime answered using retrieved knowledge."),
+        AIMessage(content="Agent answered using retrieved knowledge."),
     ])
     config = AgentConfig(model="test-model", api_key="test-key")
-    runtime = AgentRuntime(config=config, model=model, tools=[rag_tool])
+    agent = BRDLeadAgent(config=config, model=model, tools=[rag_tool])
 
-    response = runtime.execute("Search knowledge", context=AgentContext(project_id="runtime-proj-606"))
+    response = agent.execute("Search knowledge", context=AgentContext(project_id="agent-proj-606"))
 
     assert response.success is True
     assert len(response.tool_calls) == 1
     assert response.tool_calls[0]["name"] == "search_project_knowledge"
     mock_service.retrieve.assert_called_once_with(
-        project_id="runtime-proj-606",
+        project_id="agent-proj-606",
         query="general query",
     )
 

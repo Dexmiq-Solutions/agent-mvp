@@ -46,8 +46,8 @@ from agents.brd import (
     load_generation_system_instruction,
     load_system_instruction,
 )
-from agents.runtime.config import AgentConfig
-from agents.runtime.state import ActionResult, ActionSource, AgentContext
+from agents.brd.config import AgentConfig
+from agents.brd.context import ActionResult, ActionSource, AgentContext
 
 
 class MockChatModel(BaseChatModel):

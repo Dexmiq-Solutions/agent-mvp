@@ -28,9 +28,8 @@ from agents.brd import (
     create_brd_lead_agent,
     load_system_instruction,
 )
-from agents.runtime.agent import AgentRuntime
-from agents.runtime.config import AgentConfig
-from agents.runtime.state import AgentContext, AgentRunRequest, AgentRunResponse
+from agents.brd.config import AgentConfig
+from agents.brd.context import AgentContext, AgentRunRequest, AgentRunResponse
 from services.rag_service import RAGService, RetrievalResult, RetrievedChunk
 from tools.diagnostic import echo_diagnostic_tool
 from tools.rag import search_project_knowledge
@@ -358,8 +357,8 @@ def test_direct_work_executes_through_deepagents_harness():
     config = AgentConfig(model="test-model", api_key="test-key")
     agent = BRDLeadAgent(config=config, model=model)
 
-    # Verify underlying runtime graph is DeepAgents
-    assert agent.graph is agent.runtime.graph
+    # Verify underlying graph is DeepAgents
+    assert agent.graph is not None
     assert hasattr(agent.graph, "invoke")
 
     response = agent.execute("Direct work via harness")

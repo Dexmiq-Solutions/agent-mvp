@@ -15,9 +15,11 @@ from collections.abc import AsyncIterator
 from enum import Enum
 from pathlib import Path
 import re
+import time
 from typing import Any, Optional, Sequence
 
 from langchain_core.language_models.chat_models import BaseChatModel
+from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage
 
 from agents.brd.delegation import (
     DelegatedTask,
@@ -83,9 +85,9 @@ from agents.brd.recovery import (
     resolve_affected_sections,
 )
 from agents.brd.state import BRDAgentState, BRDSectionStatus
-from agents.runtime.agent import AgentRuntime
-from agents.runtime.config import AgentConfig
-from agents.runtime.state import (
+from deepagents import create_deep_agent
+from agents.brd.config import AgentConfig, create_agent_model
+from agents.brd.context import (
     ActionResult,
     ActionSource,
     AgentContext,
@@ -101,7 +103,7 @@ from tools.diagnostic import echo_diagnostic_tool
 from tools.rag import create_search_project_knowledge_tool, search_project_knowledge
 from deepagents.backends.protocol import BackendProtocol
 from langgraph.store.base import BaseStore
-from agents.runtime.memory import (
+from agents.brd.memory import (
     DEFAULT_PROJECT_MEMORY_FILE,
     ProjectMemoryStoreBackend,
     create_project_namespace_factory,
@@ -189,7 +191,7 @@ class BRDLeadAgent:
     2. BRD Template (brd_template.md): Defines what the Agent must produce.
     3. Agent State (BRDAgentState): Defines what the Agent currently knows and remembers.
 
-    It executes within the DeepAgents execution harness managed by AgentRuntime,
+    It executes directly within the DeepAgents execution harness,
     operating within application-provided project boundaries and utilizing existing
     agent tools (including RAG knowledge retrieval).
     """
@@ -202,7 +204,7 @@ class BRDLeadAgent:
 
     def __init__(
         self,
-        runtime: Optional[AgentRuntime] = None,
+        runtime: Optional[Any] = None,
         config: Optional[AgentConfig] = None,
         model: Optional[BaseChatModel] = None,
         tools: Optional[Sequence[Any]] = None,
@@ -220,15 +222,15 @@ class BRDLeadAgent:
         project_id: Optional[str] = None,
         memory_sources: Optional[Sequence[str]] = None,
         enable_memory: bool = True,
+        checkpointer: Optional[Any] = None,
     ) -> None:
         """Initialize the BRD Lead Agent.
 
         Args:
-            runtime: Optional existing AgentRuntime harness. If provided, runtime execution
-                is delegated to this instance.
-            config: Optional AgentConfig instance. Used if runtime is not provided.
-            model: Optional pre-configured BaseChatModel. Used if runtime is not provided.
-            tools: Optional sequence of tools. Defaults to get_default_tools() if runtime is not provided.
+            runtime: Deprecated parameter retained for backward compatibility.
+            config: Optional AgentConfig instance.
+            model: Optional pre-configured BaseChatModel.
+            tools: Optional sequence of tools. Defaults to get_default_tools().
             system_instruction: Optional system instruction override. If omitted, loaded from
                 system_instruction.md.
             system_prompt: Deprecated alias for system_instruction for backward compatibility.
@@ -250,6 +252,7 @@ class BRDLeadAgent:
             project_id: Optional application-supplied project identifier for memory scoping.
             memory_sources: Optional sequence of memory file paths to preload (defaults to ['/memory/project_context.md']).
             enable_memory: Whether to equip long-term project memory on the Lead Agent (defaults to True).
+            checkpointer: Optional checkpointer for state persistence.
         """
         resolved_instruction = system_instruction or system_prompt or load_system_instruction()
         self._system_instruction = resolved_instruction
@@ -274,9 +277,7 @@ class BRDLeadAgent:
             self._state.metadata["project_id"] = project_id
 
         if enable_memory:
-            self._store = store if store is not None else (
-                getattr(runtime, "store", None) or get_default_memory_store()
-            )
+            self._store = store if store is not None else get_default_memory_store()
             self._memory_sources = [
                 normalize_memory_path(p) for p in (memory_sources or [DEFAULT_PROJECT_MEMORY_FILE])
             ]
@@ -284,13 +285,9 @@ class BRDLeadAgent:
                 bound_project_id=self._project_id,
                 agent=self,
             )
-            self._memory_backend = (
-                getattr(runtime, "backend", None)
-                if runtime is not None and getattr(runtime, "backend", None) is not None
-                else ProjectMemoryStoreBackend(
-                    namespace=ns_factory,
-                    store=self._store,
-                )
+            self._memory_backend = ProjectMemoryStoreBackend(
+                namespace=ns_factory,
+                store=self._store,
             )
             self._memory_permissions = create_readonly_memory_permissions()
             self._memory_middleware = create_readonly_memory_middleware(
@@ -304,39 +301,39 @@ class BRDLeadAgent:
             self._memory_permissions = None
             self._memory_middleware = None
 
-        if runtime is not None:
-            self._runtime = runtime
-            # Configure runtime system instruction if not already set
-            if getattr(self._runtime, "_system_prompt", None) != resolved_instruction:
-                self._runtime._system_prompt = resolved_instruction
+        self._config = config or AgentConfig.from_settings()
+        self._model = model or create_agent_model(self._config)
+
+        if tools is not None:
+            self._tools = list(tools)
+        elif not enable_rag:
+            self._tools = [echo_diagnostic_tool]
+        elif rag_service is not None:
+            self._tools = [
+                echo_diagnostic_tool,
+                create_search_project_knowledge_tool(rag_service=rag_service),
+            ]
         else:
-            if tools is not None:
-                resolved_tools = list(tools)
-            elif not enable_rag:
-                resolved_tools = [echo_diagnostic_tool]
-            elif rag_service is not None:
-                resolved_tools = [
-                    echo_diagnostic_tool,
-                    create_search_project_knowledge_tool(rag_service=rag_service),
-                ]
-            else:
-                resolved_tools = get_default_tools()
+            self._tools = get_default_tools()
 
-            runtime_kwargs: dict[str, Any] = {}
-            if self._enable_memory:
-                runtime_kwargs["store"] = self._store
-                runtime_kwargs["backend"] = self._memory_backend
-                runtime_kwargs["memory"] = self._memory_sources
-                runtime_kwargs["permissions"] = self._memory_permissions
-                runtime_kwargs["middleware"] = [self._memory_middleware]
+        self._checkpointer = checkpointer
 
-            self._runtime = AgentRuntime(
-                config=config,
-                model=model,
-                tools=resolved_tools,
-                system_prompt=resolved_instruction,
-                **runtime_kwargs,
-            )
+        deepagent_kwargs: dict[str, Any] = {}
+        if self._enable_memory:
+            deepagent_kwargs["store"] = self._store
+            deepagent_kwargs["backend"] = self._memory_backend
+            deepagent_kwargs["memory"] = self._memory_sources
+            deepagent_kwargs["permissions"] = self._memory_permissions
+            deepagent_kwargs["middleware"] = [self._memory_middleware]
+        if self._checkpointer is not None:
+            deepagent_kwargs["checkpointer"] = self._checkpointer
+
+        self._graph = create_deep_agent(
+            model=self._model,
+            tools=self._tools,
+            system_prompt=resolved_instruction,
+            **deepagent_kwargs,
+        )
 
     @property
     def has_rag_capability(self) -> bool:
@@ -372,29 +369,24 @@ class BRDLeadAgent:
         return list(self._memory_sources)
 
     @property
-    def runtime(self) -> AgentRuntime:
-        """Return the underlying AgentRuntime execution harness."""
-        return self._runtime
-
-    @property
     def config(self) -> AgentConfig:
         """Return the active Agent configuration."""
-        return self._runtime.config
+        return self._config
 
     @property
     def model(self) -> BaseChatModel:
         """Return the active language model."""
-        return self._runtime.model
+        return self._model
 
     @property
     def tools(self) -> list[Any]:
         """Return the list of active tools."""
-        return self._runtime.tools
+        return self._tools
 
     @property
     def graph(self) -> Any:
         """Return the compiled DeepAgents graph."""
-        return self._runtime.graph
+        return self._graph
 
     @property
     def sections(self) -> list[str]:
@@ -1474,13 +1466,86 @@ class BRDLeadAgent:
                 current_task=current_task,
             )
 
-        response = self._runtime.execute(request=request, context=effective_ctx)
+        prompt_text = request.input_text if isinstance(request, AgentRunRequest) else str(request)
+        response = self._execute_graph(input_text=prompt_text, ctx=effective_ctx)
         # Converge onto common Action Result boundary
         action_res = response.to_action_result()
         response.action_result = action_res
         self._state.set_action_result(action_res)
         response.state = self._state
         return response
+
+    def _execute_graph(
+        self,
+        input_text: str,
+        ctx: AgentContext,
+    ) -> AgentRunResponse:
+        start_time = time.perf_counter()
+        token = set_current_agent_context(ctx)
+        try:
+            inputs = {"messages": [HumanMessage(content=input_text)]}
+            exec_config: dict[str, Any] = {}
+            if ctx.conversation_id:
+                exec_config["configurable"] = {"thread_id": ctx.conversation_id}
+            result = self._graph.invoke(inputs, config=exec_config if exec_config else None)
+            return self._process_graph_result(result, ctx, start_time)
+        finally:
+            reset_current_agent_context(token)
+
+    async def _execute_graph_async(
+        self,
+        input_text: str,
+        ctx: AgentContext,
+    ) -> AgentRunResponse:
+        start_time = time.perf_counter()
+        token = set_current_agent_context(ctx)
+        try:
+            inputs = {"messages": [HumanMessage(content=input_text)]}
+            exec_config: dict[str, Any] = {}
+            if ctx.conversation_id:
+                exec_config["configurable"] = {"thread_id": ctx.conversation_id}
+            result = await self._graph.ainvoke(inputs, config=exec_config if exec_config else None)
+            return self._process_graph_result(result, ctx, start_time)
+        finally:
+            reset_current_agent_context(token)
+
+    def _process_graph_result(
+        self,
+        result: dict[str, Any],
+        context: AgentContext,
+        start_time: float,
+    ) -> AgentRunResponse:
+        messages = result.get("messages", [])
+        output_text = ""
+        tool_calls: list[dict[str, Any]] = []
+
+        for msg in messages:
+            if hasattr(msg, "tool_calls") and msg.tool_calls:
+                for tc in msg.tool_calls:
+                    tool_calls.append(tc)
+
+        if messages:
+            last_msg = messages[-1]
+            content = getattr(last_msg, "content", "")
+            if isinstance(content, str):
+                output_text = content
+            elif isinstance(content, list):
+                text_parts = [
+                    part.get("text", "") if isinstance(part, dict) else str(part)
+                    for part in content
+                ]
+                output_text = "".join(text_parts)
+            else:
+                output_text = str(content)
+
+        return AgentRunResponse(
+            output_text=output_text,
+            messages=messages,
+            tool_calls=tool_calls,
+            context=context,
+            model=getattr(self._config, "model", ""),
+            success=True,
+        )
 
     async def execute_async(
         self,
@@ -1535,7 +1600,8 @@ class BRDLeadAgent:
                 current_task=current_task,
             )
 
-        response = await self._runtime.execute_async(request=request, context=effective_ctx)
+        prompt_text = request.input_text if isinstance(request, AgentRunRequest) else str(request)
+        response = await self._execute_graph_async(input_text=prompt_text, ctx=effective_ctx)
         action_res = response.to_action_result()
         response.action_result = action_res
         self._state.set_action_result(action_res)
@@ -1584,12 +1650,55 @@ class BRDLeadAgent:
         if effective_ctx and effective_ctx.project_id:
             self._state.metadata["project_id"] = effective_ctx.project_id
 
-        async for chunk in self._runtime.stream_async(
-            request=request,
-            context=effective_ctx,
-            prior_messages=prior_messages,
-        ):
-            yield chunk
+        token = set_current_agent_context(effective_ctx)
+        exec_config: dict[str, Any] = {}
+        if effective_ctx.conversation_id:
+            exec_config["configurable"] = {"thread_id": effective_ctx.conversation_id}
+        elif self._checkpointer is not None:
+            exec_config["configurable"] = {"thread_id": "default"}
+
+        has_thread_state = False
+        if self._checkpointer is not None and exec_config.get("configurable"):
+            if hasattr(self._graph, "get_state"):
+                try:
+                    state = self._graph.get_state(exec_config)
+                    if state and state.values.get("messages"):
+                        has_thread_state = True
+                    elif prior_messages and hasattr(self._graph, "update_state"):
+                        self._graph.update_state(exec_config, {"messages": list(prior_messages)})
+                        has_thread_state = True
+                except Exception as seed_exc:
+                    logger.warning("Failed to inspect/seed checkpointer state: %s", seed_exc)
+
+        prompt_text = request.input_text if isinstance(request, AgentRunRequest) else str(request)
+        if has_thread_state:
+            inputs = {"messages": [HumanMessage(content=prompt_text)]}
+        elif prior_messages:
+            inputs = {"messages": list(prior_messages) + [HumanMessage(content=prompt_text)]}
+        else:
+            inputs = {"messages": [HumanMessage(content=prompt_text)]}
+
+        try:
+            async for msg, metadata in self._graph.astream(
+                inputs,
+                config=exec_config if exec_config else None,
+                stream_mode="messages",
+            ):
+                if isinstance(msg, (AIMessageChunk, AIMessage)):
+                    if not getattr(msg, "tool_calls", None):
+                        content = getattr(msg, "content", "")
+                        if isinstance(content, str) and content:
+                            yield {"type": "content", "content": content}
+                        elif isinstance(content, list):
+                            text_parts = [
+                                part.get("text", "") if isinstance(part, dict) else str(part)
+                                for part in content
+                            ]
+                            combined = "".join(text_parts)
+                            if combined:
+                                yield {"type": "content", "content": combined}
+        finally:
+            reset_current_agent_context(token)
 
     def set_project_memory(
         self,
@@ -3077,7 +3186,7 @@ class BRDLeadAgent:
 
 
 def create_brd_lead_agent(
-    runtime: Optional[AgentRuntime] = None,
+    runtime: Optional[Any] = None,
     config: Optional[AgentConfig] = None,
     model: Optional[BaseChatModel] = None,
     tools: Optional[Sequence[Any]] = None,
@@ -3099,7 +3208,7 @@ def create_brd_lead_agent(
     """Factory function to instantiate the BRD Lead Agent.
 
     Args:
-        runtime: Optional existing AgentRuntime instance.
+        runtime: Deprecated parameter retained for backward compatibility.
         config: Optional AgentConfig instance.
         model: Optional pre-configured BaseChatModel.
         tools: Optional sequence of tools.

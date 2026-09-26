@@ -97,14 +97,14 @@ def get_rag_service_dependency() -> "RAGService":
     return get_rag_service()
 
 
-_agent_runtime = None
+_brd_lead_agent = None
 
 
-def get_agent_runtime() -> "AgentRuntime":
-    """Dependency provider returning default AgentRuntime instance."""
-    global _agent_runtime
-    if _agent_runtime is None:
-        from agents.runtime.agent import AgentRuntime
+def get_brd_lead_agent() -> "BRDLeadAgent":
+    """Dependency provider returning default BRDLeadAgent instance."""
+    global _brd_lead_agent
+    if _brd_lead_agent is None:
+        from agents.brd.agent import BRDLeadAgent
         from tools.diagnostic import echo_diagnostic_tool
         from tools.rag import create_search_project_knowledge_tool
 
@@ -117,8 +117,8 @@ def get_agent_runtime() -> "AgentRuntime":
         except Exception:
             tools = [echo_diagnostic_tool]
 
-        _agent_runtime = AgentRuntime(tools=tools)
-    return _agent_runtime
+        _brd_lead_agent = BRDLeadAgent(tools=tools)
+    return _brd_lead_agent
 
 
 

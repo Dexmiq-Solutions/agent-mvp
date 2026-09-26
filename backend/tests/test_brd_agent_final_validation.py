@@ -40,7 +40,7 @@ from agents.brd import (
     create_brd_lead_agent,
     load_final_validation_system_instruction,
 )
-from agents.runtime.state import AgentContext
+from agents.brd.context import AgentContext
 
 
 # ---------------------------------------------------------------------------
