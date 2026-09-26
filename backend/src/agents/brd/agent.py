@@ -66,6 +66,15 @@ from agents.brd.assembly import (
     BRDAssemblyResult,
     assemble_brd_document,
 )
+from agents.brd.final_validation import (
+    BRDFinalValidationAgent,
+    FinalValidationCategory,
+    FinalValidationContext,
+    FinalValidationFinding,
+    FinalValidationOutcome,
+    FinalValidationResult,
+    FinalValidationSeverity,
+)
 from agents.brd.state import BRDAgentState, BRDSectionStatus
 from agents.runtime.agent import AgentRuntime
 from agents.runtime.config import AgentConfig
@@ -186,6 +195,7 @@ class BRDLeadAgent:
         evaluator: Optional[BRDEvaluationAgent] = None,
         section_generator: Optional[BRDSectionGenerationAgent] = None,
         section_validator: Optional[BRDSectionValidationAgent] = None,
+        final_validator: Optional[BRDFinalValidationAgent] = None,
     ) -> None:
         """Initialize the BRD Lead Agent.
 
@@ -210,12 +220,15 @@ class BRDLeadAgent:
                 instantiated on demand using the active model.
             section_validator: Optional pre-configured BRDSectionValidationAgent instance. If omitted,
                 instantiated on demand using the active model.
+            final_validator: Optional pre-configured BRDFinalValidationAgent instance. If omitted,
+                instantiated on demand using the active model.
         """
         resolved_instruction = system_instruction or system_prompt or load_system_instruction()
         self._system_instruction = resolved_instruction
         self._evaluator = evaluator
         self._section_generator = section_generator
         self._section_validator = section_validator
+        self._final_validator = final_validator
 
         resolved_template = template or load_brd_template()
         self._template = resolved_template
@@ -315,6 +328,13 @@ class BRDLeadAgent:
             self._section_validator = BRDSectionValidationAgent(model=self.model)
         return self._section_validator
 
+    @property
+    def final_validator(self) -> BRDFinalValidationAgent:
+        """Return the attached Final Validation Sub-Agent capability."""
+        if self._final_validator is None:
+            self._final_validator = BRDFinalValidationAgent(model=self.model)
+        return self._final_validator
+
     def reset_state(self) -> None:
         """Reset the Agent working state to initial unstarted state based on template sections."""
         self._state = BRDAgentState.initialize_from_template(sections=self.sections)
@@ -338,6 +358,11 @@ class BRDLeadAgent:
     def latest_assembly_result(self) -> Optional[BRDAssemblyResult]:
         """Retrieve the latest BRD assembly result."""
         return self._state.get_latest_assembly_result()
+
+    @property
+    def latest_final_validation_result(self) -> Optional[FinalValidationResult]:
+        """Retrieve the latest final BRD validation result."""
+        return self._state.get_latest_final_validation_result()
 
     def get_remaining_sections(self) -> list[str]:
         """Return dynamically derived list of uncompleted template sections."""
@@ -382,6 +407,176 @@ class BRDLeadAgent:
     ) -> BRDAssemblyResult:
         """Asynchronously assemble all completed BRD sections into the complete document."""
         return self.assemble_brd(context=context)
+
+    def validate_final_brd(
+        self,
+        assembled_document: Optional[str] = None,
+        available_project_information: Optional[Sequence[Any] | str] = None,
+        template_structure: Optional[str] = None,
+        context: Optional[AgentContext] = None,
+    ) -> FinalValidationResult:
+        """Perform document-level final validation on the assembled BRD.
+
+        Evaluates the complete assembled document across cross-section consistency,
+        requirement conflicts, grounding, completeness, terminology, and overall coherence.
+
+        Args:
+            assembled_document: Optional assembled document override. Defaults to state.assembled_brd.
+            available_project_information: Optional project evidence override. Defaults to state evidence.
+            template_structure: Optional template override. Defaults to self._template.
+            context: Optional tenant AgentContext.
+
+        Returns:
+            FinalValidationResult: Structured result with outcome, findings, and rework feedback.
+
+        Raises:
+            ValueError: If no assembled BRD document is available or template structure is missing.
+        """
+        doc = assembled_document if assembled_document is not None else self._state.get_assembled_brd()
+        if not doc or not doc.strip():
+            raise ValueError(
+                "Cannot perform final validation: no assembled BRD document is available in Agent State."
+            )
+
+        tmpl = template_structure if template_structure is not None else self._template
+        if not tmpl or not tmpl.strip():
+            raise ValueError(
+                "Cannot perform final validation: template structure is missing."
+            )
+
+        if available_project_information is not None:
+            info_payload = available_project_information
+        else:
+            info_parts: list[Any] = []
+            if self._state.latest_action_result and self._state.latest_action_result.content:
+                info_parts.append({
+                    "source": str(self._state.latest_action_result.source),
+                    "content": self._state.latest_action_result.content,
+                })
+            if self._state.evidence:
+                info_parts.extend(self._state.evidence)
+            if self._state.task_results:
+                for tr in self._state.task_results:
+                    info_parts.append({
+                        "source": f"delegated_task:{tr.task_id}",
+                        "content": tr.output,
+                    })
+            info_payload = info_parts if info_parts else "*(No prior project evidence collected)*"
+
+        effective_ctx = context or AgentContext()
+        project_id = effective_ctx.project_id or self._state.metadata.get("project_id", "unknown")
+
+        val_ctx = FinalValidationContext(
+            assembled_document=doc,
+            template_structure=tmpl,
+            available_project_information=info_payload,
+            section_names=self.sections,
+            metadata={
+                "project_id": project_id,
+            },
+        )
+
+        logger.info(
+            "BRD final validation started (project_id: %s, document_length: %d, sections: %d)",
+            project_id,
+            len(doc),
+            len(self.sections),
+        )
+
+        result = self.final_validator.validate(val_ctx)
+        self._state.set_final_validation_result(result)
+
+        if result.is_valid:
+            logger.info(
+                "BRD final validation completed (project_id: %s, outcome: VALID)",
+                project_id,
+            )
+        else:
+            logger.warning(
+                "BRD final validation requires rework (project_id: %s, findings: %d, affected_sections: %s)",
+                project_id,
+                len(result.findings),
+                result.affected_sections,
+            )
+
+        return result
+
+    async def validate_final_brd_async(
+        self,
+        assembled_document: Optional[str] = None,
+        available_project_information: Optional[Sequence[Any] | str] = None,
+        template_structure: Optional[str] = None,
+        context: Optional[AgentContext] = None,
+    ) -> FinalValidationResult:
+        """Asynchronously perform document-level final validation on the assembled BRD."""
+        doc = assembled_document if assembled_document is not None else self._state.get_assembled_brd()
+        if not doc or not doc.strip():
+            raise ValueError(
+                "Cannot perform final validation: no assembled BRD document is available in Agent State."
+            )
+
+        tmpl = template_structure if template_structure is not None else self._template
+        if not tmpl or not tmpl.strip():
+            raise ValueError(
+                "Cannot perform final validation: template structure is missing."
+            )
+
+        if available_project_information is not None:
+            info_payload = available_project_information
+        else:
+            info_parts: list[Any] = []
+            if self._state.latest_action_result and self._state.latest_action_result.content:
+                info_parts.append({
+                    "source": str(self._state.latest_action_result.source),
+                    "content": self._state.latest_action_result.content,
+                })
+            if self._state.evidence:
+                info_parts.extend(self._state.evidence)
+            if self._state.task_results:
+                for tr in self._state.task_results:
+                    info_parts.append({
+                        "source": f"delegated_task:{tr.task_id}",
+                        "content": tr.output,
+                    })
+            info_payload = info_parts if info_parts else "*(No prior project evidence collected)*"
+
+        effective_ctx = context or AgentContext()
+        project_id = effective_ctx.project_id or self._state.metadata.get("project_id", "unknown")
+
+        val_ctx = FinalValidationContext(
+            assembled_document=doc,
+            template_structure=tmpl,
+            available_project_information=info_payload,
+            section_names=self.sections,
+            metadata={
+                "project_id": project_id,
+            },
+        )
+
+        logger.info(
+            "Async BRD final validation started (project_id: %s, document_length: %d, sections: %d)",
+            project_id,
+            len(doc),
+            len(self.sections),
+        )
+
+        result = await self.final_validator.validate_async(val_ctx)
+        self._state.set_final_validation_result(result)
+
+        if result.is_valid:
+            logger.info(
+                "Async BRD final validation completed (project_id: %s, outcome: VALID)",
+                project_id,
+            )
+        else:
+            logger.warning(
+                "Async BRD final validation requires rework (project_id: %s, findings: %d, affected_sections: %s)",
+                project_id,
+                len(result.findings),
+                result.affected_sections,
+            )
+
+        return result
 
     def progress_section(
         self,
@@ -1776,6 +1971,7 @@ def create_brd_lead_agent(
     evaluator: Optional[BRDEvaluationAgent] = None,
     section_generator: Optional[BRDSectionGenerationAgent] = None,
     section_validator: Optional[BRDSectionValidationAgent] = None,
+    final_validator: Optional[BRDFinalValidationAgent] = None,
 ) -> BRDLeadAgent:
     """Factory function to instantiate the BRD Lead Agent.
 
@@ -1793,6 +1989,7 @@ def create_brd_lead_agent(
         evaluator: Optional pre-configured BRDEvaluationAgent instance.
         section_generator: Optional pre-configured BRDSectionGenerationAgent instance.
         section_validator: Optional pre-configured BRDSectionValidationAgent instance.
+        final_validator: Optional pre-configured BRDFinalValidationAgent instance.
 
     Returns:
         Configured BRDLeadAgent instance.
@@ -1811,4 +2008,5 @@ def create_brd_lead_agent(
         evaluator=evaluator,
         section_generator=section_generator,
         section_validator=section_validator,
+        final_validator=final_validator,
     )

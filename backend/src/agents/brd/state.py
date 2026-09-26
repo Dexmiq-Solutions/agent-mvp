@@ -83,6 +83,7 @@ def _match_section_name(name: str, available_sections: Sequence[str]) -> str:
 
 from agents.brd.progression import SectionProgressionResult
 from agents.brd.assembly import BRDAssemblyResult
+from agents.brd.final_validation.agent import FinalValidationResult
 
 
 @dataclass
@@ -126,6 +127,8 @@ class BRDAgentState:
     progression_history: list[SectionProgressionResult] = field(default_factory=list)
     assembled_brd: Optional[str] = None
     latest_assembly_result: Optional[BRDAssemblyResult] = None
+    latest_final_validation_result: Optional[FinalValidationResult] = None
+    final_validation_history: list[FinalValidationResult] = field(default_factory=list)
 
     @classmethod
     def initialize_from_template(
@@ -262,6 +265,21 @@ class BRDAgentState:
     def is_assembled(self) -> bool:
         """True if a non-empty assembled BRD document is stored in state."""
         return bool(self.assembled_brd and self.assembled_brd.strip())
+
+    def set_final_validation_result(self, result: Optional[FinalValidationResult]) -> None:
+        """Store the latest final BRD validation result and append to history."""
+        self.latest_final_validation_result = result
+        if result is not None:
+            self.final_validation_history.append(result)
+
+    def get_latest_final_validation_result(self) -> Optional[FinalValidationResult]:
+        """Retrieve the latest final BRD validation result."""
+        return self.latest_final_validation_result
+
+    def clear_final_validation_history(self) -> None:
+        """Clear final validation history and latest result."""
+        self.final_validation_history.clear()
+        self.latest_final_validation_result = None
 
     def get_remaining_sections(self, template_sections: Optional[Sequence[str]] = None) -> list[str]:
         """Return dynamically derived list of template sections not yet COMPLETED."""
@@ -429,6 +447,15 @@ class BRDAgentState:
                 if hasattr(self.latest_assembly_result, "to_dict")
                 else self.latest_assembly_result
             )
+        if self.latest_final_validation_result is not None:
+            data["latest_final_validation_result"] = (
+                self.latest_final_validation_result.to_dict()
+                if hasattr(self.latest_final_validation_result, "to_dict")
+                else self.latest_final_validation_result
+            )
+        data["final_validation_history"] = [
+            v.to_dict() if hasattr(v, "to_dict") else v for v in self.final_validation_history
+        ]
         data["section_content"] = dict(self.section_content)
         data["rework_feedback"] = dict(self.rework_feedback)
         return data
@@ -510,6 +537,17 @@ class BRDAgentState:
             else asmb_res_raw
         )
         assembled_brd = data.get("assembled_brd")
+        fval_res_raw = data.get("latest_final_validation_result")
+        latest_final_validation_result = (
+            FinalValidationResult.from_dict(fval_res_raw)
+            if isinstance(fval_res_raw, dict)
+            else fval_res_raw
+        )
+        fval_hist_raw = data.get("final_validation_history", [])
+        final_validation_history = [
+            FinalValidationResult.from_dict(v) if isinstance(v, dict) else v
+            for v in fval_hist_raw
+        ]
 
         return cls(
             objective=data.get("objective", "Produce an evidence-grounded Business Requirements Document"),
@@ -535,6 +573,8 @@ class BRDAgentState:
             progression_history=progression_history,
             assembled_brd=assembled_brd,
             latest_assembly_result=latest_assembly_result,
+            latest_final_validation_result=latest_final_validation_result,
+            final_validation_history=final_validation_history,
         )
 
 
@@ -566,3 +606,5 @@ class BRDDeepAgentState(DeepAgentState, total=False):
     progression_history: Optional[list[dict[str, Any]]]
     assembled_brd: Optional[str]
     latest_assembly_result: Optional[dict[str, Any]]
+    latest_final_validation_result: Optional[dict[str, Any]]
+    final_validation_history: Optional[list[dict[str, Any]]]
