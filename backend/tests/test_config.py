@@ -25,7 +25,10 @@ def test_default_settings():
     assert settings.DATABASE_URL is None
     assert settings.QDRANT_URL is None
     assert settings.QDRANT_API_KEY is None
+    assert settings.COHERE_API_KEY is None
     assert settings.VOYAGE_API_KEY is None
+    assert settings.EMBEDDING_PROVIDER == "cohere"
+    assert settings.EMBEDDING_MODEL == "embed-v4.0"
     assert settings.OPENAI_API_KEY is None
 
     # Contextual Enrichment default

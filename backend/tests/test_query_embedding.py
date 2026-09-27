@@ -14,6 +14,7 @@ from rag.embeddings import (
     EmbeddingRequestError,
     RedisEmbeddingCache,
     VoyageEmbeddingProvider,
+    CohereEmbeddingProvider,
     generate_embedding_cache_key,
     get_embedding_provider,
     reset_embedding_provider,
@@ -44,12 +45,14 @@ class MockEmbeddingProvider(BaseEmbeddingProvider):
 
     def __init__(
         self,
-        model: str = "voyage-4",
+        model: str = "embed-v4.0",
+        provider: str = "cohere",
         canned_vectors: list[list[float]] | None = None,
         should_fail_with: Exception | None = None,
         fail_attempts: int = 0,
     ) -> None:
         self._model = model
+        self._provider = provider
         self.canned_vectors = canned_vectors or [[0.1, 0.2, 0.3, 0.4]]
         self.should_fail_with = should_fail_with
         self.fail_attempts = fail_attempts
@@ -59,6 +62,10 @@ class MockEmbeddingProvider(BaseEmbeddingProvider):
     @property
     def model_name(self) -> str:
         return self._model
+
+    @property
+    def provider_name(self) -> str:
+        return self._provider
 
     async def embed_text(self, text: str, input_type: str | None = None) -> list[float]:
         res = await self.embed_batch([text], input_type=input_type)
@@ -159,7 +166,7 @@ class TestSingleQueryEmbedding:
         assert result.original.query == "What is the OAuth flow?"
         assert result.original.vector == [0.11, 0.22, 0.33, 0.44]
         assert result.original.query_type == "original"
-        assert result.original.model == "voyage-4"
+        assert result.original.model == "embed-v4.0"
         assert result.transformed is None
 
         # Verify provider was called with batch of 1
@@ -214,14 +221,14 @@ class TestMultipleQueryEmbedding:
         assert result.original.query == "How to configure it?"
         assert result.original.vector == [0.1, 0.2, 0.3]
         assert result.original.query_type == "original"
-        assert result.original.model == "voyage-4"
+        assert result.original.model == "embed-v4.0"
 
         # Verify transformed mapping
         assert result.transformed is not None
         assert result.transformed.query == "How to configure Qdrant collection?"
         assert result.transformed.vector == [0.4, 0.5, 0.6]
         assert result.transformed.query_type == "transformed"
-        assert result.transformed.model == "voyage-4"
+        assert result.transformed.model == "embed-v4.0"
 
         # Strictly 1 batch provider call made
         assert mock_provider.call_count == 1
@@ -260,8 +267,8 @@ class TestRedisEmbeddingCache:
         """A cached query embedding completely skips the provider call."""
         key = generate_embedding_cache_key(
             text="Cached user query",
-            model="voyage-4",
-            provider="voyage",
+            model="embed-v4.0",
+            provider="cohere",
             input_type="query",
         )
         mock_redis = MockRedisClient(initial_data={key: "[0.99, 0.88, 0.77]"})
@@ -303,8 +310,8 @@ class TestRedisEmbeddingCache:
         """When 1 of 2 queries is cached, only the uncached query is sent to provider."""
         orig_key = generate_embedding_cache_key(
             text="Query 1",
-            model="voyage-4",
-            provider="voyage",
+            model="embed-v4.0",
+            provider="cohere",
             input_type="query",
         )
         mock_redis = MockRedisClient(initial_data={orig_key: "[0.1, 0.2]"})
@@ -346,15 +353,15 @@ class TestRedisEmbeddingCache:
     @pytest.mark.asyncio
     async def test_deterministic_cache_key_generation(self):
         """Cache keys safely differentiate text, model, input_type, and dimensions."""
-        key1 = generate_embedding_cache_key("text A", model="voyage-4", input_type="query")
-        key2 = generate_embedding_cache_key("text B", model="voyage-4", input_type="query")
-        key_doc = generate_embedding_cache_key("text A", model="voyage-4", input_type="document")
+        key1 = generate_embedding_cache_key("text A", model="embed-v4.0", input_type="query")
+        key2 = generate_embedding_cache_key("text B", model="embed-v4.0", input_type="query")
+        key_doc = generate_embedding_cache_key("text A", model="embed-v4.0", input_type="document")
         key_model = generate_embedding_cache_key("text A", model="other-model", input_type="query")
 
         assert key1 != key2
         assert key1 != key_doc
         assert key1 != key_model
-        assert key1.startswith("embedding:voyage:voyage-4:query:")
+        assert key1.startswith("embedding:cohere:embed-v4.0:query:")
 
 
 # ==============================================================================
@@ -443,7 +450,7 @@ class TestResponseValidation:
         mock_provider.embed_batch = AsyncMock(
             return_value=EmbeddingBatchResult(
                 embeddings=[[0.1, 0.2]],
-                model="voyage-4",
+                model="embed-v4.0",
             )
         )
         service = QueryEmbeddingService(provider=mock_provider)
@@ -466,7 +473,7 @@ class TestResponseValidation:
         mock_provider.embed_batch = AsyncMock(
             return_value=EmbeddingBatchResult(
                 embeddings=[[]],
-                model="voyage-4",
+                model="embed-v4.0",
             )
         )
         service = QueryEmbeddingService(provider=mock_provider)
@@ -483,7 +490,7 @@ class TestResponseValidation:
         mock_provider.embed_batch = AsyncMock(
             return_value=EmbeddingBatchResult(
                 embeddings=[[0.1, float("nan"), 0.3]],
-                model="voyage-4",
+                model="embed-v4.0",
             )
         )
         service = QueryEmbeddingService(provider=mock_provider)
@@ -500,7 +507,7 @@ class TestResponseValidation:
         mock_provider.embed_batch = AsyncMock(
             return_value=EmbeddingBatchResult(
                 embeddings=[[0.1, 0.2, 0.3], [0.4, 0.5]],  # 3 dims vs 2 dims
-                model="voyage-4",
+                model="embed-v4.0",
             )
         )
         service = QueryEmbeddingService(provider=mock_provider)
@@ -604,9 +611,9 @@ class TestCentralizedModelConfigurationPath:
 
     def test_document_and_query_embedding_share_exact_same_model(self):
         """Document embedding provider and query embedding provider share the exact same model."""
-        custom_model = "voyage-shared-unified-model"
+        custom_model = "shared-unified-model"
         custom_settings = Settings(
-            VOYAGE_API_KEY="mock-voyage-key",
+            COHERE_API_KEY="mock-cohere-key",
             EMBEDDING_MODEL=custom_model,
         )
 
@@ -617,11 +624,11 @@ class TestCentralizedModelConfigurationPath:
         assert query_service.model_name == custom_model
         assert query_service.provider.model_name == doc_provider.model_name
 
-    def test_default_configured_model_is_voyage_4(self):
-        """Authoritative default embedding model across the application is voyage-4."""
+    def test_default_configured_model_is_embed_v4(self):
+        """Authoritative default embedding model across the application is embed-v4.0."""
         default_settings = Settings()
-        assert default_settings.EMBEDDING_MODEL == "voyage-4"
-        provider = VoyageEmbeddingProvider(settings=default_settings, client=AsyncMock())
-        assert provider.model_name == "voyage-4"
+        assert default_settings.EMBEDDING_MODEL == "embed-v4.0"
+        provider = CohereEmbeddingProvider(settings=default_settings, client=AsyncMock())
+        assert provider.model_name == "embed-v4.0"
         service = QueryEmbeddingService(provider=provider, settings=default_settings)
-        assert service.model_name == "voyage-4"
+        assert service.model_name == "embed-v4.0"

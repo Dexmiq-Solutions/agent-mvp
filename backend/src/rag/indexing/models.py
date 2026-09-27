@@ -87,7 +87,7 @@ class IndexableRecord:
     document_version_id: Optional[str] = None
     payload: dict[str, Any] = field(default_factory=dict)
     embedding_model: Optional[str] = None
-    embedding_provider: str = "voyage"
+    embedding_provider: str = "cohere"
     embedding_dimension: Optional[int] = None
     point_id_override: Optional[str] = None
     sparse_vector: Optional[SparseVector] = None
@@ -146,7 +146,7 @@ class IndexableRecord:
         chunk: DocumentChunk,
         vector: list[float],
         embedding_model: Optional[str] = None,
-        embedding_provider: str = "voyage",
+        embedding_provider: str = "cohere",
         embedding_dimension: Optional[int] = None,
         sparse_vector: Optional[SparseVector] = None,
         sparse_encoder_strategy: Optional[str] = None,

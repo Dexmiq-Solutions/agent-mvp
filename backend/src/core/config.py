@@ -75,9 +75,11 @@ class Settings(BaseSettings):
     QDRANT_RETRY_DELAY: float = 0.5
     QDRANT_RETRY_BACKOFF: float = 2.0
 
-    # Embeddings (Voyage)
+    # Embeddings Configuration
+    EMBEDDING_PROVIDER: Literal["cohere", "voyage"] = "cohere"
+    COHERE_API_KEY: str | None = None
     VOYAGE_API_KEY: str | None = None
-    EMBEDDING_MODEL: str = "voyage-4"
+    EMBEDDING_MODEL: str = "embed-v4.0"
 
     # Redis Cache (Shared embedding result cache)
     REDIS_URL: str | None = None
