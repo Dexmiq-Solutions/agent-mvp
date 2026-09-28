@@ -1445,7 +1445,7 @@ Dense Vector Search                   Keyword / Sparse Search
   - When `RERANKING_ENABLED=false`, the reranker provider is bypassed cleanly without network overhead, passing through input candidates truncated to `result_limit`.
 - **Performance & Time Complexity**:
   - Bounded candidate set: Operates strictly on a bounded window (default: 50 candidates) rather than the entire corpus.
-  - Single batched API request: Sends all candidate texts in one asynchronous request via official SDK (`voyageai.AsyncClient.rerank`).
+  - Single batched API request: Sends all candidate texts in one asynchronous request via Jina AI REST API (`https://api.jina.ai/v1/rerank`).
   - Deterministic sorting: $O(N \log N)$ where $N \le 50$.
 - **Separation of Concerns & Strict Boundaries**:
   - **What Reranking Does NOT Do**:
@@ -1457,13 +1457,15 @@ Dense Vector Search                   Keyword / Sparse Search
 ### Provider Abstraction & Model Configuration
 
 - **Provider Abstraction (`BaseReranker`)**:
-  Decouples the retrieval pipeline from Voyage AI or any specific vendor SDK. Any provider implementing `rerank(query, documents, top_k) -> list[ScoredDocument]` can be substituted without altering pipeline orchestration.
-- **Concrete Provider (`VoyageReranker`)**:
-  Official implementation targeting Voyage AI's cross-encoder reranking endpoint.
-  - Default Model: `rerank-2.5`.
-  - Asynchronous non-blocking network I/O with explicit timeout enforcement (`asyncio.wait_for`).
-  - Domain error mapping: translates `voyage_errors.AuthenticationError`, `RateLimitError`, `Timeout`, and `VoyageError` to domain exceptions (`RerankingProviderError`, `RerankingTimeoutError`).
+  Decouples the retrieval pipeline from any specific vendor SDK. Any provider implementing `rerank(query, documents, top_k) -> list[ScoredDocument]` can be substituted without altering pipeline orchestration.
+- **Active Concrete Provider (`JinaReranker`)**:
+  Production cross-encoder implementation targeting Jina AI's reranking endpoint (`jina-reranker-v3.5`).
+  - Default Model: `jina-reranker-v3.5`.
+  - Asynchronous non-blocking network I/O with explicit timeout enforcement (`httpx.AsyncClient`).
+  - Domain error mapping: translates authentication failures, rate limits, timeouts, and network errors to domain exceptions (`RerankingProviderError`, `RerankingTimeoutError`).
   - Strict response validation ensuring returned document indices and finite scores.
+- **Legacy Provider (`VoyageReranker`)**:
+  Maintained for backwards-compatibility when explicitly configured via `RERANKER_PROVIDER=voyage`.
 
 ### Domain Models
 

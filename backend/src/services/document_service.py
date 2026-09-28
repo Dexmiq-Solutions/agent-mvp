@@ -1,7 +1,8 @@
 """Application service for Document (Source) and DocumentVersion lifecycle management."""
 
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
+import re
 from typing import TYPE_CHECKING, Optional
 import uuid
 
@@ -23,6 +24,7 @@ from storage.object.base import BaseObjectStorage
 
 if TYPE_CHECKING:
     from services.document_processing_service import DocumentProcessingService
+    from storage.vector.base import BaseVectorStore
 
 logger = get_logger(__name__)
 
@@ -36,19 +38,29 @@ class DocumentService:
         storage: BaseObjectStorage,
         processing_service: Optional["DocumentProcessingService"] = None,
         auto_process: bool = False,
+        vector_store: Optional["BaseVectorStore"] = None,
     ) -> None:
-        """Initialize DocumentService with database session and object storage client.
+        """Initialize DocumentService with database session, object storage client, and vector store.
         
         Args:
             session: Active asynchronous SQLAlchemy database session.
             storage: BaseObjectStorage client for managing binary file objects.
             processing_service: Optional DocumentProcessingService for lifecycle processing.
             auto_process: If True, automatically triggers the processing lifecycle upon upload.
+            vector_store: Optional BaseVectorStore instance for managing vector points in Qdrant.
         """
         self._session = session
         self._storage = storage
         self._processing_service = processing_service
         self._auto_process = auto_process
+        if vector_store is not None:
+            self._vector_store = vector_store
+        else:
+            try:
+                from storage.vector import get_vector_store
+                self._vector_store = get_vector_store()
+            except Exception:
+                self._vector_store = None
 
     async def _verify_project_exists(self, project_id: str) -> None:
         """Verify that the owning project exists before executing child operations.
@@ -75,6 +87,35 @@ class DocumentService:
         if not clean_name or clean_name in (".", ".."):
             raise InvalidDocumentDataError("Invalid filename provided.")
         return clean_name
+
+    @staticmethod
+    def _generate_storage_filename(filename: str) -> str:
+        """Generate a Supabase Storage-safe internal object filename.
+        
+        Supabase Storage rejects object keys containing spaces, Unicode punctuation
+        (e.g., em dashes '—'), '&', '+', and non-ASCII characters with 400 InvalidKey.
+        This helper preserves the file extension while normalizing the stem into a safe ASCII
+        identifier consisting only of alphanumeric characters, hyphens, and underscores.
+        
+        Args:
+            filename: Original cleaned filename.
+            
+        Returns:
+            Safe filename string suitable for object storage keys, preserving the file extension.
+        """
+        pure_path = PurePosixPath(filename.strip().replace("\\", "/"))
+        suffix = pure_path.suffix.lower()
+        stem = pure_path.stem
+
+        # Replace any character other than ASCII alphanumeric, hyphen, or underscore with underscore
+        safe_stem = re.sub(r"[^a-zA-Z0-9_\-]", "_", stem)
+        # Collapse multiple consecutive underscores and strip leading/trailing underscores and hyphens
+        safe_stem = re.sub(r"_+", "_", safe_stem).strip("_-")
+
+        if not safe_stem:
+            safe_stem = "document"
+
+        return f"{safe_stem}{suffix}"
 
     async def create_document(
         self,
@@ -113,7 +154,8 @@ class DocumentService:
         doc_name = name.strip() if name and name.strip() else clean_filename
         doc_id = str(uuid.uuid4())
         version_id = str(uuid.uuid4())
-        storage_path = f"{project_id}/{doc_id}/v1/{clean_filename}"
+        storage_filename = self._generate_storage_filename(clean_filename)
+        storage_path = f"{project_id}/{doc_id}/v1/{storage_filename}"
 
         # 1. Upload original binary object to Supabase Storage
         logger.debug(
@@ -221,7 +263,8 @@ class DocumentService:
         next_version = current_max + 1
 
         version_id = str(uuid.uuid4())
-        storage_path = f"{project_id}/{document_id}/v{next_version}/{clean_filename}"
+        storage_filename = self._generate_storage_filename(clean_filename)
+        storage_path = f"{project_id}/{document_id}/v{next_version}/{storage_filename}"
 
         # 1. Upload new physical file to Supabase Storage
         metadata = await self._storage.upload(
@@ -401,7 +444,7 @@ class DocumentService:
         """
         document = await self.get_document(project_id=project_id, document_id=document_id)
 
-        # Collect all physical storage paths for this document before deletion
+        # 1. Collect all physical storage paths for this document before deletion
         paths_stmt = select(DocumentVersionModel.storage_path).where(
             DocumentVersionModel.document_id == document_id,
             DocumentVersionModel.project_id == project_id,
@@ -409,11 +452,31 @@ class DocumentService:
         paths_result = await self._session.execute(paths_stmt)
         storage_paths = [p for p in paths_result.scalars().all() if p]
 
-        # Delete from PostgreSQL (cascades delete versions and chunks)
+        # 2. Clean up vector points from Qdrant matching project_id and document_id
+        if self._vector_store is not None:
+            try:
+                await self._vector_store.delete_by_filter(
+                    project_id=project_id,
+                    document_id=document_id,
+                )
+                logger.info(
+                    "Deleted vector points in Qdrant for document '%s' in project '%s'",
+                    document_id,
+                    project_id,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Vector store cleanup failed for document '%s' in project '%s': %s",
+                    document_id,
+                    project_id,
+                    exc,
+                )
+
+        # 3. Delete from PostgreSQL (cascades delete versions and chunks)
         await self._session.delete(document)
         await self._session.flush()
 
-        # Clean up files in Supabase Storage
+        # 4. Clean up files in Supabase Storage
         if storage_paths:
             try:
                 deleted = await self._storage.delete_many(storage_paths)

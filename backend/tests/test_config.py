@@ -35,6 +35,12 @@ def test_default_settings():
     assert settings.CONTEXTUAL_ENRICHMENT_ENABLED is False
     assert settings.CONTEXTUAL_ENRICHMENT_STRATEGY == "structured"
 
+    # Reranking defaults
+    assert settings.JINA_API_KEY is None
+    assert settings.RERANKER_PROVIDER == "jina"
+    assert settings.RERANKER_MODEL == "jina-reranker-v3.5"
+    assert settings.RERANKER_TIMEOUT == 15.0
+
 
 def test_custom_environment_settings(monkeypatch):
     """Verify settings load overrides from environment variables."""
@@ -44,6 +50,10 @@ def test_custom_environment_settings(monkeypatch):
     monkeypatch.setenv("PORT", "9000")
     monkeypatch.setenv("CONTEXTUAL_ENRICHMENT_ENABLED", "true")
     monkeypatch.setenv("CONTEXTUAL_ENRICHMENT_STRATEGY", "custom")
+    monkeypatch.setenv("RERANKER_PROVIDER", "jina")
+    monkeypatch.setenv("RERANKER_MODEL", "jina-reranker-v3.5")
+    monkeypatch.setenv("JINA_API_KEY", "test-jina-key")
+    monkeypatch.setenv("RERANKER_TIMEOUT", "25.0")
 
     settings = Settings(_env_file=None)
     assert settings.APP_NAME == "Custom Agent"
@@ -52,6 +62,10 @@ def test_custom_environment_settings(monkeypatch):
     assert settings.PORT == 9000
     assert settings.CONTEXTUAL_ENRICHMENT_ENABLED is True
     assert settings.CONTEXTUAL_ENRICHMENT_STRATEGY == "custom"
+    assert settings.RERANKER_PROVIDER == "jina"
+    assert settings.RERANKER_MODEL == "jina-reranker-v3.5"
+    assert settings.JINA_API_KEY == "test-jina-key"
+    assert settings.RERANKER_TIMEOUT == 25.0
 
 
 def test_supabase_storage_key_resolution(monkeypatch):

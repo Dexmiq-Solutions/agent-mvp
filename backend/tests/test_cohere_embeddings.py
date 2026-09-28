@@ -106,6 +106,7 @@ def test_cohere_provider_initialization(mock_cohere_settings):
     assert provider.model_name == "embed-v4.0"
     assert provider.provider_name == "cohere"
     assert provider.expected_dim == 1024
+    assert provider.output_dimension == 1024
 
 
 def test_cohere_provider_custom_model(mock_cohere_settings):
@@ -158,6 +159,7 @@ async def test_embed_text_query_and_document_mapping(mock_cohere_settings):
         model="embed-v4.0",
         input_type="search_document",
         embedding_types=["float"],
+        output_dimension=1024,
     )
 
     # Query embedding
@@ -168,6 +170,7 @@ async def test_embed_text_query_and_document_mapping(mock_cohere_settings):
         model="embed-v4.0",
         input_type="search_query",
         embedding_types=["float"],
+        output_dimension=1024,
     )
 
 
@@ -384,3 +387,130 @@ def test_factory_explicit_provider_override():
 
     cohere_prov = get_embedding_provider(provider="cohere", settings=settings)
     assert isinstance(cohere_prov, CohereEmbeddingProvider)
+
+
+# ==============================================================================
+# 8. Output Dimension Enforcement Tests (Embed v4 1024d)
+# ==============================================================================
+
+
+@pytest.mark.anyio
+async def test_cohere_explicit_output_dimension_1024_document_and_query(mock_cohere_settings):
+    """Verify provider requests output_dimension=1024 for both document and query paths."""
+    mock_client = AsyncMock()
+    mock_client.embed = AsyncMock(return_value=_make_mock_embed_response(count=1, dim=1024, total_tokens=15))
+
+    provider = CohereEmbeddingProvider(client=mock_client, settings=mock_cohere_settings)
+    assert provider.output_dimension == 1024
+    assert provider.expected_dim == 1024
+    assert provider.model_name == "embed-v4.0"
+
+    # 1. Document embedding path (single text)
+    doc_vec = await provider.embed_text("Architecture document excerpt", input_type="document")
+    assert len(doc_vec) == 1024
+    mock_client.embed.assert_awaited_with(
+        texts=["Architecture document excerpt"],
+        model="embed-v4.0",
+        input_type="search_document",
+        embedding_types=["float"],
+        output_dimension=1024,
+    )
+
+    # 2. Document embedding path (batch)
+    mock_client.embed.reset_mock()
+    mock_client.embed.return_value = _make_mock_embed_response(count=2, dim=1024, total_tokens=30)
+    batch_res = await provider.embed_batch(
+        ["Chunk 1 text", "Chunk 2 text"],
+        input_type="document",
+    )
+    assert len(batch_res) == 2
+    assert batch_res.dimension == 1024
+    assert len(batch_res[0]) == 1024
+    assert len(batch_res[1]) == 1024
+    mock_client.embed.assert_awaited_with(
+        texts=["Chunk 1 text", "Chunk 2 text"],
+        model="embed-v4.0",
+        input_type="search_document",
+        embedding_types=["float"],
+        output_dimension=1024,
+    )
+
+    # 3. Query embedding path (single query)
+    mock_client.embed.reset_mock()
+    mock_client.embed.return_value = _make_mock_embed_response(count=1, dim=1024, total_tokens=8)
+    query_vec = await provider.embed_query("How does vector indexing work?")
+    assert len(query_vec) == 1024
+    mock_client.embed.assert_awaited_with(
+        texts=["How does vector indexing work?"],
+        model="embed-v4.0",
+        input_type="search_query",
+        embedding_types=["float"],
+        output_dimension=1024,
+    )
+
+    # 4. Query embedding path (batch queries)
+    mock_client.embed.reset_mock()
+    mock_client.embed.return_value = _make_mock_embed_response(count=2, dim=1024, total_tokens=16)
+    queries_res = await provider.embed_queries(["Query one", "Query two"])
+    assert len(queries_res) == 2
+    assert queries_res.dimension == 1024
+    assert len(queries_res[0]) == 1024
+    assert len(queries_res[1]) == 1024
+    mock_client.embed.assert_awaited_with(
+        texts=["Query one", "Query two"],
+        model="embed-v4.0",
+        input_type="search_query",
+        embedding_types=["float"],
+        output_dimension=1024,
+    )
+
+
+@pytest.mark.anyio
+async def test_cohere_output_dimension_custom_expected_dim(mock_cohere_settings):
+    """Verify custom expected_dim is passed through as output_dimension."""
+    mock_client = AsyncMock()
+    mock_client.embed = AsyncMock(return_value=_make_mock_embed_response(count=1, dim=512))
+
+    provider = CohereEmbeddingProvider(
+        client=mock_client,
+        settings=mock_cohere_settings,
+        expected_dim=512,
+    )
+    assert provider.output_dimension == 512
+    assert provider.expected_dim == 512
+
+    vec = await provider.embed_text("Test custom dim", input_type="document")
+    assert len(vec) == 512
+    mock_client.embed.assert_awaited_with(
+        texts=["Test custom dim"],
+        model="embed-v4.0",
+        input_type="search_document",
+        embedding_types=["float"],
+        output_dimension=512,
+    )
+
+
+@pytest.mark.anyio
+async def test_cohere_output_dimension_fallback_when_expected_dim_none(mock_cohere_settings):
+    """Verify output_dimension falls back to DEFAULT_COHERE_EMBEDDING_DIM (1024) when expected_dim is None."""
+    mock_client = AsyncMock()
+    mock_client.embed = AsyncMock(return_value=_make_mock_embed_response(count=1, dim=1024))
+
+    provider = CohereEmbeddingProvider(
+        client=mock_client,
+        settings=mock_cohere_settings,
+        expected_dim=None,
+    )
+    assert provider.output_dimension == 1024
+    assert provider.expected_dim is None
+
+    vec = await provider.embed_query("Fallback dimension test")
+    assert len(vec) == 1024
+    mock_client.embed.assert_awaited_with(
+        texts=["Fallback dimension test"],
+        model="embed-v4.0",
+        input_type="search_query",
+        embedding_types=["float"],
+        output_dimension=1024,
+    )
+

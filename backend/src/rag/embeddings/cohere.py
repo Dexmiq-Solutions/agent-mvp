@@ -1,7 +1,7 @@
 """Cohere embedding provider implementation using Cohere Embed v4."""
 
 import asyncio
-from typing import Any, Optional, Sequence
+from typing import Any, Optional, Sequence, Union
 
 import cohere
 import httpx
@@ -35,13 +35,13 @@ class CohereEmbeddingProvider(BaseEmbeddingProvider):
 
     Generates dense text embeddings using the official asynchronous Cohere Python SDK.
     Handles input-type translation ('document' -> 'search_document', 'query' -> 'search_query'),
-    batch slicing (max 96 items per call), and 1024-dimensional vector validation.
+    batch slicing (max 96 items per call), explicit 1024-dimensional vector output, and validation.
     """
 
     def __init__(
         self,
         model: Optional[str] = None,
-        client: Optional[cohere.AsyncClient] = None,
+        client: Optional[Union[cohere.AsyncClientV2, cohere.AsyncClient, Any]] = None,
         settings: Optional[Settings] = None,
         expected_dim: Optional[int] = DEFAULT_COHERE_EMBEDDING_DIM,
         max_batch_size: int = DEFAULT_COHERE_MAX_BATCH_SIZE,
@@ -50,7 +50,7 @@ class CohereEmbeddingProvider(BaseEmbeddingProvider):
 
         Args:
             model: Optional model name override. Defaults to settings.EMBEDDING_MODEL or 'embed-v4.0'.
-            client: Pre-configured AsyncClient instance. If None, resolved from client provider.
+            client: Pre-configured AsyncClient/AsyncClientV2 instance. If None, resolved from client provider.
             settings: Settings instance. Defaults to application settings.
             expected_dim: Expected output vector dimension for validation (default: 1024).
             max_batch_size: Maximum texts per Cohere API request (default: 96).
@@ -63,6 +63,7 @@ class CohereEmbeddingProvider(BaseEmbeddingProvider):
             )
         self._client = client
         self._expected_dim = expected_dim
+        self._output_dimension: int = expected_dim or DEFAULT_COHERE_EMBEDDING_DIM
         self._max_batch_size = max(1, max_batch_size)
 
     @property
@@ -79,6 +80,11 @@ class CohereEmbeddingProvider(BaseEmbeddingProvider):
     def expected_dim(self) -> Optional[int]:
         """Return expected embedding vector dimension."""
         return self._expected_dim
+
+    @property
+    def output_dimension(self) -> int:
+        """Return output embedding vector dimension requested from Cohere."""
+        return self._output_dimension
 
     # --------------------------------------------------------------------------
     # Synchronous Input Validation and Mapping
@@ -142,7 +148,7 @@ class CohereEmbeddingProvider(BaseEmbeddingProvider):
     # Client Access
     # --------------------------------------------------------------------------
 
-    def _get_client(self) -> cohere.AsyncClient:
+    def _get_client(self) -> Union[cohere.AsyncClientV2, cohere.AsyncClient, Any]:
         """Resolve the active asynchronous Cohere client."""
         if self._client is not None:
             return self._client
@@ -154,7 +160,7 @@ class CohereEmbeddingProvider(BaseEmbeddingProvider):
 
     async def _embed_single_slice(
         self,
-        client: cohere.AsyncClient,
+        client: Union[cohere.AsyncClientV2, cohere.AsyncClient, Any],
         slice_texts: list[str],
         mapped_input_type: str,
         slice_idx: int,
@@ -163,18 +169,20 @@ class CohereEmbeddingProvider(BaseEmbeddingProvider):
         """Execute a single bounded API request against Cohere embed API."""
         try:
             logger.debug(
-                "Requesting Cohere embeddings: slice %d/%d (%d items, model: '%s', input_type: '%s')",
+                "Requesting Cohere embeddings: slice %d/%d (%d items, model: '%s', input_type: '%s', output_dimension: %d)",
                 slice_idx,
                 total_slices,
                 len(slice_texts),
                 self._model,
                 mapped_input_type,
+                self._output_dimension,
             )
             response = await client.embed(
                 texts=slice_texts,
                 model=self._model,
                 input_type=mapped_input_type,
                 embedding_types=["float"],
+                output_dimension=self._output_dimension,
             )
 
             raw_embeddings = getattr(response, "embeddings", None)
@@ -205,6 +213,11 @@ class CohereEmbeddingProvider(BaseEmbeddingProvider):
                     billed_obj = getattr(meta, "billed_units", None)
                     if billed_obj is not None:
                         tokens_consumed = getattr(billed_obj, "input_tokens", None)
+            if tokens_consumed is not None:
+                try:
+                    tokens_consumed = int(tokens_consumed)
+                except (ValueError, TypeError):
+                    pass
 
             return validated, tokens_consumed
 

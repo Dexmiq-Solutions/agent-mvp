@@ -7,6 +7,7 @@ interface SourceListProps {
   uploading: boolean;
   error: string | null;
   onUploadSource: (file: File, name?: string) => Promise<void>;
+  onDeleteSource: (documentId: string) => Promise<void>;
   onRefresh: () => void;
 }
 
@@ -16,12 +17,14 @@ export const SourceList: React.FC<SourceListProps> = ({
   uploading,
   error,
   onUploadSource,
+  onDeleteSource,
   onRefresh,
 }) => {
   const [showUploadForm, setShowUploadForm] = useState(false);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [customName, setCustomName] = useState('');
   const [uploadError, setUploadError] = useState<string | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -52,6 +55,26 @@ export const SourceList: React.FC<SourceListProps> = ({
       }
     } catch (err) {
       setUploadError(err instanceof Error ? err.message : 'Upload failed');
+    }
+  };
+
+  const handleDeleteClick = async (sourceId: string, sourceName: string) => {
+    if (
+      !window.confirm(
+        `Are you sure you want to delete "${sourceName}"?\n\nThis will remove the document and all associated vector embeddings from the knowledge base.`
+      )
+    ) {
+      return;
+    }
+
+    setDeletingId(sourceId);
+    setUploadError(null);
+    try {
+      await onDeleteSource(sourceId);
+    } catch (err) {
+      setUploadError(err instanceof Error ? err.message : 'Failed to delete source');
+    } finally {
+      setDeletingId(null);
     }
   };
 
@@ -188,6 +211,16 @@ export const SourceList: React.FC<SourceListProps> = ({
                       {(latestVer.size_bytes / 1024).toFixed(1)} KB
                     </span>
                   ) : null}
+                  <button
+                    type="button"
+                    className="btn btn-sm btn-delete-source"
+                    onClick={() => handleDeleteClick(source.id, source.name)}
+                    disabled={deletingId === source.id || uploading}
+                    title={`Delete source "${source.name}"`}
+                    id={`btn-delete-source-${source.id}`}
+                  >
+                    {deletingId === source.id ? '...' : '✕'}
+                  </button>
                 </div>
               </li>
             );

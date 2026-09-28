@@ -1,5 +1,7 @@
 """FastAPI dependency injection providers for application services."""
 
+from typing import Optional
+
 from fastapi import Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -9,6 +11,16 @@ from services.document_processing_service import DocumentProcessingService
 from services.document_service import DocumentService
 from services.project_service import ProjectService
 from storage.object import BaseObjectStorage, get_object_storage
+from storage.vector import BaseVectorStore
+
+
+def get_vector_store_dependency() -> Optional[BaseVectorStore]:
+    """Dependency provider returning default BaseVectorStore instance."""
+    try:
+        from storage.vector import get_vector_store
+        return get_vector_store()
+    except Exception:
+        return None
 
 
 def get_storage() -> BaseObjectStorage:
@@ -19,17 +31,19 @@ def get_storage() -> BaseObjectStorage:
 def get_project_service(
     session: AsyncSession = Depends(get_db_session),
     storage: BaseObjectStorage = Depends(get_storage),
+    vector_store: Optional[BaseVectorStore] = Depends(get_vector_store_dependency),
 ) -> ProjectService:
     """Dependency provider for ProjectService.
     
     Args:
         session: Injected asynchronous SQLAlchemy session.
         storage: Injected BaseObjectStorage client.
+        vector_store: Injected BaseVectorStore instance.
         
     Returns:
         Configured ProjectService instance.
     """
-    return ProjectService(session=session, storage=storage)
+    return ProjectService(session=session, storage=storage, vector_store=vector_store)
 
 
 def get_conversation_service(
@@ -70,6 +84,7 @@ def get_document_service(
     session: AsyncSession = Depends(get_db_session),
     storage: BaseObjectStorage = Depends(get_storage),
     processing_service: DocumentProcessingService = Depends(get_document_processing_service),
+    vector_store: Optional[BaseVectorStore] = Depends(get_vector_store_dependency),
 ) -> DocumentService:
     """Dependency provider for DocumentService.
     
@@ -77,6 +92,7 @@ def get_document_service(
         session: Injected asynchronous SQLAlchemy session.
         storage: Injected BaseObjectStorage client.
         processing_service: Injected DocumentProcessingService instance.
+        vector_store: Injected BaseVectorStore instance.
         
     Returns:
         Configured DocumentService instance.
@@ -87,6 +103,7 @@ def get_document_service(
         storage=storage,
         processing_service=processing_service,
         auto_process=settings.AUTO_PROCESS_DOCUMENTS,
+        vector_store=vector_store,
     )
 
 

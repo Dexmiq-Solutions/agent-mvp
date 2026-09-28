@@ -4,7 +4,7 @@ import { ConversationList } from './ConversationList';
 import { SourceList } from './SourceList';
 import { ChatView } from './ChatView';
 import { listConversations, createConversation, listMessages } from '../api/conversations';
-import { listSources, uploadSource } from '../api/sources';
+import { listSources, uploadSource, deleteSource } from '../api/sources';
 
 interface ProjectWorkspaceProps {
   project: Project;
@@ -125,6 +125,18 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
     }
   };
 
+  const handleDeleteSource = async (documentId: string) => {
+    setSourceError(null);
+    try {
+      await deleteSource(project.id, documentId);
+      await fetchSources();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Failed to delete source';
+      setSourceError(msg);
+      throw err;
+    }
+  };
+
   const handleMessageSent = (userMsg: Message, assistantMsg: Message) => {
     setMessages((prev) => {
       // Remove any temp optimistic user message and append authoritative ones
@@ -195,6 +207,7 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
             uploading={uploadingSource}
             error={sourceError}
             onUploadSource={handleUploadSource}
+            onDeleteSource={handleDeleteSource}
             onRefresh={fetchSources}
           />
         </aside>

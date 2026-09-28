@@ -1,6 +1,6 @@
 """Centralized Cohere asynchronous client provider."""
 
-from typing import Optional
+from typing import Optional, Union
 
 import cohere
 
@@ -10,10 +10,12 @@ from observability.logging import get_logger
 
 logger = get_logger(__name__)
 
-_cohere_async_client: Optional[cohere.AsyncClient] = None
+_cohere_async_client: Optional[Union[cohere.AsyncClientV2, cohere.AsyncClient]] = None
 
 
-def get_async_cohere_client(settings: Optional[Settings] = None) -> cohere.AsyncClient:
+def get_async_cohere_client(
+    settings: Optional[Settings] = None,
+) -> Union[cohere.AsyncClientV2, cohere.AsyncClient]:
     """Get or create the singleton asynchronous Cohere client.
 
     Reuses the client instance across the application lifecycle to avoid repeated
@@ -23,7 +25,7 @@ def get_async_cohere_client(settings: Optional[Settings] = None) -> cohere.Async
         settings: Optional Settings override. Defaults to cached app settings.
 
     Returns:
-        cohere.AsyncClient: Initialized asynchronous Cohere client.
+        Union[cohere.AsyncClientV2, cohere.AsyncClient]: Initialized asynchronous Cohere client.
 
     Raises:
         EmbeddingConfigurationError: If COHERE_API_KEY is not configured.
@@ -42,7 +44,10 @@ def get_async_cohere_client(settings: Optional[Settings] = None) -> cohere.Async
         )
 
     logger.info("Initializing asynchronous Cohere client")
-    _cohere_async_client = cohere.AsyncClient(api_key=api_key)
+    if hasattr(cohere, "AsyncClientV2"):
+        _cohere_async_client = cohere.AsyncClientV2(api_key=api_key)
+    else:
+        _cohere_async_client = cohere.AsyncClient(api_key=api_key)
     return _cohere_async_client
 
 

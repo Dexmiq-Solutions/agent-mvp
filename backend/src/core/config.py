@@ -138,9 +138,12 @@ class Settings(BaseSettings):
     FUSION_TOP_K: int = 10
     METADATA_FILTERING_ENABLED: bool = True
     METADATA_FILTERING_STRICT_MODE: bool = False
+    # Reranking Configuration (Jina Reranker v3.5)
     RERANKING_ENABLED: bool = True
-    RERANKER_MODEL: str = "rerank-2.5"
-    RERANKER_TIMEOUT: float = 10.0
+    RERANKER_PROVIDER: str = "jina"
+    RERANKER_MODEL: str = "jina-reranker-v3.5"
+    JINA_API_KEY: str | None = None
+    RERANKER_TIMEOUT: float = 15.0
     RERANKER_CANDIDATE_LIMIT: int = 50
     RERANKER_RESULT_LIMIT: int = 10
     CONTEXT_ASSEMBLY_MAX_ITEMS: int | None = None

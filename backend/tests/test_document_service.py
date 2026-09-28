@@ -19,6 +19,7 @@ from models.project import ProjectModel
 from services.document_service import DocumentService
 from storage.object.base import BaseObjectStorage
 from storage.object.models import StorageObjectMetadata
+from storage.vector.base import BaseVectorStore
 
 
 @pytest.fixture
@@ -378,6 +379,34 @@ async def test_delete_document_and_storage_cleanup():
         assert f"{project.id}/{doc.id}/v2/Doc_v2.pdf" in deleted_paths
 
 
+@pytest.mark.anyio
+async def test_delete_document_cleans_up_qdrant_vectors():
+    """Verify deleting a document calls vector_store.delete_by_filter with project and doc IDs."""
+    storage = make_mock_storage()
+    mock_vector_store = AsyncMock(spec=BaseVectorStore)
+    mock_vector_store.delete_by_filter = AsyncMock(return_value=True)
+
+    async with create_test_session() as session:
+        project = await seed_project(session)
+        service = DocumentService(
+            session=session,
+            storage=storage,
+            vector_store=mock_vector_store,
+        )
+
+        doc = await service.create_document(
+            project_id=project.id, filename="Knowledge.pdf", file_data=b"knowledge"
+        )
+
+        await service.delete_document(project_id=project.id, document_id=doc.id)
+
+        # Verify Qdrant vector points deletion was invoked with strict tenant & doc filter
+        mock_vector_store.delete_by_filter.assert_awaited_once_with(
+            project_id=project.id,
+            document_id=doc.id,
+        )
+
+
 # ==============================================================================
 # 5. Document Version Lookup Tests
 # ==============================================================================
@@ -416,3 +445,130 @@ async def test_get_document_version_not_found():
             await service.get_document_version(
                 project_id=project.id, document_id=doc.id, version_number=99
             )
+
+
+# ==============================================================================
+# 6. Supabase Storage Safe Key Generation & Metadata Separation Tests
+# ==============================================================================
+
+
+@pytest.mark.parametrize(
+    "input_filename,expected_storage_filename",
+    [
+        ("normal-file.docx", "normal-file.docx"),
+        ("file with spaces.docx", "file_with_spaces.docx"),
+        ("file & company.docx", "file_company.docx"),
+        ("file — revision.docx", "file_revision.docx"),
+        ("file + version.docx", "file_version.docx"),
+        (
+            "Discovery Notes v1 — Dexmiq Website Revamp & Product-Centric Repositioning.doc",
+            "Discovery_Notes_v1_Dexmiq_Website_Revamp_Product-Centric_Repositioning.doc",
+        ),
+        ("Special $#@! chars (v2).pdf", "Special_chars_v2.pdf"),
+        ("— & +.docx", "document.docx"),
+        ("UPPERCASE.DOCX", "UPPERCASE.docx"),
+        ("dots.in.stem.name.txt", "dots_in_stem_name.txt"),
+    ],
+)
+def test_generate_storage_filename_required_cases(input_filename: str, expected_storage_filename: str):
+    """Verify _generate_storage_filename produces safe ASCII keys while preserving extensions."""
+    assert DocumentService._generate_storage_filename(input_filename) == expected_storage_filename
+
+
+@pytest.mark.anyio
+async def test_create_document_preserves_original_filename_metadata_with_safe_storage_key():
+    """Verify original filename is preserved in DB metadata while storage key is safely transformed."""
+    storage = make_mock_storage()
+    original_name = "Discovery Notes v1 — Dexmiq Website Revamp & Product-Centric Repositioning.doc"
+    expected_safe_key_suffix = "Discovery_Notes_v1_Dexmiq_Website_Revamp_Product-Centric_Repositioning.doc"
+
+    async with create_test_session() as session:
+        project = await seed_project(session)
+        service = DocumentService(session=session, storage=storage)
+
+        doc = await service.create_document(
+            project_id=project.id,
+            filename=original_name,
+            file_data=b"mock document content",
+            content_type="application/msword",
+        )
+
+        # 1. User-facing metadata MUST preserve the original filename intact
+        assert doc.name == original_name
+        assert len(doc.versions) == 1
+
+        v1 = doc.versions[0]
+        assert v1.version_number == 1
+        assert v1.original_filename == original_name
+
+        # 2. Storage key MUST use the safe ASCII internal identifier
+        expected_storage_path = f"{project.id}/{doc.id}/v1/{expected_safe_key_suffix}"
+        assert v1.storage_path == expected_storage_path
+
+        # 3. Storage client was invoked with the safe storage key
+        storage.upload.assert_awaited_once_with(
+            path=expected_storage_path,
+            data=b"mock document content",
+            content_type="application/msword",
+        )
+
+
+@pytest.mark.anyio
+async def test_create_document_version_preserves_original_filename_with_safe_storage_key():
+    """Verify adding versions with problematic filenames preserves metadata and generates safe storage keys."""
+    storage = make_mock_storage()
+    async with create_test_session() as session:
+        project = await seed_project(session)
+        service = DocumentService(session=session, storage=storage)
+
+        doc = await service.create_document(
+            project_id=project.id,
+            filename="normal-file.docx",
+            file_data=b"v1 content",
+        )
+
+        # Create v2 with Unicode punctuation and special characters
+        v2_filename = "file & company + revision — v2.docx"
+        v2 = await service.create_document_version(
+            project_id=project.id,
+            document_id=doc.id,
+            filename=v2_filename,
+            file_data=b"v2 content",
+        )
+
+        assert v2.version_number == 2
+        # Metadata preserves user-facing original name
+        assert v2.original_filename == v2_filename
+        # Storage path is safe
+        expected_path = f"{project.id}/{doc.id}/v2/file_company_revision_v2.docx"
+        assert v2.storage_path == expected_path
+
+
+@pytest.mark.anyio
+async def test_delete_document_cleans_up_safe_storage_paths():
+    """Verify document deletion accurately collects and deletes safe storage keys from object storage."""
+    storage = make_mock_storage()
+    async with create_test_session() as session:
+        project = await seed_project(session)
+        service = DocumentService(session=session, storage=storage)
+
+        doc = await service.create_document(
+            project_id=project.id,
+            filename="file — revision.docx",
+            file_data=b"v1 content",
+        )
+        v2 = await service.create_document_version(
+            project_id=project.id,
+            document_id=doc.id,
+            filename="file + version.docx",
+            file_data=b"v2 content",
+        )
+
+        expected_v1_path = f"{project.id}/{doc.id}/v1/file_revision.docx"
+        expected_v2_path = f"{project.id}/{doc.id}/v2/file_version.docx"
+
+        await service.delete_document(project_id=project.id, document_id=doc.id)
+
+        # Verify storage.delete_many was invoked with the exact safe paths
+        storage.delete_many.assert_awaited_once_with([expected_v1_path, expected_v2_path])
+

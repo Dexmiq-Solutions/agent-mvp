@@ -21,3 +21,13 @@ export async function uploadSource(
     body: formData,
   });
 }
+
+export async function deleteSource(
+  projectId: string,
+  documentId: string
+): Promise<void> {
+  await apiRequest<void>(`/projects/${projectId}/sources/${documentId}`, {
+    method: 'DELETE',
+  });
+}
+

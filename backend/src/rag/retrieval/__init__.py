@@ -113,9 +113,11 @@ from rag.retrieval.fusion import (
 )
 from rag.retrieval.reranking import (
     BaseReranker,
+    JinaReranker,
     RerankingService,
     ScoredDocument,
     VoyageReranker,
+    get_reranker_provider,
     get_reranking_service,
     rerank_candidates,
     reset_reranking_service,
@@ -307,7 +309,9 @@ __all__ = [
     # Reranking Subsystem & Helpers
     "BaseReranker",
     "ScoredDocument",
+    "JinaReranker",
     "VoyageReranker",
+    "get_reranker_provider",
     "RerankingService",
     "get_reranking_service",
     "reset_reranking_service",
