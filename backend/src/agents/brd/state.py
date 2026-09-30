@@ -332,6 +332,14 @@ class BRDAgentState:
         canonical = _match_section_name(section, self._available_section_keys())
         self.section_progress[canonical] = resolved_status
 
+    def set_section_status(
+        self,
+        section: str,
+        status: BRDSectionStatus | str,
+    ) -> None:
+        """Alias for update_section_status."""
+        self.update_section_status(section, status)
+
     def set_current_section(
         self,
         section: Optional[str],

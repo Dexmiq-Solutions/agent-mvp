@@ -1,7 +1,13 @@
 """BRD (Business Requirements Document) Agent domain package."""
 
 from agents.brd.agent import (
+    ActionDecision,
+    ActionType,
     BRDLeadAgent,
+    FinalValidationStrategy,
+    GapResolutionAction,
+    GapResolutionDecision,
+    SectionReworkStrategy,
     WorkflowDecision,
     create_brd_lead_agent,
     get_system_instruction_path,
@@ -108,8 +114,10 @@ from agents.brd.memory import (
 )
 
 __all__ = [
+    "ActionDecision",
     "ActionResult",
     "ActionSource",
+    "ActionType",
     "AgentConfig",
     "AgentContext",
     "AgentRunRequest",
@@ -136,12 +144,16 @@ __all__ = [
     "FinalValidationRecoveryResult",
     "FinalValidationResult",
     "FinalValidationSeverity",
+    "FinalValidationStrategy",
+    "GapResolutionAction",
+    "GapResolutionDecision",
     "InformationStatus",
     "MAX_FINAL_VALIDATION_RECOVERY_CYCLES",
     "SectionGenerationContext",
     "SectionGenerationResult",
     "SectionOperation",
     "SectionProgressionResult",
+    "SectionReworkStrategy",
     "SectionStatus",
     "SectionValidationContext",
     "TaskResult",

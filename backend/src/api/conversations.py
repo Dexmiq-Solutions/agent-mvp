@@ -264,6 +264,9 @@ async def create_message(
                     accumulated_parts.append(token)
                     chunk_data = json.dumps({"type": "content", "content": token})
                     yield f"event: message\ndata: {chunk_data}\n\n"
+                elif event.get("type") in ("progress", "status"):
+                    progress_data = json.dumps(event)
+                    yield f"event: progress\ndata: {progress_data}\n\n"
 
             final_text = "".join(accumulated_parts).strip()
             if not final_text:
