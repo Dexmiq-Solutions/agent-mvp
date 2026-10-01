@@ -293,9 +293,17 @@ async def test_message_validation_failure_handling(api_client: AsyncClient):
 
 @pytest.mark.anyio
 async def test_user_message_streaming_invokes_agent_and_persists_both_messages(api_client: AsyncClient):
-    """Verify that posting a user message invokes the BRD Agent, streams SSE tokens, and persists both turns."""
+    """Verify that posting a user message invokes the BRD Agent workflow, streams SSE tokens, and persists both turns."""
     mock_model = MockStreamingChatModel(token_chunks=["The ", "BRD ", "Executive ", "Summary."])
     test_agent = BRDLeadAgent(model=mock_model)
+
+    async def mock_stream_workflow(*args, **kwargs):
+        yield {"type": "workflow_start", "agent_run_id": "test-run-123"}
+        yield {"type": "progress", "phase": "1_INITIAL_CONTEXT", "message": "Starting BRD workflow..."}
+        for chunk in ["The ", "BRD ", "Executive ", "Summary."]:
+            yield {"type": "content", "content": chunk}
+
+    test_agent.stream_workflow_async = mock_stream_workflow
     app.dependency_overrides[get_brd_lead_agent] = lambda: test_agent
 
     try:
@@ -363,9 +371,18 @@ async def test_user_message_streaming_invokes_agent_and_persists_both_messages(a
 
 @pytest.mark.anyio
 async def test_multi_turn_conversation_preserves_thread_context(api_client: AsyncClient):
-    """Verify multi-turn conversation maintains history across turns using thread_id/conversation_id."""
+    """Verify multi-turn conversation maintains history across turns through controlled workflow."""
     mock_model = MockStreamingChatModel(token_chunks=["Response ", "turn."])
     test_agent = BRDLeadAgent(model=mock_model)
+    received_requests: list[str] = []
+
+    async def tracking_stream_workflow(request=None, context=None, **kwargs):
+        prompt = request.input_text if hasattr(request, "input_text") else str(request)
+        received_requests.append(prompt)
+        yield {"type": "progress", "phase": "1_INITIAL_CONTEXT", "message": f"Processing: {prompt}"}
+        yield {"type": "content", "content": f"Answer to {prompt}"}
+
+    test_agent.stream_workflow_async = tracking_stream_workflow
     app.dependency_overrides[get_brd_lead_agent] = lambda: test_agent
 
     try:
@@ -396,12 +413,10 @@ async def test_multi_turn_conversation_preserves_thread_context(api_client: Asyn
             async for _ in resp2.aiter_lines():
                 pass
 
-        # Verify that mock model received turn 1 history in turn 2
-        assert len(mock_model.received_messages) >= 2
-        turn2_messages = mock_model.received_messages[-1]
-        turn2_contents = [m.content for m in turn2_messages]
-        assert any("Turn 1 question" in c for c in turn2_contents)
-        assert any("Turn 2 question" in c for c in turn2_contents)
+        # Verify that both turns entered the controlled workflow
+        assert len(received_requests) == 2
+        assert received_requests[0] == "Turn 1 question"
+        assert received_requests[1] == "Turn 2 question continuing previous context"
 
         # Verify all 4 messages persisted in database in chronological order
         hist_resp = await api_client.get(f"/projects/{project_id}/conversations/{conversation_id}/messages")

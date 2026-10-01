@@ -131,6 +131,8 @@ class BRDAgentState:
     final_validation_history: list[FinalValidationResult] = field(default_factory=list)
     final_validation_recovery_cycles: int = 0
     final_validation_recovery_exhausted: bool = False
+    waiting_for_user: bool = False
+    pending_clarification: Optional[str] = None
 
     @classmethod
     def initialize_from_template(
@@ -382,6 +384,24 @@ class BRDAgentState:
             return True
         return False
 
+    @property
+    def is_waiting_for_user(self) -> bool:
+        """Return True if workflow execution is paused waiting for user clarification."""
+        return bool(self.waiting_for_user) or bool(self.pending_clarification) or bool(self.metadata.get("pending_clarification"))
+
+    def set_waiting_for_user(self, question: Optional[str] = None) -> None:
+        """Mark state as waiting for user clarification."""
+        self.waiting_for_user = True
+        self.pending_clarification = question
+        if question:
+            self.metadata["pending_clarification"] = question
+
+    def clear_waiting_for_user(self) -> None:
+        """Clear waiting for user status upon receiving clarification."""
+        self.waiting_for_user = False
+        self.pending_clarification = None
+        self.metadata.pop("pending_clarification", None)
+
     def get_completed_sections(self) -> list[str]:
         """Return list of sections that are Completed."""
         return [
@@ -486,6 +506,8 @@ class BRDAgentState:
         data["final_validation_recovery_exhausted"] = self.final_validation_recovery_exhausted
         data["section_content"] = dict(self.section_content)
         data["rework_feedback"] = dict(self.rework_feedback)
+        data["waiting_for_user"] = self.waiting_for_user
+        data["pending_clarification"] = self.pending_clarification
         return data
 
     @classmethod
@@ -578,6 +600,10 @@ class BRDAgentState:
         ]
         final_validation_recovery_cycles = int(data.get("final_validation_recovery_cycles", 0))
         final_validation_recovery_exhausted = bool(data.get("final_validation_recovery_exhausted", False))
+        waiting_for_user = bool(data.get("waiting_for_user", False))
+        pending_clarification = data.get("pending_clarification") or data.get("metadata", {}).get("pending_clarification")
+        if pending_clarification:
+            waiting_for_user = True
 
         return cls(
             objective=data.get("objective", "Produce an evidence-grounded Business Requirements Document"),
@@ -607,6 +633,8 @@ class BRDAgentState:
             final_validation_history=final_validation_history,
             final_validation_recovery_cycles=final_validation_recovery_cycles,
             final_validation_recovery_exhausted=final_validation_recovery_exhausted,
+            waiting_for_user=waiting_for_user,
+            pending_clarification=pending_clarification,
         )
 
 
@@ -642,3 +670,5 @@ class BRDDeepAgentState(DeepAgentState, total=False):
     final_validation_history: Optional[list[dict[str, Any]]]
     final_validation_recovery_cycles: Optional[int]
     final_validation_recovery_exhausted: Optional[bool]
+    waiting_for_user: Optional[bool]
+    pending_clarification: Optional[str]

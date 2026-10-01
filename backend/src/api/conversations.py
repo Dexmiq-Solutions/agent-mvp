@@ -179,9 +179,10 @@ async def create_message(
 ) -> Any:
     """Send and persist a message turn within a conversation under project boundary isolation.
 
-    When a user message is sent with streaming enabled, the BRD Lead Agent is invoked directly
-    through DeepAgents. The response is streamed back via Server-Sent Events (SSE).
-    The final assistant response is automatically persisted in the conversation message history.
+    When a user message is sent with streaming enabled, the BRD Lead Agent executes the
+    controlled BRD workflow directly. The response and phase progress are streamed back via
+    Server-Sent Events (SSE). The final assistant response is automatically persisted in the
+    conversation message history.
     Non-user messages or requests with stream=false are persisted directly and return HTTP 201.
     """
     # 1. Enforce Project Isolation & Conversation validation using existing services
@@ -221,16 +222,18 @@ async def create_message(
 
     # 3. Create agent execution context preserving application-controlled project_id and conversation_id
     agent_run_id = str(uuid.uuid4())
+    context_metadata: dict[str, Any] = {
+        "user_message_id": user_message.id,
+        "conversation_id": conversation_id,
+        "agent_run_id": agent_run_id,
+        **(payload.metadata or {}),
+    }
+
     agent_context = AgentContext(
         project_id=project_id,
         conversation_id=conversation_id,
         user_id=payload.metadata.get("user_id") if payload.metadata else None,
-        metadata={
-            "user_message_id": user_message.id,
-            "conversation_id": conversation_id,
-            "agent_run_id": agent_run_id,
-            **(payload.metadata or {}),
-        },
+        metadata=context_metadata,
     )
 
     # 4. BRDLeadAgent executes under project boundary isolation

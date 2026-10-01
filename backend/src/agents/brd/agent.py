@@ -1934,7 +1934,6 @@ class BRDLeadAgent:
         context: Optional[AgentContext] = None,
         current_task: Optional[str] = None,
         delegate: bool = False,
-        run_workflow: bool = False,
     ) -> AgentRunResponse:
         """Execute a synchronous interaction cycle via the DeepAgents harness.
 
@@ -1943,7 +1942,6 @@ class BRDLeadAgent:
             context: Optional AgentContext for project isolation.
             current_task: Optional immediate task context override to associate with this execution.
             delegate: If True, execute via delegation and sub-agents.
-            run_workflow: If True, execute via the application-owned full BRD workflow runner.
 
         Returns:
             AgentRunResponse: Normalized response containing output text, artifacts, and state.
@@ -1973,12 +1971,11 @@ class BRDLeadAgent:
 
         if effective_ctx and effective_ctx.project_id:
             self._state.metadata["project_id"] = effective_ctx.project_id
+        if effective_ctx and effective_ctx.conversation_id:
+            self._state.metadata["conversation_id"] = effective_ctx.conversation_id
 
-        # Route to application-owned full BRD workflow if requested
-        should_run_workflow = run_workflow or (
-            effective_ctx and bool(effective_ctx.metadata.get("run_workflow", False))
-        )
-        if should_run_workflow:
+        # Route to application-owned full BRD workflow if state is waiting for user
+        if self._state.is_waiting_for_user:
             prompt_text = request.input_text if isinstance(request, AgentRunRequest) else str(request)
             return self.run_workflow(
                 request=prompt_text,
@@ -2086,7 +2083,6 @@ class BRDLeadAgent:
         context: Optional[AgentContext] = None,
         current_task: Optional[str] = None,
         delegate: bool = False,
-        run_workflow: bool = False,
     ) -> AgentRunResponse:
         """Execute an asynchronous interaction cycle via the DeepAgents harness.
 
@@ -2095,7 +2091,6 @@ class BRDLeadAgent:
             context: Optional AgentContext for project isolation.
             current_task: Optional immediate task context override to associate with this execution.
             delegate: If True, execute via delegation and sub-agents.
-            run_workflow: If True, execute via the application-owned full BRD workflow runner.
 
         Returns:
             AgentRunResponse: Normalized response containing output text, artifacts, and state.
@@ -2122,12 +2117,11 @@ class BRDLeadAgent:
 
         if effective_ctx and effective_ctx.project_id:
             self._state.metadata["project_id"] = effective_ctx.project_id
+        if effective_ctx and effective_ctx.conversation_id:
+            self._state.metadata["conversation_id"] = effective_ctx.conversation_id
 
-        # Route to application-owned full BRD workflow if requested
-        should_run_workflow = run_workflow or (
-            effective_ctx and bool(effective_ctx.metadata.get("run_workflow", False))
-        )
-        if should_run_workflow:
+        # Route to application-owned full BRD workflow if state is waiting for user
+        if self._state.is_waiting_for_user:
             prompt_text = request.input_text if isinstance(request, AgentRunRequest) else str(request)
             return await self.run_workflow_async(
                 request=prompt_text,
@@ -2161,20 +2155,21 @@ class BRDLeadAgent:
         context: Optional[AgentContext] = None,
         prior_messages: Optional[Sequence[Any]] = None,
         current_task: Optional[str] = None,
-        run_workflow: bool = False,
     ) -> AsyncIterator[dict[str, Any]]:
-        """Execute an asynchronous streaming interaction cycle via the DeepAgents harness.
+        """Execute the controlled BRD workflow asynchronously via streaming.
+
+        The controlled BRD workflow is the sole user-facing execution path for BRD
+        conversations. Every user message (initial request, follow-up, clarification
+        answer, or resume) directly enters the controlled BRD workflow.
 
         Args:
             request: AgentRunRequest or raw input string prompt.
             context: Optional AgentContext for project isolation.
-            prior_messages: Optional sequence of prior BaseMessage instances to seed
-                thread state if uninitialized.
-            current_task: Optional immediate task context override to associate with this execution.
-            run_workflow: If True, stream via the application-owned full BRD workflow runner.
+            prior_messages: Optional sequence of prior BaseMessage instances.
+            current_task: Optional immediate task context override.
 
         Yields:
-            dict[str, Any]: Incremental content chunks, e.g. {"type": "content", "content": "..."}.
+            dict[str, Any]: Incremental content chunks and progress events from the workflow.
         """
         if isinstance(request, AgentRunRequest) and request.state is not None:
             if isinstance(request.state, BRDAgentState):
@@ -2198,70 +2193,16 @@ class BRDLeadAgent:
 
         if effective_ctx and effective_ctx.project_id:
             self._state.metadata["project_id"] = effective_ctx.project_id
-
-        # Route to application-owned full BRD workflow if requested
-        should_run_workflow = run_workflow or (
-            effective_ctx and bool(effective_ctx.metadata.get("run_workflow", False))
-        )
-        if should_run_workflow:
-            prompt_text = request.input_text if isinstance(request, AgentRunRequest) else str(request)
-            async for event in self.stream_workflow_async(
-                request=prompt_text,
-                context=effective_ctx,
-                current_task=current_task,
-            ):
-                yield event
-            return
-
-        token = set_current_agent_context(effective_ctx)
-        exec_config: dict[str, Any] = {}
-        if effective_ctx.conversation_id:
-            exec_config["configurable"] = {"thread_id": effective_ctx.conversation_id}
-        elif self._checkpointer is not None:
-            exec_config["configurable"] = {"thread_id": "default"}
-
-        has_thread_state = False
-        if self._checkpointer is not None and exec_config.get("configurable"):
-            if hasattr(self._graph, "get_state"):
-                try:
-                    state = self._graph.get_state(exec_config)
-                    if state and state.values.get("messages"):
-                        has_thread_state = True
-                    elif prior_messages and hasattr(self._graph, "update_state"):
-                        self._graph.update_state(exec_config, {"messages": list(prior_messages)})
-                        has_thread_state = True
-                except Exception as seed_exc:
-                    logger.warning("Failed to inspect/seed checkpointer state: %s", seed_exc)
+        if effective_ctx and effective_ctx.conversation_id:
+            self._state.metadata["conversation_id"] = effective_ctx.conversation_id
 
         prompt_text = request.input_text if isinstance(request, AgentRunRequest) else str(request)
-        if has_thread_state:
-            inputs = {"messages": [HumanMessage(content=prompt_text)]}
-        elif prior_messages:
-            inputs = {"messages": list(prior_messages) + [HumanMessage(content=prompt_text)]}
-        else:
-            inputs = {"messages": [HumanMessage(content=prompt_text)]}
-
-        try:
-            async for msg, metadata in self._graph.astream(
-                inputs,
-                config=exec_config if exec_config else None,
-                stream_mode="messages",
-            ):
-                if isinstance(msg, (AIMessageChunk, AIMessage)):
-                    if not getattr(msg, "tool_calls", None):
-                        content = getattr(msg, "content", "")
-                        if isinstance(content, str) and content:
-                            yield {"type": "content", "content": content}
-                        elif isinstance(content, list):
-                            text_parts = [
-                                part.get("text", "") if isinstance(part, dict) else str(part)
-                                for part in content
-                            ]
-                            combined = "".join(text_parts)
-                            if combined:
-                                yield {"type": "content", "content": combined}
-        finally:
-            reset_current_agent_context(token)
+        async for event in self.stream_workflow_async(
+            request=prompt_text,
+            context=effective_ctx,
+            current_task=current_task,
+        ):
+            yield event
 
     def set_project_memory(
         self,
@@ -3049,6 +2990,8 @@ class BRDLeadAgent:
 
         if resolved_item:
             self._state.resolve_unresolved(resolved_item)
+
+        self._state.clear_waiting_for_user()
 
     def generate_section(
         self,
@@ -3964,90 +3907,115 @@ class BRDLeadAgent:
             effective_ctx.metadata["agent_run_id"] = agent_run_id
         if effective_ctx.project_id:
             self._state.metadata["project_id"] = effective_ctx.project_id
+        if effective_ctx.conversation_id:
+            self._state.metadata["conversation_id"] = effective_ctx.conversation_id
 
         input_prompt = request.input_text if isinstance(request, AgentRunRequest) else (str(request) if request is not None else None)
-        effective_obj = objective or input_prompt or self._state.objective or "Generate Business Requirements Document"
+
+        is_resuming = self._state.is_waiting_for_user
+        if is_resuming and self._state.objective:
+            effective_obj = objective or self._state.objective
+        else:
+            effective_obj = objective or input_prompt or self._state.objective or "Generate Business Requirements Document"
         self._state.objective = effective_obj
+
         if current_task is not None:
             self._state.current_task = current_task
 
-        # Phase 1: Initial Context & Objective
-        log_trace_event(
-            logger,
-            agent_run_id=agent_run_id,
-            actor=TraceActor.APPLICATION,
-            event_name="WORKFLOW_PHASE_STARTED",
-            phase="1_INITIAL_CONTEXT",
-            objective=effective_obj,
-        )
-
-        # Phase 2: Action Decision (Lead Agent Intelligence)
-        log_trace_event(
-            logger,
-            agent_run_id=agent_run_id,
-            actor=TraceActor.APPLICATION,
-            event_name="WORKFLOW_PHASE_STARTED",
-            phase="2_ACTION_DECISION",
-        )
-        action_decision = await self.decide_action_async(
-            objective=effective_obj,
-            context=effective_ctx,
-            input_text=input_prompt,
-        )
-
-        # Phase 3: Action Execution (Application executes selected action)
-        log_trace_event(
-            logger,
-            agent_run_id=agent_run_id,
-            actor=TraceActor.APPLICATION,
-            event_name="WORKFLOW_PHASE_STARTED",
-            phase="3_ACTION_EXECUTION",
-            action_type=action_decision.action_type.value,
-        )
-        if action_decision.action_type == ActionType.RAG and self.has_rag_capability:
-            log_trace_event(
-                logger,
-                agent_run_id=agent_run_id,
-                actor=TraceActor.TOOL,
-                event_name="RAG_SEARCH_STARTED",
-                query=action_decision.query,
-            )
-            rag_resp, _ = self.retry_with_rag(
-                query=action_decision.query,
-                context=effective_ctx,
-                evaluate_after=False,
-            )
-            log_trace_event(
-                logger,
-                agent_run_id=agent_run_id,
-                actor=TraceActor.TOOL,
-                event_name="RAG_SEARCH_COMPLETED",
-                success=rag_resp.success,
-            )
-        elif action_decision.action_type == ActionType.DELEGATION:
+        if is_resuming:
+            # Resuming controlled BRD workflow after user clarification
+            pending_q = self._state.pending_clarification
             log_trace_event(
                 logger,
                 agent_run_id=agent_run_id,
                 actor=TraceActor.APPLICATION,
-                event_name="DELEGATION_STARTED",
+                event_name="WORKFLOW_RESUMING_FROM_CLARIFICATION",
+                resolved_item=pending_q,
             )
-            await self.delegate_async(
-                tasks=action_decision.delegated_tasks or effective_obj,
-                context=effective_ctx,
+            if input_prompt:
+                self.receive_user_clarification(
+                    answer=input_prompt,
+                    resolved_item=pending_q,
+                    context=effective_ctx,
+                )
+        else:
+            # Phase 1: Initial Context & Objective
+            log_trace_event(
+                logger,
+                agent_run_id=agent_run_id,
+                actor=TraceActor.APPLICATION,
+                event_name="WORKFLOW_PHASE_STARTED",
+                phase="1_INITIAL_CONTEXT",
                 objective=effective_obj,
             )
+
+            # Phase 2: Action Decision (Lead Agent Intelligence)
             log_trace_event(
                 logger,
                 agent_run_id=agent_run_id,
                 actor=TraceActor.APPLICATION,
-                event_name="DELEGATION_COMPLETED",
+                event_name="WORKFLOW_PHASE_STARTED",
+                phase="2_ACTION_DECISION",
             )
-        else:
-            await self.perform_direct_work_async(
-                objective=action_decision.direct_work_objective or effective_obj,
-                instructions=action_decision.direct_work_instructions,
+            action_decision = await self.decide_action_async(
+                objective=effective_obj,
                 context=effective_ctx,
+                input_text=input_prompt,
             )
+
+            # Phase 3: Action Execution (Application executes selected action)
+            log_trace_event(
+                logger,
+                agent_run_id=agent_run_id,
+                actor=TraceActor.APPLICATION,
+                event_name="WORKFLOW_PHASE_STARTED",
+                phase="3_ACTION_EXECUTION",
+                action_type=action_decision.action_type.value,
+            )
+            if action_decision.action_type == ActionType.RAG and self.has_rag_capability:
+                log_trace_event(
+                    logger,
+                    agent_run_id=agent_run_id,
+                    actor=TraceActor.TOOL,
+                    event_name="RAG_SEARCH_STARTED",
+                    query=action_decision.query,
+                )
+                rag_resp, _ = self.retry_with_rag(
+                    query=action_decision.query,
+                    context=effective_ctx,
+                    evaluate_after=False,
+                )
+                log_trace_event(
+                    logger,
+                    agent_run_id=agent_run_id,
+                    actor=TraceActor.TOOL,
+                    event_name="RAG_SEARCH_COMPLETED",
+                    success=rag_resp.success,
+                )
+            elif action_decision.action_type == ActionType.DELEGATION:
+                log_trace_event(
+                    logger,
+                    agent_run_id=agent_run_id,
+                    actor=TraceActor.APPLICATION,
+                    event_name="DELEGATION_STARTED",
+                )
+                await self.delegate_async(
+                    tasks=action_decision.delegated_tasks or effective_obj,
+                    context=effective_ctx,
+                    objective=effective_obj,
+                )
+                log_trace_event(
+                    logger,
+                    agent_run_id=agent_run_id,
+                    actor=TraceActor.APPLICATION,
+                    event_name="DELEGATION_COMPLETED",
+                )
+            else:
+                await self.perform_direct_work_async(
+                    objective=action_decision.direct_work_objective or effective_obj,
+                    instructions=action_decision.direct_work_instructions,
+                    context=effective_ctx,
+                )
 
         # Phase 4: Evidence Evaluation & Lead Agent Interpretation
         log_trace_event(
@@ -4102,15 +4070,31 @@ class BRDLeadAgent:
                     event_name="REEVALUATION_COMPLETED",
                     outcome=eval_result2.outcome.value,
                 )
-        elif gap_decision.action == GapResolutionAction.ASK_USER:
+                if eval_result2.outcome != EvaluationOutcome.SUFFICIENT:
+                    gap_decision2 = await self.interpret_evaluation_async(
+                        evaluation_result=eval_result2,
+                        objective=effective_obj,
+                        context=effective_ctx,
+                    )
+                    if gap_decision2.action == GapResolutionAction.ASK_USER:
+                        gap_decision = gap_decision2
+
+        if gap_decision.action == GapResolutionAction.ASK_USER:
+            question = gap_decision.clarification_question or "Clarification required from user."
             log_trace_event(
                 logger,
                 agent_run_id=agent_run_id,
                 actor=TraceActor.APPLICATION,
                 event_name="USER_CLARIFICATION_REQUIRED",
-                question=gap_decision.clarification_question,
+                question=question,
             )
-            self._state.metadata["pending_clarification"] = gap_decision.clarification_question
+            self._state.set_waiting_for_user(question)
+            return AgentRunResponse(
+                output_text=question,
+                context=effective_ctx,
+                state=self._state,
+                success=True,
+            )
 
         # Phase 5: Section Iteration Loop (Sequential Processing across Template Sections)
         log_trace_event(
@@ -4484,36 +4468,65 @@ class BRDLeadAgent:
             )
 
         agent_run_id = (effective_ctx.metadata.get("agent_run_id") if effective_ctx.metadata else None) or str(uuid.uuid4())
+        if effective_ctx.project_id:
+            self._state.metadata["project_id"] = effective_ctx.project_id
+        if effective_ctx.conversation_id:
+            self._state.metadata["conversation_id"] = effective_ctx.conversation_id
+
         input_prompt = request.input_text if isinstance(request, AgentRunRequest) else (str(request) if request is not None else None)
-        effective_obj = objective or input_prompt or self._state.objective or "Generate Business Requirements Document"
 
-        yield {
-            "type": "progress",
-            "phase": "1_INITIAL_CONTEXT",
-            "actor": TraceActor.APPLICATION,
-            "message": f"Starting BRD workflow for objective: {effective_obj}",
-        }
-
-        yield {
-            "type": "progress",
-            "phase": "2_ACTION_DECISION",
-            "actor": TraceActor.LEAD_AGENT,
-            "message": "Analyzing objective and determining action strategy...",
-        }
-        action_decision = await self.decide_action_async(objective=effective_obj, context=effective_ctx, input_text=input_prompt)
-
-        yield {
-            "type": "progress",
-            "phase": "3_ACTION_EXECUTION",
-            "actor": TraceActor.APPLICATION,
-            "message": f"Executing action: {action_decision.action_type.value}",
-        }
-        if action_decision.action_type == ActionType.RAG and self.has_rag_capability:
-            self.retry_with_rag(query=action_decision.query, context=effective_ctx, evaluate_after=False)
-        elif action_decision.action_type == ActionType.DELEGATION:
-            await self.delegate_async(tasks=action_decision.delegated_tasks or effective_obj, context=effective_ctx)
+        is_resuming = self._state.is_waiting_for_user
+        if is_resuming and self._state.objective:
+            effective_obj = objective or self._state.objective
         else:
-            await self.perform_direct_work_async(objective=action_decision.direct_work_objective or effective_obj, context=effective_ctx)
+            effective_obj = objective or input_prompt or self._state.objective or "Generate Business Requirements Document"
+        self._state.objective = effective_obj
+
+        if current_task is not None:
+            self._state.current_task = current_task
+
+        if is_resuming:
+            pending_q = self._state.pending_clarification
+            if input_prompt:
+                self.receive_user_clarification(
+                    answer=input_prompt,
+                    resolved_item=pending_q,
+                    context=effective_ctx,
+                )
+            yield {
+                "type": "progress",
+                "phase": "4_EVIDENCE_EVALUATION",
+                "actor": TraceActor.APPLICATION,
+                "message": "Incorporating user clarification and re-evaluating evidence sufficiency...",
+            }
+        else:
+            yield {
+                "type": "progress",
+                "phase": "1_INITIAL_CONTEXT",
+                "actor": TraceActor.APPLICATION,
+                "message": f"Starting BRD workflow for objective: {effective_obj}",
+            }
+
+            yield {
+                "type": "progress",
+                "phase": "2_ACTION_DECISION",
+                "actor": TraceActor.LEAD_AGENT,
+                "message": "Analyzing objective and determining action strategy...",
+            }
+            action_decision = await self.decide_action_async(objective=effective_obj, context=effective_ctx, input_text=input_prompt)
+
+            yield {
+                "type": "progress",
+                "phase": "3_ACTION_EXECUTION",
+                "actor": TraceActor.APPLICATION,
+                "message": f"Executing action: {action_decision.action_type.value}",
+            }
+            if action_decision.action_type == ActionType.RAG and self.has_rag_capability:
+                self.retry_with_rag(query=action_decision.query, context=effective_ctx, evaluate_after=False)
+            elif action_decision.action_type == ActionType.DELEGATION:
+                await self.delegate_async(tasks=action_decision.delegated_tasks or effective_obj, context=effective_ctx)
+            else:
+                await self.perform_direct_work_async(objective=action_decision.direct_work_objective or effective_obj, context=effective_ctx)
 
         yield {
             "type": "progress",
@@ -4531,14 +4544,26 @@ class BRDLeadAgent:
                 "actor": TraceActor.APPLICATION,
                 "message": "Retrieving missing specifications via project knowledge base...",
             }
-            self.retry_with_rag(query=gap_decision.query, context=effective_ctx, evaluate_after=True)
-        elif gap_decision.action == GapResolutionAction.ASK_USER:
+            _, eval_result2 = self.retry_with_rag(query=gap_decision.query, context=effective_ctx, evaluate_after=True)
+            if eval_result2 and eval_result2.outcome != EvaluationOutcome.SUFFICIENT:
+                gap_decision2 = await self.interpret_evaluation_async(evaluation_result=eval_result2, objective=effective_obj, context=effective_ctx)
+                if gap_decision2.action == GapResolutionAction.ASK_USER:
+                    gap_decision = gap_decision2
+
+        if gap_decision.action == GapResolutionAction.ASK_USER:
+            question = gap_decision.clarification_question or "Clarification required from user."
+            self._state.set_waiting_for_user(question)
             yield {
                 "type": "progress",
                 "phase": "4_EVIDENCE_EVALUATION",
                 "actor": TraceActor.APPLICATION,
-                "message": f"Clarification requested: {gap_decision.clarification_question}",
+                "message": f"Clarification requested: {question}",
             }
+            yield {
+                "type": "content",
+                "content": question,
+            }
+            return
 
         # Phase 5: Section Iteration Loop
         if not self._state.current_section and not self.is_section_processing_complete:
