@@ -255,10 +255,22 @@ def _format_available_information(info: Any) -> str:
 def _build_generation_prompt(context: SectionGenerationContext) -> str:
     """Format prompt with focused context for the Section Generation Sub-Agent."""
     op_label = "Section Update / Rework" if context.operation == SectionOperation.UPDATE else "Initial Section Generation"
-    parts: list[str] = [
+    parts: list[str] = []
+
+    proj_name = context.metadata.get("project_name") if context.metadata else None
+    proj_desc = context.metadata.get("project_description") if context.metadata else None
+    if proj_name or proj_desc:
+        proj_lines = []
+        if proj_name:
+            proj_lines.append(f"Project Name: {proj_name}")
+        if proj_desc:
+            proj_lines.append(f"Project Description: {proj_desc}")
+        parts.append("## Project Context\n" + "\n".join(proj_lines))
+
+    parts.extend([
         f"## Operation Mode\n{op_label}",
         f"## Target Section\n{context.section_name}",
-    ]
+    ])
 
     if context.template_structure:
         parts.append(

@@ -501,7 +501,7 @@ async def test_agent_receives_correct_project_context_and_stream_flag(api_client
     captured_contexts: list[Any] = []
 
     class ContextCapturingAgent(BRDLeadAgent):
-        async def stream_async(self, request, context=None, prior_messages=None):
+        async def stream_async(self, request, context=None, prior_messages=None, **kwargs):
             captured_contexts.append(context)
             yield {"type": "content", "content": "Context verified."}
 

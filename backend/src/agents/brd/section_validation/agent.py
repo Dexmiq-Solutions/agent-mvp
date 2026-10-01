@@ -336,9 +336,21 @@ def _format_available_information(info: Any) -> str:
 
 def _build_validation_prompt(context: SectionValidationContext) -> str:
     """Format prompt with focused context for the Section Validation Sub-Agent."""
-    parts: list[str] = [
+    parts: list[str] = []
+
+    proj_name = context.metadata.get("project_name") if context.metadata else None
+    proj_desc = context.metadata.get("project_description") if context.metadata else None
+    if proj_name or proj_desc:
+        proj_lines = []
+        if proj_name:
+            proj_lines.append(f"Project Name: {proj_name}")
+        if proj_desc:
+            proj_lines.append(f"Project Description: {proj_desc}")
+        parts.append("## Project Context\n" + "\n".join(proj_lines))
+
+    parts.extend([
         f"## Target Section to Validate\n{context.section_name}",
-    ]
+    ])
 
     if context.template_structure:
         parts.append(

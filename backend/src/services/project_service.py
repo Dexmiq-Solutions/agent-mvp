@@ -1,4 +1,4 @@
-from typing import TYPE_CHECKING, Optional
+from typing import Any, TYPE_CHECKING, Optional
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -97,6 +97,40 @@ class ProjectService:
     async def get_project_by_id(self, project_id: str) -> ProjectModel:
         """Alias for get_project to maintain naming compatibility across callers."""
         return await self.get_project(project_id)
+
+    async def get_project_context(self, project_id: str) -> dict[str, Any]:
+        """Retrieve project metadata and source document inventory under project boundary isolation.
+
+        Provides authoritative project context (name, description, and available document names)
+        derived directly from the database without duplicating data across systems or stuffing full
+        document contents into the prompt.
+
+        Args:
+            project_id: Authoritative project identifier.
+
+        Returns:
+            dict containing project_id, project_name, project_description, and available_documents.
+
+        Raises:
+            ProjectNotFoundError: If project does not exist.
+        """
+        project = await self.get_project(project_id)
+        from models.document import DocumentModel
+
+        stmt = (
+            select(DocumentModel.name)
+            .where(DocumentModel.project_id == project_id)
+            .order_by(DocumentModel.name)
+        )
+        result = await self._session.execute(stmt)
+        document_names = list(result.scalars().all())
+
+        return {
+            "project_id": project.id,
+            "project_name": project.name,
+            "project_description": project.description,
+            "available_documents": document_names,
+        }
 
     async def list_projects(
         self,

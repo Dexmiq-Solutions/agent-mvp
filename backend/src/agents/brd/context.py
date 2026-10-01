@@ -32,12 +32,42 @@ class AgentContext:
     Crucial for architectural integrity:
     Ensures that the LLM is never the authority for selecting tenant/project boundaries.
     The application supplies the project_id, which flows into the context and to subsequent tools.
+    Explicit project metadata (project_name, project_description, available_documents) provides
+    grounding context for the controlled BRD workflow without prompt-stuffing full source documents.
     """
 
     project_id: Optional[str] = None
     conversation_id: Optional[str] = None
     user_id: Optional[str] = None
+    project_name: Optional[str] = None
+    project_description: Optional[str] = None
+    available_documents: list[str] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize AgentContext to a dictionary."""
+        return {
+            "project_id": self.project_id,
+            "conversation_id": self.conversation_id,
+            "user_id": self.user_id,
+            "project_name": self.project_name,
+            "project_description": self.project_description,
+            "available_documents": list(self.available_documents),
+            "metadata": dict(self.metadata),
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "AgentContext":
+        """Deserialize a dictionary into an AgentContext instance."""
+        return cls(
+            project_id=data.get("project_id"),
+            conversation_id=data.get("conversation_id"),
+            user_id=data.get("user_id"),
+            project_name=data.get("project_name"),
+            project_description=data.get("project_description"),
+            available_documents=list(data.get("available_documents", [])),
+            metadata=dict(data.get("metadata", {})),
+        )
 
 
 @dataclass
@@ -105,12 +135,7 @@ class ActionResult:
         return {
             "source": src_val,
             "content": self.content,
-            "context": {
-                "project_id": self.context.project_id,
-                "conversation_id": self.context.conversation_id,
-                "user_id": self.context.user_id,
-                "metadata": dict(self.context.metadata),
-            },
+            "context": self.context.to_dict(),
             "success": self.success,
             "error": self.error,
             "metadata": dict(self.metadata),
@@ -120,12 +145,7 @@ class ActionResult:
     def from_dict(cls, data: dict[str, Any]) -> "ActionResult":
         """Deserialize a dictionary into an ActionResult instance."""
         ctx_data = data.get("context", {})
-        ctx = AgentContext(
-            project_id=ctx_data.get("project_id"),
-            conversation_id=ctx_data.get("conversation_id"),
-            user_id=ctx_data.get("user_id"),
-            metadata=dict(ctx_data.get("metadata", {})),
-        )
+        ctx = AgentContext.from_dict(ctx_data) if isinstance(ctx_data, dict) else AgentContext()
         raw_source = data.get("source", ActionSource.DIRECT_WORK.value)
         try:
             source = ActionSource(raw_source)

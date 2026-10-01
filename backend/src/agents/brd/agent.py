@@ -352,6 +352,30 @@ class FinalValidationStrategy:
         }
 
 
+def _build_project_context_prompt_block(
+    context: Optional[AgentContext] = None,
+    state_metadata: Optional[dict[str, Any]] = None,
+) -> str:
+    """Format non-intrusive explicit project context for prompt grounding (DEF-004)."""
+    meta = state_metadata or {}
+    proj_name = getattr(context, "project_name", None) or meta.get("project_name")
+    proj_desc = getattr(context, "project_description", None) or meta.get("project_description")
+    avail_docs = getattr(context, "available_documents", None) or meta.get("available_documents", [])
+
+    lines = []
+    if proj_name:
+        lines.append(f"Project Name: {proj_name}")
+    if proj_desc:
+        lines.append(f"Project Description: {proj_desc}")
+    if avail_docs:
+        docs_str = ", ".join(avail_docs) if isinstance(avail_docs, (list, tuple)) else str(avail_docs)
+        lines.append(f"Available Project Sources (indexed in RAG): {docs_str}")
+
+    if not lines:
+        return ""
+    return "## Project Context\n" + "\n".join(lines) + "\n\n"
+
+
 class BRDLeadAgent:
     """Domain-specific Agent responsible for accomplishing the BRD generation objective.
 
@@ -1691,8 +1715,10 @@ class BRDLeadAgent:
 
         # If LLM model is available, attempt LLM decision
         try:
+            project_block = _build_project_context_prompt_block(effective_ctx, self._state.metadata)
             prompt = (
                 f"You are the BRD Lead Agent. Analyze the current objective and decide the best action.\n"
+                f"{project_block}"
                 f"Objective: {effective_obj}\n"
                 f"Section: {section_name or self._state.current_section or 'General'}\n"
                 f"Available tools: RAG equipped={self.has_rag_capability}\n\n"
@@ -1786,8 +1812,10 @@ class BRDLeadAgent:
         obj_lower = effective_obj.lower()
 
         try:
+            project_block = _build_project_context_prompt_block(effective_ctx, self._state.metadata)
             prompt = (
                 f"You are the BRD Lead Agent. Analyze the current objective and decide the best action.\n"
+                f"{project_block}"
                 f"Objective: {effective_obj}\n"
                 f"Section: {section_name or self._state.current_section or 'General'}\n"
                 f"Available tools: RAG equipped={self.has_rag_capability}\n\n"
@@ -2155,6 +2183,7 @@ class BRDLeadAgent:
         context: Optional[AgentContext] = None,
         prior_messages: Optional[Sequence[Any]] = None,
         current_task: Optional[str] = None,
+        initial_state: Optional[BRDAgentState] = None,
     ) -> AsyncIterator[dict[str, Any]]:
         """Execute the controlled BRD workflow asynchronously via streaming.
 
@@ -2167,11 +2196,14 @@ class BRDLeadAgent:
             context: Optional AgentContext for project isolation.
             prior_messages: Optional sequence of prior BaseMessage instances.
             current_task: Optional immediate task context override.
+            initial_state: Optional pre-existing/restored BRDAgentState for conversation resumption.
 
         Yields:
             dict[str, Any]: Incremental content chunks and progress events from the workflow.
         """
-        if isinstance(request, AgentRunRequest) and request.state is not None:
+        if initial_state is not None:
+            self._state = initial_state
+        elif isinstance(request, AgentRunRequest) and request.state is not None:
             if isinstance(request.state, BRDAgentState):
                 self._state = request.state
             elif isinstance(request.state, dict):
@@ -2188,6 +2220,9 @@ class BRDLeadAgent:
                 project_id=self.project_id,
                 conversation_id=effective_ctx.conversation_id,
                 user_id=effective_ctx.user_id,
+                project_name=effective_ctx.project_name,
+                project_description=effective_ctx.project_description,
+                available_documents=list(effective_ctx.available_documents),
                 metadata=effective_ctx.metadata,
             )
 
@@ -2195,12 +2230,19 @@ class BRDLeadAgent:
             self._state.metadata["project_id"] = effective_ctx.project_id
         if effective_ctx and effective_ctx.conversation_id:
             self._state.metadata["conversation_id"] = effective_ctx.conversation_id
+        if effective_ctx and effective_ctx.project_name:
+            self._state.metadata["project_name"] = effective_ctx.project_name
+        if effective_ctx and effective_ctx.project_description:
+            self._state.metadata["project_description"] = effective_ctx.project_description
+        if effective_ctx and effective_ctx.available_documents:
+            self._state.metadata["available_documents"] = list(effective_ctx.available_documents)
 
         prompt_text = request.input_text if isinstance(request, AgentRunRequest) else str(request)
         async for event in self.stream_workflow_async(
             request=prompt_text,
             context=effective_ctx,
             current_task=current_task,
+            initial_state=self._state,
         ):
             yield event
 
@@ -2671,6 +2713,9 @@ class BRDLeadAgent:
             action_result=target_result,
             metadata={
                 "project_id": effective_ctx.project_id or self._state.metadata.get("project_id"),
+                "project_name": getattr(effective_ctx, "project_name", None) or self._state.metadata.get("project_name"),
+                "project_description": getattr(effective_ctx, "project_description", None) or self._state.metadata.get("project_description"),
+                "available_documents": getattr(effective_ctx, "available_documents", None) or self._state.metadata.get("available_documents"),
             },
         )
 
@@ -2722,6 +2767,9 @@ class BRDLeadAgent:
             action_result=target_result,
             metadata={
                 "project_id": effective_ctx.project_id or self._state.metadata.get("project_id"),
+                "project_name": getattr(effective_ctx, "project_name", None) or self._state.metadata.get("project_name"),
+                "project_description": getattr(effective_ctx, "project_description", None) or self._state.metadata.get("project_description"),
+                "available_documents": getattr(effective_ctx, "available_documents", None) or self._state.metadata.get("available_documents"),
             },
         )
 
@@ -2982,6 +3030,14 @@ class BRDLeadAgent:
         if effective_ctx.project_id:
             self._state.metadata["project_id"] = effective_ctx.project_id
 
+        clarification_res = ActionResult(
+            source="user_clarification",
+            content=answer,
+            success=True,
+            metadata={"resolved_item": resolved_item},
+        )
+        self._state.set_action_result(clarification_res)
+
         self._state.add_evidence({
             "source": "user_clarification",
             "content": answer,
@@ -3095,6 +3151,9 @@ class BRDLeadAgent:
             operation=op,
             metadata={
                 "project_id": effective_ctx.project_id or self._state.metadata.get("project_id"),
+                "project_name": getattr(effective_ctx, "project_name", None) or self._state.metadata.get("project_name"),
+                "project_description": getattr(effective_ctx, "project_description", None) or self._state.metadata.get("project_description"),
+                "available_documents": getattr(effective_ctx, "available_documents", None) or self._state.metadata.get("available_documents"),
             },
         )
 
@@ -3184,6 +3243,9 @@ class BRDLeadAgent:
             operation=op,
             metadata={
                 "project_id": effective_ctx.project_id or self._state.metadata.get("project_id"),
+                "project_name": getattr(effective_ctx, "project_name", None) or self._state.metadata.get("project_name"),
+                "project_description": getattr(effective_ctx, "project_description", None) or self._state.metadata.get("project_description"),
+                "available_documents": getattr(effective_ctx, "available_documents", None) or self._state.metadata.get("available_documents"),
             },
         )
 
@@ -3339,6 +3401,8 @@ class BRDLeadAgent:
             prior_rework_feedback=resolved_prior_rework,
             metadata={
                 "project_id": effective_ctx.project_id or self._state.metadata.get("project_id"),
+                "project_name": getattr(effective_ctx, "project_name", None) or self._state.metadata.get("project_name"),
+                "project_description": getattr(effective_ctx, "project_description", None) or self._state.metadata.get("project_description"),
             },
         )
 
@@ -3442,6 +3506,8 @@ class BRDLeadAgent:
             prior_rework_feedback=resolved_prior_rework,
             metadata={
                 "project_id": effective_ctx.project_id or self._state.metadata.get("project_id"),
+                "project_name": getattr(effective_ctx, "project_name", None) or self._state.metadata.get("project_name"),
+                "project_description": getattr(effective_ctx, "project_description", None) or self._state.metadata.get("project_description"),
             },
         )
 
@@ -3883,14 +3949,6 @@ class BRDLeadAgent:
         - Phase 8: Final Validation Interpretation (Lead Agent) & Recovery (Max 3 Cycles)
         - Phase 9: Workflow Completion & Normalized Response
         """
-        if initial_state is not None:
-            self._state = initial_state
-        elif isinstance(request, AgentRunRequest) and request.state is not None:
-            if isinstance(request.state, BRDAgentState):
-                self._state = request.state
-            elif isinstance(request.state, dict):
-                self._state = BRDAgentState.from_dict(request.state)
-
         effective_ctx = request.context if isinstance(request, AgentRunRequest) else context
         if effective_ctx is None:
             effective_ctx = AgentContext(project_id=self.project_id)
@@ -3899,8 +3957,27 @@ class BRDLeadAgent:
                 project_id=self.project_id,
                 conversation_id=effective_ctx.conversation_id,
                 user_id=effective_ctx.user_id,
+                project_name=getattr(effective_ctx, "project_name", None),
+                project_description=getattr(effective_ctx, "project_description", None),
+                available_documents=list(getattr(effective_ctx, "available_documents", [])),
                 metadata=effective_ctx.metadata,
             )
+
+        if initial_state is not None:
+            self._state = initial_state
+        elif isinstance(request, AgentRunRequest) and request.state is not None:
+            if isinstance(request.state, BRDAgentState):
+                self._state = request.state
+            elif isinstance(request.state, dict):
+                self._state = BRDAgentState.from_dict(request.state)
+        elif (
+            effective_ctx and (
+                (self._state.metadata.get("conversation_id") and effective_ctx.conversation_id and self._state.metadata.get("conversation_id") != effective_ctx.conversation_id)
+                or (self._state.metadata.get("project_id") and effective_ctx.project_id and self._state.metadata.get("project_id") != effective_ctx.project_id)
+            )
+        ):
+            # Guard against cross-conversation and cross-project state pollution if an agent instance is reused
+            self._state = BRDAgentState.initialize_from_template(sections=self.sections)
 
         agent_run_id = (effective_ctx.metadata.get("agent_run_id") if effective_ctx.metadata else None) or str(uuid.uuid4())
         if effective_ctx.metadata is not None:
@@ -3909,6 +3986,12 @@ class BRDLeadAgent:
             self._state.metadata["project_id"] = effective_ctx.project_id
         if effective_ctx.conversation_id:
             self._state.metadata["conversation_id"] = effective_ctx.conversation_id
+        if getattr(effective_ctx, "project_name", None):
+            self._state.metadata["project_name"] = effective_ctx.project_name
+        if getattr(effective_ctx, "project_description", None):
+            self._state.metadata["project_description"] = effective_ctx.project_description
+        if getattr(effective_ctx, "available_documents", None):
+            self._state.metadata["available_documents"] = list(effective_ctx.available_documents)
 
         input_prompt = request.input_text if isinstance(request, AgentRunRequest) else (str(request) if request is not None else None)
 
@@ -4454,8 +4537,6 @@ class BRDLeadAgent:
         initial_state: Optional[BRDAgentState] = None,
     ) -> AsyncIterator[dict[str, Any]]:
         """Stream progress events and document content throughout the BRD workflow lifecycle."""
-        if initial_state is not None:
-            self._state = initial_state
         effective_ctx = request.context if isinstance(request, AgentRunRequest) else context
         if effective_ctx is None:
             effective_ctx = AgentContext(project_id=self.project_id)
@@ -4464,14 +4545,41 @@ class BRDLeadAgent:
                 project_id=self.project_id,
                 conversation_id=effective_ctx.conversation_id,
                 user_id=effective_ctx.user_id,
+                project_name=getattr(effective_ctx, "project_name", None),
+                project_description=getattr(effective_ctx, "project_description", None),
+                available_documents=list(getattr(effective_ctx, "available_documents", [])),
                 metadata=effective_ctx.metadata,
             )
 
+        if initial_state is not None:
+            self._state = initial_state
+        elif isinstance(request, AgentRunRequest) and request.state is not None:
+            if isinstance(request.state, BRDAgentState):
+                self._state = request.state
+            elif isinstance(request.state, dict):
+                self._state = BRDAgentState.from_dict(request.state)
+        elif (
+            effective_ctx and (
+                (self._state.metadata.get("conversation_id") and effective_ctx.conversation_id and self._state.metadata.get("conversation_id") != effective_ctx.conversation_id)
+                or (self._state.metadata.get("project_id") and effective_ctx.project_id and self._state.metadata.get("project_id") != effective_ctx.project_id)
+            )
+        ):
+            # Guard against cross-conversation and cross-project state pollution if an agent instance is reused
+            self._state = BRDAgentState.initialize_from_template(sections=self.sections)
+
         agent_run_id = (effective_ctx.metadata.get("agent_run_id") if effective_ctx.metadata else None) or str(uuid.uuid4())
+        if effective_ctx.metadata is not None:
+            effective_ctx.metadata["agent_run_id"] = agent_run_id
         if effective_ctx.project_id:
             self._state.metadata["project_id"] = effective_ctx.project_id
         if effective_ctx.conversation_id:
             self._state.metadata["conversation_id"] = effective_ctx.conversation_id
+        if getattr(effective_ctx, "project_name", None):
+            self._state.metadata["project_name"] = effective_ctx.project_name
+        if getattr(effective_ctx, "project_description", None):
+            self._state.metadata["project_description"] = effective_ctx.project_description
+        if getattr(effective_ctx, "available_documents", None):
+            self._state.metadata["available_documents"] = list(effective_ctx.available_documents)
 
         input_prompt = request.input_text if isinstance(request, AgentRunRequest) else (str(request) if request is not None else None)
 

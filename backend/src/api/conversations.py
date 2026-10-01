@@ -191,6 +191,9 @@ async def create_message(
         conversation_id=conversation_id,
     )
 
+    # Retrieve authoritative project context and document inventory
+    project_ctx = await service.get_project_context(project_id=project_id)
+
     # Determine streaming mode: only user messages trigger the agent execution
     if payload.role != "user":
         effective_stream = False
@@ -220,12 +223,15 @@ async def create_message(
         metadata=payload.metadata,
     )
 
-    # 3. Create agent execution context preserving application-controlled project_id and conversation_id
+    # 3. Create agent execution context preserving application-controlled project_id, conversation_id, and project context
     agent_run_id = str(uuid.uuid4())
     context_metadata: dict[str, Any] = {
         "user_message_id": user_message.id,
         "conversation_id": conversation_id,
         "agent_run_id": agent_run_id,
+        "project_name": project_ctx["project_name"],
+        "project_description": project_ctx["project_description"],
+        "available_documents": project_ctx["available_documents"],
         **(payload.metadata or {}),
     }
 
@@ -233,17 +239,21 @@ async def create_message(
         project_id=project_id,
         conversation_id=conversation_id,
         user_id=payload.metadata.get("user_id") if payload.metadata else None,
+        project_name=project_ctx["project_name"],
+        project_description=project_ctx["project_description"],
+        available_documents=project_ctx["available_documents"],
         metadata=context_metadata,
     )
 
     # 4. BRDLeadAgent executes under project boundary isolation
 
-    # 5. Retrieve prior conversation message history for multi-turn thread continuity
+    # 5. Retrieve prior conversation message history and reconstruct durable workflow state
     existing_messages = await service.list_messages(
         project_id=project_id,
         conversation_id=conversation_id,
     )
     prior_messages: list[Any] = []
+    initial_workflow_state: Optional[BRDAgentState] = None
     for m in existing_messages:
         if m.id == user_message.id:
             continue
@@ -251,17 +261,31 @@ async def create_message(
             prior_messages.append(HumanMessage(content=m.content))
         elif m.role == "assistant":
             prior_messages.append(AIMessage(content=m.content))
+            if m.meta and "workflow_state" in m.meta:
+                try:
+                    from agents.brd.state import BRDAgentState
+                    initial_workflow_state = BRDAgentState.from_dict(m.meta["workflow_state"])
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to reconstruct workflow state from message id %s: %s",
+                        m.id,
+                        exc,
+                    )
 
     # 6. Stream agent response back to frontend and collect assistant output
     async def event_generator() -> AsyncIterator[str]:
         accumulated_parts: list[str] = []
         start_time = time.perf_counter()
+        stream_kwargs: dict[str, Any] = {
+            "request": payload.content,
+            "context": agent_context,
+            "prior_messages": prior_messages,
+        }
+        if initial_workflow_state is not None:
+            stream_kwargs["initial_state"] = initial_workflow_state
+
         try:
-            async for event in agent.stream_async(
-                request=payload.content,
-                context=agent_context,
-                prior_messages=prior_messages,
-            ):
+            async for event in agent.stream_async(**stream_kwargs):
                 if event.get("type") == "content":
                     token = event.get("content", "")
                     accumulated_parts.append(token)
@@ -275,7 +299,14 @@ async def create_message(
             if not final_text:
                 final_text = "*(No response generated)*"
 
-            # 7. Persist final assistant response using existing message infrastructure
+            final_state = getattr(agent, "state", None)
+            persisted_state_dict = (
+                final_state.to_dict()
+                if final_state is not None and hasattr(final_state, "to_dict")
+                else None
+            )
+
+            # 7. Persist final assistant response and durable workflow state snapshot
             assistant_message = await service.create_message(
                 project_id=project_id,
                 conversation_id=conversation_id,
@@ -287,6 +318,7 @@ async def create_message(
                     "conversation_id": conversation_id,
                     "project_id": project_id,
                     "duration_seconds": round(time.perf_counter() - start_time, 3),
+                    "workflow_state": persisted_state_dict,
                 },
             )
 
