@@ -20,7 +20,7 @@ from deepagents import DeepAgentState
 from agents.brd.delegation import DelegatedTask, DelegationResult, TaskResult
 from agents.brd.evaluation.agent import EvaluationResult
 from agents.brd.section_validation.agent import ValidationResult
-from agents.brd.context import ActionResult
+from agents.brd.context import ActionResult, ActionSource
 
 
 class BRDSectionStatus(str, Enum):
@@ -110,6 +110,7 @@ class BRDAgentState:
     current_section: Optional[str] = None
     section_progress: dict[str, BRDSectionStatus] = field(default_factory=dict)
     evidence: list[Any] = field(default_factory=list)
+    agent_work: list[Any] = field(default_factory=list)
     unresolved_information: list[str] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
     delegated_tasks: list[DelegatedTask] = field(default_factory=list)
@@ -155,6 +156,7 @@ class BRDAgentState:
             current_section=None,
             section_progress=progress,
             evidence=[],
+            agent_work=[],
             unresolved_information=[],
             metadata=dict(metadata or {}),
         )
@@ -364,9 +366,37 @@ class BRDAgentState:
             if current_stat is None or current_stat == BRDSectionStatus.NOT_STARTED:
                 self.section_progress[canonical] = BRDSectionStatus.IN_PROGRESS
 
+    def add_agent_work(self, item: Any) -> None:
+        """Record model-generated analysis, direct work, or proposed content (distinct from project evidence)."""
+        self.agent_work.append(item)
+
     def add_evidence(self, item: Any) -> None:
-        """Add an evidence or working information item to working context."""
+        """Add an authoritative project evidence item to working context.
+
+        Architectural Invariant (DEF-009):
+        PROJECT EVIDENCE != MODEL-GENERATED WORK.
+        Model-generated reasoning, direct work, section drafts, and validation feedback
+        must not contaminate the authoritative project evidence collection.
+        If an item originates from direct work or model synthesis, it is routed to agent_work.
+        """
+        if isinstance(item, dict):
+            src = str(item.get("source", "")).lower()
+            if src in ("direct_work", ActionSource.DIRECT_WORK.value):
+                self.add_agent_work(item)
+                return
+        elif isinstance(item, ActionResult) and item.is_direct_work:
+            self.add_agent_work(item)
+            return
+
         self.evidence.append(item)
+
+    def get_project_evidence(self) -> list[Any]:
+        """Return all authoritative project evidence items collected in state."""
+        return list(self.evidence)
+
+    def get_agent_work(self) -> list[Any]:
+        """Return all model-generated work/analysis items collected in state."""
+        return list(self.agent_work)
 
     def add_unresolved(self, item: str) -> None:
         """Record a missing or unresolved information item / gap."""
@@ -508,6 +538,9 @@ class BRDAgentState:
         data["rework_feedback"] = dict(self.rework_feedback)
         data["waiting_for_user"] = self.waiting_for_user
         data["pending_clarification"] = self.pending_clarification
+        data["agent_work"] = [
+            w.to_dict() if hasattr(w, "to_dict") else w for w in self.agent_work
+        ]
         return data
 
     @classmethod
@@ -612,6 +645,7 @@ class BRDAgentState:
             current_section=data.get("current_section"),
             section_progress=parsed_progress,
             evidence=list(data.get("evidence", [])),
+            agent_work=list(data.get("agent_work", [])),
             unresolved_information=list(data.get("unresolved_information", [])),
             metadata=dict(data.get("metadata", {})),
             delegated_tasks=delegated_tasks,
@@ -650,6 +684,7 @@ class BRDDeepAgentState(DeepAgentState, total=False):
     template_sections: Optional[list[str]]
     section_progress: Optional[dict[str, str]]
     evidence: Optional[list[Any]]
+    agent_work: Optional[list[Any]]
     unresolved_information: Optional[list[str]]
     delegated_tasks: Optional[list[dict[str, Any]]]
     task_results: Optional[list[dict[str, Any]]]

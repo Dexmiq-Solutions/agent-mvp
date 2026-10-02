@@ -12,6 +12,9 @@ from services.document_service import DocumentService
 from services.project_service import ProjectService
 from storage.object import BaseObjectStorage, get_object_storage
 from storage.vector import BaseVectorStore
+from observability.logging import get_logger
+
+logger = get_logger(__name__)
 
 
 def get_vector_store_dependency() -> Optional[BaseVectorStore]:
@@ -126,14 +129,26 @@ def get_brd_lead_agent() -> "BRDLeadAgent":
     from tools.diagnostic import echo_diagnostic_tool
     from tools.rag import create_search_project_knowledge_tool
 
+    from exceptions.retrieval import RetrievalError
+
     try:
         rag_service = get_rag_service_dependency()
         tools = [
             echo_diagnostic_tool,
             create_search_project_knowledge_tool(rag_service=rag_service),
         ]
-    except Exception:
-        tools = [echo_diagnostic_tool]
+    except Exception as exc:
+        logger.error(
+            "Failed to initialize RAG service for BRDLeadAgent: %s. "
+            "RAG capability cannot be equipped.",
+            exc,
+            exc_info=True,
+        )
+        raise RetrievalError(
+            f"RAG service initialization failed: {exc}. "
+            "Cannot construct BRDLeadAgent with required project retrieval capability.",
+            original_error=exc,
+        ) from exc
 
     return BRDLeadAgent(tools=tools)
 
