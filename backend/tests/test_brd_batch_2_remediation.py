@@ -569,10 +569,10 @@ class TestSectionReworkEvidenceRetrieval:
             outcome=ValidationOutcome.NEEDS_REWORK,
             findings=[
                 ValidationFinding(
-                    category=ValidationCategory.GROUNDING,
-                    issue="Missing critical unresolvable data",
-                    explanation="Data is not present in project documents",
-                    required_change="Provide source data",
+                    category=ValidationCategory.SPECIFICITY,
+                    issue="Vague and poorly structured content",
+                    explanation="Writing lacks clarity and required level of detail",
+                    required_change="Improve precision and clarity",
                 )
             ],
         )

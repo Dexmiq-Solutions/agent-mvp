@@ -86,6 +86,7 @@ class ActionSource(str, Enum):
     DIRECT_WORK = "direct_work"
     RAG = "rag"
     DELEGATION = "delegation"
+    USER_CLARIFICATION = "user_clarification"
 
 
 @dataclass
@@ -96,7 +97,7 @@ class ActionResult:
     without needing bespoke handling per execution branch.
 
     Attributes:
-        source: Origin of the action (DIRECT_WORK, RAG, or DELEGATION).
+        source: Origin of the action (DIRECT_WORK, RAG, DELEGATION, or USER_CLARIFICATION).
         content: Primary result content produced by the action.
         context: Execution context preserving project identity and boundaries.
         success: Whether the action executed successfully.
@@ -128,6 +129,12 @@ class ActionResult:
         """Return True if the action originated from Delegation."""
         src_val = self.source.value if isinstance(self.source, ActionSource) else str(self.source)
         return src_val == ActionSource.DELEGATION.value
+
+    @property
+    def is_user_clarification(self) -> bool:
+        """Return True if the action originated from user clarification."""
+        src_val = self.source.value if isinstance(self.source, ActionSource) else str(self.source)
+        return src_val in (ActionSource.USER_CLARIFICATION.value, "user_clarification")
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize ActionResult to a dictionary."""
@@ -174,6 +181,7 @@ class AgentRunResponse:
     error: Optional[str] = None
     state: Optional[Any] = None
     action_result: Optional[ActionResult] = None
+    diagnostics: Optional[dict[str, Any]] = None
 
     @property
     def is_direct_work(self) -> bool:
