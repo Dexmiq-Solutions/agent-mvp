@@ -2,12 +2,15 @@ import React, { useState } from 'react';
 import { NavLink, useLocation } from 'react-router-dom';
 import { LayoutGrid, Hexagon, Menu, X, Folder } from 'lucide-react';
 import { mockProjectService } from '../../services/mockData';
-import type { Project } from '../../types';
+import { listConversations } from '../../services/chatService';
+import type { Project, Conversation } from '../../types';
 
 export const Sidebar: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [mobileOpen, setMobileOpen] = useState(false);
   const location = useLocation();
   const [currentProject, setCurrentProject] = useState<Project | null>(null);
+  const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [isLoadingConversations, setIsLoadingConversations] = useState(false);
 
   React.useEffect(() => {
     const match = location.pathname.match(/^\/projects\/([a-zA-Z0-9-]+)/);
@@ -21,6 +24,18 @@ export const Sidebar: React.FC<{ children: React.ReactNode }> = ({ children }) =
       setCurrentProject(null);
     }
   }, [location.pathname, currentProject?.id]);
+
+  React.useEffect(() => {
+    if (currentProject?.id) {
+      setIsLoadingConversations(true);
+      listConversations(currentProject.id)
+        .then(res => setConversations(res.items || []))
+        .catch(console.error)
+        .finally(() => setIsLoadingConversations(false));
+    } else {
+      setConversations([]);
+    }
+  }, [currentProject?.id, location.pathname]);
 
   return (
     <div className="flex h-screen w-full overflow-hidden" style={{ background: '#0A0A0A' }}>
@@ -53,7 +68,7 @@ export const Sidebar: React.FC<{ children: React.ReactNode }> = ({ children }) =
           bg-zinc-950/50 backdrop-blur-xl border-r border-white/5
         `}
         style={{
-          width: '212px',
+          width: '260px',
         }}
         aria-label="Sidebar navigation"
       >
@@ -144,12 +159,12 @@ export const Sidebar: React.FC<{ children: React.ReactNode }> = ({ children }) =
 
         {/* Current Project Context */}
         {currentProject && (
-          <div className="fade-in" style={{ animation: 'fade-in 0.2s ease forwards' }}>
+          <div className="fade-in flex flex-col flex-1 overflow-hidden" style={{ animation: 'fade-in 0.2s ease forwards' }}>
             <div style={{ height: '1px', background: '#1a1a1a', margin: '16px' }} />
 
             {/* Section label */}
-            <div style={{ padding: '0 16px 6px' }}>
-              <span style={{ fontSize: '10px', fontWeight: 600, letterSpacing: '0.08em', color: '#3a3a3a', textTransform: 'uppercase' }}>
+            <div style={{ padding: '0 16px 8px' }}>
+              <span style={{ fontSize: '11px', fontWeight: 700, letterSpacing: '0.08em', color: '#666', textTransform: 'uppercase' }}>
                 Current Project
               </span>
             </div>
@@ -158,84 +173,87 @@ export const Sidebar: React.FC<{ children: React.ReactNode }> = ({ children }) =
               style={{
                 display: 'flex',
                 flexDirection: 'column',
-                gap: '2px',
+                flex: 1,
+                overflow: 'hidden',
                 padding: '0 8px',
               }}
             >
               {/* Project Title */}
-              <div
+              <NavLink
+                to={`/projects/${currentProject.id}`}
+                onClick={() => setMobileOpen(false)}
                 style={{
                   display: 'flex',
                   alignItems: 'center',
-                  gap: '8px',
-                  padding: '7px 10px',
-                  borderRadius: '7px',
-                  fontSize: '13px',
+                  gap: '10px',
+                  padding: '10px 12px',
+                  borderRadius: '8px',
+                  fontSize: '14px',
                   fontWeight: 600,
-                  letterSpacing: '-0.01em',
                   color: '#FFFFFF',
+                  marginBottom: '12px',
+                  textDecoration: 'none',
+                  transition: 'background 0.15s ease',
                 }}
+                className="hover:bg-white/5"
               >
                 <Folder
-                  size={16}
+                  size={18}
                   strokeWidth={2}
                   style={{ color: '#a5b4fc', flexShrink: 0 }}
                 />
                 <span
                   style={{
                     whiteSpace: 'normal',
-                    lineHeight: '1.3',
+                    lineHeight: '1.4',
                     wordBreak: 'break-word',
                   }}
                 >
                   {currentProject.name}
                 </span>
+              </NavLink>
+
+              {/* Chats heading */}
+              <div style={{ padding: '0 12px 6px' }}>
+                <span style={{ fontSize: '11px', fontWeight: 600, letterSpacing: '0.06em', color: '#666', textTransform: 'uppercase' }}>
+                  Chats
+                </span>
               </div>
 
-              {/* Chats Link */}
-              <div style={{ paddingLeft: '32px', marginTop: '2px', display: 'flex', flexDirection: 'column', gap: '2px' }}>
-                <NavLink
-                  to={`/projects/${currentProject.id}?tab=chats`}
-                  onClick={() => setMobileOpen(false)}
-                  className="hover:bg-white/5 hover:text-white/80 group"
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '6px',
-                    padding: '6px 8px',
-                    borderRadius: '6px',
-                    fontSize: '12.5px',
-                    fontWeight: (location.pathname === `/projects/${currentProject.id}` && (!location.search || location.search.includes('tab=chats'))) || location.pathname.includes('/c/') ? 600 : 400,
-                    textDecoration: 'none',
-                    transition: 'background 0.12s ease, color 0.12s ease',
-                    color: (location.pathname === `/projects/${currentProject.id}` && (!location.search || location.search.includes('tab=chats'))) || location.pathname.includes('/c/') ? '#FFFFFF' : 'rgba(255,255,255,0.45)',
-                    background: (location.pathname === `/projects/${currentProject.id}` && (!location.search || location.search.includes('tab=chats'))) || location.pathname.includes('/c/') ? 'rgba(255,255,255,0.07)' : 'transparent',
-                  }}
-                >
-                  <span>Chats</span>
-                </NavLink>
-
-                {/* Sources Link */}
-                <NavLink
-                  to={`/projects/${currentProject.id}?tab=sources`}
-                  onClick={() => setMobileOpen(false)}
-                  className="hover:bg-white/5 hover:text-white/80 group"
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '6px',
-                    padding: '6px 8px',
-                    borderRadius: '6px',
-                    fontSize: '12.5px',
-                    fontWeight: location.pathname === `/projects/${currentProject.id}` && location.search.includes('tab=sources') ? 600 : 400,
-                    textDecoration: 'none',
-                    transition: 'background 0.12s ease, color 0.12s ease',
-                    color: location.pathname === `/projects/${currentProject.id}` && location.search.includes('tab=sources') ? '#FFFFFF' : 'rgba(255,255,255,0.45)',
-                    background: location.pathname === `/projects/${currentProject.id}` && location.search.includes('tab=sources') ? 'rgba(255,255,255,0.07)' : 'transparent',
-                  }}
-                >
-                  <span>Sources</span>
-                </NavLink>
+              {/* Conversation List */}
+              <div className="flex-1 overflow-y-auto scroll-smooth" style={{ display: 'flex', flexDirection: 'column', gap: '4px', paddingBottom: '16px' }}>
+                {isLoadingConversations ? (
+                  <span style={{ fontSize: '13px', color: 'rgba(255,255,255,0.4)', padding: '8px 12px' }}>Loading chats...</span>
+                ) : conversations.length === 0 ? (
+                  <span style={{ fontSize: '13px', color: 'rgba(255,255,255,0.4)', padding: '8px 12px' }}>No chats yet</span>
+                ) : (
+                  conversations.map(conv => {
+                    const isActive = location.pathname === `/projects/${currentProject.id}/c/${conv.id}`;
+                    return (
+                      <NavLink
+                        key={conv.id}
+                        to={`/projects/${currentProject.id}/c/${conv.id}`}
+                        onClick={() => setMobileOpen(false)}
+                        className={`group truncate transition-all duration-200 ${isActive ? 'bg-white/10 text-white shadow-sm' : 'hover:bg-white/5 text-zinc-400 hover:text-zinc-200'}`}
+                        title={conv.title}
+                        style={{
+                          display: 'block',
+                          padding: '10px 12px',
+                          borderRadius: '8px',
+                          fontSize: '13px',
+                          fontWeight: isActive ? 500 : 400,
+                          textDecoration: 'none',
+                          whiteSpace: 'nowrap',
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          lineHeight: '1.5'
+                        }}
+                      >
+                        {conv.title}
+                      </NavLink>
+                    );
+                  })
+                )}
               </div>
             </nav>
           </div>

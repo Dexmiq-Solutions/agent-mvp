@@ -1,5 +1,5 @@
 import React, { useState, useRef, useCallback } from 'react';
-import { ArrowUp, Brain } from 'lucide-react';
+import { ArrowUp } from 'lucide-react';
 
 interface NewChatComposerProps {
   projectName: string;
@@ -97,16 +97,7 @@ export const NewChatComposer: React.FC<NewChatComposerProps> = ({ projectName, o
         }}
       >
         <div className="flex items-center gap-2">
-          {/* Think button */}
-          <button
-            onClick={() => {}}
-            className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-[13.5px] font-medium transition-all duration-200
-                       bg-white/5 border border-white/10 text-zinc-300
-                       hover:bg-white/10 hover:border-white/20 hover:text-white"
-          >
-            <Brain size={15} strokeWidth={2} />
-            Think
-          </button>
+          {/* Controls can go here */}
         </div>
 
         {/* Right controls */}
