@@ -353,3 +353,93 @@ def is_benign_administrative_metadata_finding(finding: Any, section_name: str) -
 
     return False
 
+
+def is_honest_uncertainty_or_non_provided_text(text: str) -> bool:
+    """Check if a string represents an honest statement of uncertainty or non-provided information."""
+    if not text:
+        return False
+    norm = text.strip().lower()
+    phrases = [
+        "not provided",
+        "not discussed",
+        "not defined",
+        "not specified",
+        "to be clarified",
+        "to be determined",
+        "pending formal definition",
+        "pending clarification",
+        "not available in the available",
+        "not available in available",
+        "was not defined",
+        "were not defined",
+        "were not provided",
+        "was not provided",
+    ]
+    return any(p in norm for p in phrases) or is_tbd_value(norm)
+
+
+def is_documentation_quality_finding(finding: Any, section_name: str = "") -> bool:
+    """Check if a validation finding is an ordinary documentation-quality observation
+    or an observation about non-provided detail that should not block initial BRD generation.
+    """
+    if finding is None:
+        return False
+
+    if is_benign_administrative_metadata_finding(finding, section_name):
+        return True
+
+    issue = getattr(finding, "issue", "") if not isinstance(finding, str) else finding
+    explanation = getattr(finding, "explanation", "") if not isinstance(finding, str) else ""
+
+    full_text = f"{issue} {explanation}".lower()
+
+    # Never treat fabricated claims, hallucinations, or explicit contradictions as benign documentation findings
+    if any(k in full_text for k in ["hallucinat", "fabricated", "contradict", "unsupported claim presented as fact"]):
+        return False
+
+    # Check if finding is observing that the section honestly noted uncertainty/TBD/unprovided detail
+    if any(k in full_text for k in [
+        "honestly notes", "honestly states", "marked as tbd", "identified as potential capability",
+        "honestly represented", "correctly notes that", "noted as not provided",
+        "stated as not provided", "represented as unknown",
+    ]):
+        return True
+
+    # Optional detail indicators and observations that should not block initial BRD
+    doc_quality_indicators = [
+        "conceptual workflow", "workflow diagram", "persona priority",
+        "persona-to-module", "unresolved assumption", "product naming",
+        "inquiry routing", "operational process", "detailed ai",
+        "ai functionality", "ai behavior",
+    ]
+    if any(k in full_text for k in doc_quality_indicators):
+        return True
+
+    return False
+
+
+def is_substantive_business_clarification_item(item: str) -> bool:
+    """Check if an unresolved item is a genuine business requirement that warrants user clarification,
+    rather than administrative metadata, document mechanic, or ordinary documentation-quality observation.
+    """
+    if not item or not is_substantive_requirement(item):
+        return False
+
+    norm = item.strip().lower()
+
+    # Exclude raw placeholders
+    if is_tbd_value(norm) or norm in ("not provided", "tbd", "to be clarified", "unknown", "none", "n/a"):
+        return False
+
+    # Exclude optional detail findings
+    if is_documentation_quality_finding(item):
+        return False
+
+    # Exclude writing and formatting quality feedback from becoming user questions
+    writing_quality_terms = ["clarity", "vague", "precision", "formatting", "grammar", "style", "readability", "structured content"]
+    if any(t in norm for t in writing_quality_terms):
+        return False
+
+    return True
+
+

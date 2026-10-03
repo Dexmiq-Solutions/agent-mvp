@@ -32,6 +32,7 @@ from agents.brd.template import (
     extract_section_requirements,
     extract_section_template,
     is_benign_administrative_metadata_finding,
+    is_documentation_quality_finding,
 )
 from observability.logging import get_logger
 
@@ -393,7 +394,15 @@ def _build_validation_prompt(context: SectionValidationContext) -> str:
         "- Document Mechanics: Version numbers (e.g. 1.0), question IDs (e.g. Q-BRD-0001), module IDs, and dates "
         "are deterministic mechanics and do not require RAG evidence.\n"
         "- Substantive Requirements: Business rules, integrations, workflows, and functional requirements MUST be grounded. "
-        "Unsupported business claims must be flagged.\n\n"
+        "Unsupported business claims must be flagged.\n"
+        "- Representation of Unknowns: When information is genuinely unavailable in project evidence, "
+        "transparent, honest statements acknowledging that specific details were not provided "
+        "(e.g., 'Conceptual workflows were not provided in the available project information', "
+        "'Detailed AI functionality was not defined in the available information', 'TBD') are VALID and grounded. "
+        "Do NOT flag honest representations of non-provided information as omissions, completeness failures, or ungrounded claims.\n"
+        "- Documentation-Quality Observations: Missing conceptual workflows, persona priorities/frustrations, "
+        "persona-to-module links, or detailed AI behaviors must NOT cause section failure when the evidence simply does not contain them.\n"
+        "- Grounding Enforcement: Unsupported or fabricated project facts presented as confirmed truth MUST be flagged under Grounding.\n\n"
         "Determine the categorical outcome: VALID or NEEDS_REWORK.\n"
         "For each issue found, provide a concrete finding with category, issue, explanation, and required_change.\n"
         "If outcome is NEEDS_REWORK, provide actionable rework_feedback summarizing what the generator must change.\n"
@@ -449,10 +458,11 @@ def _parse_validation_response(
                 if isinstance(rework_feedback, str):
                     rework_feedback = rework_feedback.strip() or None
 
-                # Filter out findings that falsely penalize valid administrative TBD metadata or document mechanics
+                # Filter out findings that falsely penalize valid administrative TBD metadata or documentation-quality observations
                 substantive_findings = [
                     f for f in findings
                     if not is_benign_administrative_metadata_finding(f, context.section_name)
+                    and not is_documentation_quality_finding(f, context.section_name)
                 ]
 
                 if outcome == ValidationOutcome.NEEDS_REWORK and not substantive_findings:

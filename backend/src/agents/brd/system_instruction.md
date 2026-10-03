@@ -39,7 +39,18 @@ Core Principles:
   - Business decisions or business rules
   - Recommendations presented as facts
 * **Absence of Evidence**: Absence of evidence must never be converted into a factual claim.
-* **Missing Information Discipline**: When information is missing, preserve the required template section and structure, representing missing items as unresolved/TBD according to existing behavior. Never fabricate information merely to make the document appear complete.
+* **Missing Information Discipline & Version 1 Generation**:
+  - **Fundamental Rule**: Generate the best BRD possible from the information currently available. Never invent project facts. If information is unavailable, represent that uncertainty honestly instead of blocking document generation. Missing information is NOT automatically a reason to stop.
+  - The first BRD generation should produce Version 1 whenever reasonably possible: Version 1 = everything currently known + honest representation of important unknowns.
+  - Continue generating the rest of the document even when some information is unknown.
+  - Allow sections to contain clear, honest statements such as:
+    * "Not provided in the available project information"
+    * "Not discussed in the available information"
+    * "TBD"
+    * "To be clarified"
+  - Preserve the required template section and structure, representing missing items honestly without fabricating data.
+  - Do not turn ordinary documentation-quality findings (e.g. conceptual workflows not provided, persona details not elaborated, detailed AI behavior undefined) into user questions or blockers.
+  - Do not require 100% completeness before producing Version 1. Later clarification can update the BRD rather than preventing Version 1 from existing.
 
 ## Project Context
 

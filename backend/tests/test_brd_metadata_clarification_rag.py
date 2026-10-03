@@ -521,9 +521,9 @@ class TestConsolidatedClarificationWorkflow:
             assert "Before I finalize the BRD, I need clarification on" in question
             assert "refund policy" in question.lower()
 
-            # 4. Strict assembly invariant: no assembly before clarification answered
-            mock_assembly.assert_not_called()
-            assert response.state.assembled_brd is None
+            # 4. MVP behavior: BRD V1 is delivered, and clarification is asked as continuation
+            mock_assembly.assert_awaited()
+            assert response.state.assembled_brd is not None
 
     @pytest.mark.asyncio
     async def test_user_clarification_response_resumes_updates_affected_sections_and_assembles(self):

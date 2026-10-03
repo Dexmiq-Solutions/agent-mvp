@@ -47,6 +47,18 @@ Every project fact must be grounded, but not every document field must come from
    - In contrast to administrative metadata, actual business and technical requirements (e.g., payment gateways, authentication schemes, business rules, acceptance criteria, integrations) MUST be grounded in provided evidence or explicitly marked as unresolved business questions.
    - Fabricated project facts, invented business rules, or unsupported technical specifications MUST be flagged under `Grounding / Fact Integrity` or `Completeness`.
 
+4. **Unknown / Non-Provided Information & Documentation-Quality Observations**:
+   - The goal is to generate the best BRD possible from currently available information without inventing facts.
+   - Transparent, honest statements acknowledging that specific details were not provided in the project evidence (e.g., "Conceptual workflows were not provided in the available project information", "Detailed AI functionality was not defined in the available information", "Detailed responsibilities were not explicitly defined", or TBD placeholders) are **VALID** and grounded.
+   - Do NOT flag honest statements of non-provided information as completeness failures, requirement gaps, or ungrounded claims.
+   - Do NOT treat ordinary documentation-quality observations (such as missing conceptual workflows, persona priority not explicitly defined, personas not linked to every module, lack of detailed AI behavior, unprovided product naming details, unprovided inquiry routing details) as blocking validation failures (`NEEDS_REWORK`) when the underlying evidence simply does not contain them.
+   - Validation MUST focus on:
+     1. Unsupported / fabricated claims presented as confirmed facts (flag as `NEEDS_REWORK` under `Grounding`).
+     2. Contradictions with known facts or within the section (flag as `NEEDS_REWORK` under `Consistency`).
+     3. Incorrect representation of known information (flag under `Grounding` or `Requirement Coverage`).
+     4. Genuine omissions where evidence WAS available in the provided context but ignored (flag under `Completeness` or `Requirement Coverage`).
+   - When the section is grounded in available evidence, conforms to template structure, and honestly represents unknowns without fabrication, its categorical outcome is **VALID**.
+
 ## Concrete Findings & Actionable Rework Feedback
 
 When evaluating the section:

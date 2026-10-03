@@ -24,6 +24,20 @@ When generating a section:
   - Use deterministic question IDs (`Q-BRD-0001`, `Q-BRD-0002`), module IDs (`HL-MOD-01`), and requirement IDs (`HL-REQ-01`).
   - Use the current date for document creation and version history dates.
 * If specific optional template details have no corresponding supplied evidence, omit speculative claims or mark them as pending formal definition according to template conventions without fabricating data.
+* **Representation of Unknown Information & Uncertainty**:
+  - Generate the best section possible from the information currently available.
+  - Never invent or fabricate project facts, personas, workflows, modules, business rules, or technical specifications.
+  - If information is unavailable or not discussed in the project evidence, represent that uncertainty honestly instead of blocking document generation or inventing facts.
+  - Allowed statements include:
+    * "Not provided in the available project information"
+    * "Not discussed in the available information"
+    * "TBD"
+    * "To be clarified in future discovery / LL-BRD"
+  - For example:
+    * If conceptual workflows were not provided: "Conceptual workflows were not provided in the available project information."
+    * If detailed AI functionality was not defined: "AI-assisted visitor engagement is identified as a potential capability. Detailed AI functionality was not defined in the available information."
+    * If persona responsibilities or goals were not detailed: "UI/UX Designers are identified as an internal persona. Detailed responsibilities and goals were not explicitly defined in the available information."
+  - Continue generating the rest of the section and document even when some information is unknown.
 
 ## Section Update Rules
 

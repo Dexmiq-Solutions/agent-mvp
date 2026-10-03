@@ -62,7 +62,9 @@ from agents.brd.template import (
     get_brd_template_path,
     is_administrative_section,
     is_benign_administrative_metadata_finding,
+    is_documentation_quality_finding,
     is_metadata_or_role_item,
+    is_substantive_business_clarification_item,
     is_substantive_requirement,
     is_tbd_value,
     load_brd_template,
@@ -4039,17 +4041,18 @@ class BRDLeadAgent:
                 for f in val_res.findings
             ]
 
-            # Filter benign administrative metadata and document mechanics findings
+            # Filter benign administrative metadata and documentation-quality findings
             substantive_findings = [
                 f for f in val_res.findings
                 if not is_benign_administrative_metadata_finding(f, target_sec)
+                and not is_documentation_quality_finding(f, target_sec)
             ]
 
             if not substantive_findings:
                 strategy = SectionReworkStrategy(
                     section_name=target_sec,
                     requires_rework=False,
-                    reasoning=f"Section '{target_sec}' satisfies requirements (administrative placeholders are accepted).",
+                    reasoning=f"Section '{target_sec}' satisfies requirements (documentation observations and administrative placeholders are accepted).",
                 )
                 return strategy
 
@@ -4795,13 +4798,14 @@ class BRDLeadAgent:
                         outcome=eval_result2.outcome.value,
                     )
                     if eval_result2.outcome != EvaluationOutcome.SUFFICIENT:
-                        gap_decision2 = await self.interpret_evaluation_async(
-                            evaluation_result=eval_result2,
-                            objective=effective_obj,
-                            context=effective_ctx,
+                        for gap in list(eval_result2.missing_information) + list(eval_result2.unresolved_information):
+                            if is_substantive_business_clarification_item(gap):
+                                self._state.add_unresolved(gap)
+                        gap_decision = GapResolutionDecision(
+                            action=GapResolutionAction.PROCEED_TO_SECTION_GENERATION,
+                            reasoning="Proceeding to section generation with available evidence; unresolved items recorded.",
+                            identified_gaps=list(eval_result2.missing_information) + list(eval_result2.unresolved_information),
                         )
-                        if gap_decision2.action == GapResolutionAction.ASK_USER:
-                            gap_decision = gap_decision2
 
             if gap_decision.action == GapResolutionAction.ASK_USER:
                 question = gap_decision.clarification_question or "Clarification required from user."
@@ -5005,7 +5009,7 @@ class BRDLeadAgent:
                         # Record genuine substantive gap, preserve draft
                         substantive_items = [
                             item for item in rework_strategy.missing_evidence_items
-                            if is_substantive_requirement(item)
+                            if is_substantive_business_clarification_item(item)
                         ]
                         for item in substantive_items:
                             self._state.add_unresolved(item)
@@ -5013,7 +5017,7 @@ class BRDLeadAgent:
                             self._state.metadata.setdefault("unresolved_section_gaps", {}).setdefault(cur_sec, []).extend(substantive_items)
                         if gen_res.content:
                             self._state.set_section_content(cur_sec, gen_res.content)
-                        self._state.update_section_status(cur_sec, BRDSectionStatus.NEEDS_REVISION)
+                        self._state.update_section_status(cur_sec, BRDSectionStatus.COMPLETED)
 
                         if next_sec is not None:
                             self._state.set_current_section(next_sec, auto_in_progress=True)
@@ -5077,31 +5081,6 @@ class BRDLeadAgent:
                     diagnostics=diagnostics,
                 )
 
-        # Consolidation Gate: inspect accumulated unresolved information
-        substantive_unresolved = [
-            u for u in self._state.unresolved_information
-            if is_substantive_requirement(u)
-        ]
-        if substantive_unresolved and not self._state.metadata.get("clarification_gate_completed"):
-            self._state.metadata["clarification_gate_completed"] = True
-            clarification_q = self.construct_consolidated_clarification_question(substantive_unresolved)
-            self._state.set_waiting_for_user(clarification_q)
-            self._state.metadata["pending_consolidated_clarification"] = True
-            log_trace_event(
-                logger,
-                agent_run_id=agent_run_id,
-                actor=TraceActor.APPLICATION,
-                event_name="USER_CONSOLIDATED_CLARIFICATION_REQUIRED",
-                question=clarification_q,
-                unresolved_items=substantive_unresolved,
-            )
-            return AgentRunResponse(
-                output_text=clarification_q,
-                context=effective_ctx,
-                state=self._state,
-                success=True,
-            )
-
         # Phase 6: Document Assembly Gate
         log_trace_event(
             logger,
@@ -5127,7 +5106,7 @@ class BRDLeadAgent:
             )
 
         assembly_res = await self.assemble_brd_async(context=effective_ctx)
-        if getattr(assembly_res, "assembled_document", None) and not self._state.assembled_brd:
+        if getattr(assembly_res, "assembled_document", None):
             self._state.set_assembled_brd(assembly_res.assembled_document)
         log_trace_event(
             logger,
@@ -5249,7 +5228,29 @@ class BRDLeadAgent:
             event_name="WORKFLOW_PHASE_STARTED",
             phase="9_COMPLETION",
         )
-        final_output = self._state.assembled_brd or "BRD generation completed."
+        final_doc = self._state.assembled_brd or "BRD generation completed."
+        final_output = final_doc
+
+        # Continuation mechanism: if substantive unresolved information exists, ask consolidated clarification after delivering BRD V1
+        substantive_unresolved = [
+            u for u in self._state.unresolved_information
+            if is_substantive_business_clarification_item(u)
+        ]
+        if substantive_unresolved and not self._state.metadata.get("clarification_gate_completed"):
+            self._state.metadata["clarification_gate_completed"] = True
+            clarification_q = self.construct_consolidated_clarification_question(substantive_unresolved)
+            self._state.set_waiting_for_user(clarification_q)
+            self._state.metadata["pending_consolidated_clarification"] = True
+            log_trace_event(
+                logger,
+                agent_run_id=agent_run_id,
+                actor=TraceActor.APPLICATION,
+                event_name="USER_CONSOLIDATED_CLARIFICATION_REQUIRED",
+                question=clarification_q,
+                unresolved_items=substantive_unresolved,
+            )
+            final_output = f"{final_doc}\n\n---\n\n{clarification_q}"
+
         log_trace_event(
             logger,
             agent_run_id=agent_run_id,
@@ -5529,9 +5530,14 @@ class BRDLeadAgent:
                 }
                 _, eval_result2 = self.retry_with_rag(query=gap_decision.query, context=effective_ctx, evaluate_after=True)
                 if eval_result2 and eval_result2.outcome != EvaluationOutcome.SUFFICIENT:
-                    gap_decision2 = await self.interpret_evaluation_async(evaluation_result=eval_result2, objective=effective_obj, context=effective_ctx)
-                    if gap_decision2.action == GapResolutionAction.ASK_USER:
-                        gap_decision = gap_decision2
+                    for gap in list(eval_result2.missing_information) + list(eval_result2.unresolved_information):
+                        if is_substantive_business_clarification_item(gap):
+                            self._state.add_unresolved(gap)
+                    gap_decision = GapResolutionDecision(
+                        action=GapResolutionAction.PROCEED_TO_SECTION_GENERATION,
+                        reasoning="Proceeding to section generation with available evidence; unresolved items recorded.",
+                        identified_gaps=list(eval_result2.missing_information) + list(eval_result2.unresolved_information),
+                    )
 
             if gap_decision.action == GapResolutionAction.ASK_USER:
                 question = gap_decision.clarification_question or "Clarification required from user."
@@ -5640,7 +5646,7 @@ class BRDLeadAgent:
                         # Record genuine substantive gap, preserve draft
                         substantive_items = [
                             item for item in rework_strategy.missing_evidence_items
-                            if is_substantive_requirement(item)
+                            if is_substantive_business_clarification_item(item)
                         ]
                         for item in substantive_items:
                             self._state.add_unresolved(item)
@@ -5648,7 +5654,7 @@ class BRDLeadAgent:
                             self._state.metadata.setdefault("unresolved_section_gaps", {}).setdefault(cur_sec, []).extend(substantive_items)
                         if gen_res.content:
                             self._state.set_section_content(cur_sec, gen_res.content)
-                        self._state.update_section_status(cur_sec, BRDSectionStatus.NEEDS_REVISION)
+                        self._state.update_section_status(cur_sec, BRDSectionStatus.COMPLETED)
 
                         if next_sec is not None:
                             self._state.set_current_section(next_sec, auto_in_progress=True)
@@ -5661,7 +5667,7 @@ class BRDLeadAgent:
                             }
                             continue
                         else:
-                            # Last section of drafting pass reached; stop section loop to enter consolidation gate
+                            # Last section of drafting pass reached; continue to assembly
                             break
                     else:
                         clarification_counts[cur_sec] = sec_clarification_count + 1
@@ -5705,33 +5711,6 @@ class BRDLeadAgent:
                 yield {"type": "content", "content": diag_text}
                 return
 
-        # Consolidation Gate: inspect accumulated unresolved information
-        substantive_unresolved = [
-            u for u in self._state.unresolved_information
-            if is_substantive_requirement(u)
-        ]
-        if substantive_unresolved and not self._state.metadata.get("clarification_gate_completed"):
-            self._state.metadata["clarification_gate_completed"] = True
-            clarification_q = self.construct_consolidated_clarification_question(substantive_unresolved)
-            self._state.set_waiting_for_user(clarification_q)
-            self._state.metadata["pending_consolidated_clarification"] = True
-            log_trace_event(
-                logger,
-                agent_run_id=agent_run_id,
-                actor=TraceActor.APPLICATION,
-                event_name="USER_CONSOLIDATED_CLARIFICATION_REQUIRED",
-                question=clarification_q,
-                unresolved_items=substantive_unresolved,
-            )
-            yield {
-                "type": "progress",
-                "phase": "5_SECTION_ITERATION",
-                "actor": TraceActor.APPLICATION,
-                "message": f"Consolidated clarification requested before finalization: {clarification_q}",
-            }
-            yield {"type": "content", "content": clarification_q}
-            return
-
         yield {
             "type": "progress",
             "phase": "6_DOCUMENT_ASSEMBLY",
@@ -5739,7 +5718,7 @@ class BRDLeadAgent:
             "message": "Assembling complete Business Requirements Document...",
         }
         assembly_res = await self.assemble_brd_async(context=effective_ctx)
-        if getattr(assembly_res, "assembled_document", None) and not self._state.assembled_brd:
+        if getattr(assembly_res, "assembled_document", None):
             self._state.set_assembled_brd(assembly_res.assembled_document)
 
         yield {
@@ -5778,6 +5757,31 @@ class BRDLeadAgent:
         }
         final_doc = self._state.assembled_brd or "BRD generation completed."
         yield {"type": "content", "content": final_doc}
+
+        substantive_unresolved = [
+            u for u in self._state.unresolved_information
+            if is_substantive_business_clarification_item(u)
+        ]
+        if substantive_unresolved and not self._state.metadata.get("clarification_gate_completed"):
+            self._state.metadata["clarification_gate_completed"] = True
+            clarification_q = self.construct_consolidated_clarification_question(substantive_unresolved)
+            self._state.set_waiting_for_user(clarification_q)
+            self._state.metadata["pending_consolidated_clarification"] = True
+            log_trace_event(
+                logger,
+                agent_run_id=agent_run_id,
+                actor=TraceActor.APPLICATION,
+                event_name="USER_CONSOLIDATED_CLARIFICATION_REQUIRED",
+                question=clarification_q,
+                unresolved_items=substantive_unresolved,
+            )
+            yield {
+                "type": "progress",
+                "phase": "9_COMPLETION",
+                "actor": TraceActor.APPLICATION,
+                "message": f"Consolidated clarification requested for continuation: {clarification_q}",
+            }
+            yield {"type": "content", "content": f"\n\n---\n\n{clarification_q}"}
 
 
 def create_brd_lead_agent(

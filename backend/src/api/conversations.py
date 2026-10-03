@@ -13,6 +13,8 @@ from agents.brd.agent import BRDLeadAgent
 from agents.brd.context import AgentContext
 from agents.brd.state import BRDAgentState
 from api.dependencies import get_brd_lead_agent, get_conversation_service
+from db.session import get_async_session_maker
+from models.message import MessageModel
 from observability.logging import get_logger
 from schemas.conversation import (
     ConversationCreate,
@@ -165,6 +167,38 @@ async def delete_conversation(
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
+async def _persist_assistant_turn(
+    project_id: str,
+    conversation_id: str,
+    content: str,
+    metadata: dict[str, Any],
+    original_session: Optional[Any] = None,
+) -> MessageModel:
+    """Persist final assistant turn using a fresh AsyncSession boundary to prevent connection degradation.
+
+    Decouples final assistant message and workflow state persistence from any long-lived
+    request session that was active during the multi-minute agent execution. A newly acquired
+    session checks out a fresh connection from the pool, benefiting from engine pool_pre_ping.
+    """
+    bind_engine = getattr(original_session, "bind", None)
+    session_maker = (
+        get_async_session_maker(engine=bind_engine)
+        if bind_engine is not None
+        else get_async_session_maker()
+    )
+    async with session_maker() as persist_session:
+        persist_service = ConversationService(session=persist_session)
+        assistant_message = await persist_service.create_message(
+            project_id=project_id,
+            conversation_id=conversation_id,
+            content=content,
+            role="assistant",
+            metadata=metadata,
+        )
+        await persist_session.commit()
+        return assistant_message
+
+
 @router.post(
     "/{conversation_id}/messages",
     status_code=status.HTTP_201_CREATED,
@@ -183,10 +217,10 @@ async def create_message(
     When a user message is sent, the BRD Lead Agent executes the controlled BRD workflow
     directly under project boundary isolation.
     - If streaming is enabled (stream=true), response content and phase progress are
-      streamed via Server-Sent Events (SSE). The final assistant response is persisted
-      and emitted in a completion event.
+       streamed via Server-Sent Events (SSE). The final assistant response is persisted
+       and emitted in a completion event.
     - If streaming is disabled (stream=false), the workflow executes synchronously and
-      returns the persisted assistant response directly as HTTP 201 Created (MessageResponse).
+       returns the persisted assistant response directly as HTTP 201 Created (MessageResponse).
     Non-user messages (e.g. role="assistant" for seeding) are persisted directly and return HTTP 201.
     """
     # 1. Enforce Project Isolation & Conversation validation using existing services
@@ -224,9 +258,19 @@ async def create_message(
         role="user",
         metadata=payload.metadata,
     )
+
+    # 3. Retrieve prior conversation message history before closing the pre-agent transaction
+    existing_messages = await service.list_messages(
+        project_id=project_id,
+        conversation_id=conversation_id,
+    )
+
+    # 4. Enforce pre-agent database transaction boundary: commit all pre-agent work
+    # immediately so that no active transaction or checked-out database connection
+    # is held by the request session during long-running agent execution.
     await service._session.commit()
 
-    # 3. Create agent execution context preserving application-controlled project_id, conversation_id, and project context
+    # 5. Create agent execution context preserving application-controlled project_id, conversation_id, and project context
     agent_run_id = str(uuid.uuid4())
     context_metadata: dict[str, Any] = {
         "user_message_id": user_message.id,
@@ -248,13 +292,7 @@ async def create_message(
         metadata=context_metadata,
     )
 
-    # 4. BRDLeadAgent executes under project boundary isolation
-
-    # 5. Retrieve prior conversation message history and reconstruct durable workflow state
-    existing_messages = await service.list_messages(
-        project_id=project_id,
-        conversation_id=conversation_id,
-    )
+    # 6. Reconstruct prior messages and durable workflow state from message history
     prior_messages: list[Any] = []
     initial_workflow_state: Optional[BRDAgentState] = None
     for m in existing_messages:
@@ -275,7 +313,7 @@ async def create_message(
                         exc,
                     )
 
-    # 6. Branch on streaming mode: both modes execute the controlled BRD workflow
+    # 7. Branch on streaming mode: both modes execute the controlled BRD workflow
     if not effective_stream:
         start_time = time.perf_counter()
         run_kwargs: dict[str, Any] = {
@@ -316,12 +354,11 @@ async def create_message(
             else "*(No response generated)*"
         )
 
-        # Persist final assistant response and durable workflow state snapshot
-        assistant_message = await service.create_message(
+        # Persist final assistant response and durable workflow state snapshot using a fresh session
+        assistant_message = await _persist_assistant_turn(
             project_id=project_id,
             conversation_id=conversation_id,
             content=final_text,
-            role="assistant",
             metadata={
                 "user_message_id": user_message.id,
                 "agent_run_id": agent_run_id,
@@ -330,6 +367,7 @@ async def create_message(
                 "duration_seconds": round(time.perf_counter() - start_time, 3),
                 "workflow_state": persisted_state_dict,
             },
+            original_session=service._session,
         )
 
         logger.info(
@@ -344,7 +382,7 @@ async def create_message(
 
         return MessageResponse.from_model(assistant_message)
 
-    # 7. Stream agent response back to frontend and collect assistant output
+    # 8. Stream agent response back to frontend and collect assistant output
     async def event_generator() -> AsyncIterator[str]:
         accumulated_parts: list[str] = []
         start_time = time.perf_counter()
@@ -379,12 +417,11 @@ async def create_message(
                 else None
             )
 
-            # 7. Persist final assistant response and durable workflow state snapshot
-            assistant_message = await service.create_message(
+            # Persist final assistant response and durable workflow state snapshot using a fresh session
+            assistant_message = await _persist_assistant_turn(
                 project_id=project_id,
                 conversation_id=conversation_id,
                 content=final_text,
-                role="assistant",
                 metadata={
                     "user_message_id": user_message.id,
                     "agent_run_id": agent_run_id,
@@ -393,6 +430,7 @@ async def create_message(
                     "duration_seconds": round(time.perf_counter() - start_time, 3),
                     "workflow_state": persisted_state_dict,
                 },
+                original_session=service._session,
             )
 
             logger.info(
@@ -405,7 +443,7 @@ async def create_message(
                 time.perf_counter() - start_time,
             )
 
-            # 8. Return completion event to the frontend
+            # Return completion event to the frontend
             done_data = json.dumps({
                 "type": "done",
                 "message": MessageResponse.from_model(assistant_message).model_dump(mode="json"),
