@@ -1,5 +1,5 @@
 import { apiRequest, API_BASE } from './client.ts';
-import type { Conversation, ConversationDetail, Message } from '../types/index.ts';
+import type { Conversation, ConversationDetail, Message, WorkflowProgressEvent } from '../types/index.ts';
 
 export async function listConversations(projectId: string): Promise<Conversation[]> {
   return apiRequest<Conversation[]>(`/projects/${projectId}/conversations`);
@@ -25,6 +25,7 @@ export interface SendMessageStreamOptions {
   conversationId: string;
   content: string;
   onToken?: (token: string) => void;
+  onProgress?: (progress: WorkflowProgressEvent) => void;
   onDone?: (finalMessage: Message) => void;
   onError?: (error: string) => void;
 }
@@ -34,6 +35,7 @@ export async function sendMessageStream({
   conversationId,
   content,
   onToken,
+  onProgress,
   onDone,
   onError,
 }: SendMessageStreamOptions): Promise<void> {
@@ -74,6 +76,7 @@ export async function sendMessageStream({
   const decoder = new TextDecoder();
   let buffer = '';
   let currentEvent = 'message';
+  let streamCompleted = false;
 
   try {
     while (true) {
@@ -102,14 +105,19 @@ export async function sendMessageStream({
               if (parsed.content) {
                 onToken?.(parsed.content);
               }
+            } else if (currentEvent === 'progress' || parsed.type === 'progress') {
+              onProgress?.(parsed as WorkflowProgressEvent);
             } else if (currentEvent === 'done' || parsed.type === 'done') {
+              streamCompleted = true;
               if (parsed.message) {
                 onDone?.(parsed.message as Message);
               }
             } else if (currentEvent === 'error' || parsed.type === 'error') {
+              streamCompleted = true;
               const errMsg = parsed.error || 'Unknown agent error';
               onError?.(errMsg);
             }
+            // Unknown event types are safely ignored without throwing
           } catch {
             // If data is raw text
             if (currentEvent === 'message' && rawData) {
@@ -118,6 +126,12 @@ export async function sendMessageStream({
           }
         }
       }
+    }
+
+    if (!streamCompleted) {
+      const unexpectedError = 'Stream closed unexpectedly before completion';
+      onError?.(unexpectedError);
+      throw new Error(unexpectedError);
     }
   } catch (err: unknown) {
     const errMsg = err instanceof Error ? err.message : String(err);

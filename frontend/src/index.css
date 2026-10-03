@@ -818,3 +818,88 @@ input[type="file"] {
   padding: 0 1.25rem;
   font-weight: 600;
 }
+
+/* Workflow Live Progress (Streaming) */
+.workflow-live-progress {
+  margin: 0.5rem 0;
+  padding: 0.6rem 0.8rem;
+  background-color: rgba(16, 23, 38, 0.7);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  font-size: 0.82rem;
+}
+
+.progress-status-line {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: #60a5fa;
+  font-weight: 500;
+}
+
+.progress-spinner {
+  color: #3b82f6;
+  font-size: 0.8rem;
+  animation: pulse-dot 1.5s infinite ease-in-out;
+}
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 0.3; transform: scale(0.85); }
+  50% { opacity: 1; transform: scale(1.15); }
+}
+
+.progress-message {
+  color: #e2e8f0;
+  word-break: break-word;
+}
+
+.progress-section-badge {
+  margin-top: 0.35rem;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  padding-left: 1.1rem;
+}
+
+.progress-section-badge strong {
+  color: #93c5fd;
+}
+
+.mt-2 {
+  margin-top: 0.5rem;
+}
+
+/* Workflow Status Badges (Completed Messages) */
+.workflow-status-badge {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.4rem 0.7rem;
+  border-radius: var(--radius-sm);
+  font-size: 0.8rem;
+  margin-bottom: 0.6rem;
+  line-height: 1.4;
+}
+
+.badge-clarification {
+  background-color: rgba(245, 158, 11, 0.12);
+  border: 1px solid rgba(245, 158, 11, 0.35);
+  color: #fbbf24;
+}
+
+.badge-halted {
+  background-color: rgba(239, 68, 68, 0.12);
+  border: 1px solid rgba(239, 68, 68, 0.35);
+  color: #f87171;
+}
+
+.badge-completed {
+  background-color: rgba(16, 185, 129, 0.12);
+  border: 1px solid rgba(16, 185, 129, 0.35);
+  color: #34d399;
+}
+
+.badge-icon {
+  font-size: 0.95rem;
+  flex-shrink: 0;
+}
+

@@ -175,3 +175,230 @@ test('Sources API - listSources and uploadSource use project boundary', async ()
     restore();
   }
 });
+
+test('Conversations API - sendMessageStream invokes onProgress for event: progress', async () => {
+  const encoder = new TextEncoder();
+  const chunks = [
+    'event: progress\ndata: {"type": "progress", "phase": "1_INITIAL_CONTEXT", "message": "Starting BRD workflow..."}\n\n',
+    'event: progress\ndata: {"type": "progress", "phase": "5_SECTION_ITERATION", "section": "1. Executive Summary", "message": "Drafting section: 1. Executive Summary"}\n\n',
+    'event: message\ndata: {"type": "content", "content": "# Executive Summary\\nDraft content"}\n\n',
+    'event: done\ndata: {"type": "done", "message": {"id": "msg-done", "role": "assistant", "content": "Done"}}\n\n',
+  ];
+
+  const restore = setupMockFetch(async () => {
+    const stream = new ReadableStream({
+      start(controller) {
+        for (const chunk of chunks) {
+          controller.enqueue(encoder.encode(chunk));
+        }
+        controller.close();
+      },
+    });
+
+    return {
+      ok: true,
+      status: 200,
+      body: stream,
+    };
+  });
+
+  try {
+    const { sendMessageStream } = await import('../src/api/conversations.ts');
+
+    const progressEvents = [];
+    const tokens = [];
+    let completed = null;
+
+    await sendMessageStream({
+      projectId: 'p1',
+      conversationId: 'c1',
+      content: 'Draft BRD',
+      onProgress: (p) => progressEvents.push(p),
+      onToken: (t) => tokens.push(t),
+      onDone: (m) => {
+        completed = m;
+      },
+    });
+
+    assert.equal(progressEvents.length, 2);
+    assert.equal(progressEvents[0].phase, '1_INITIAL_CONTEXT');
+    assert.equal(progressEvents[0].message, 'Starting BRD workflow...');
+    assert.equal(progressEvents[1].phase, '5_SECTION_ITERATION');
+    assert.equal(progressEvents[1].section, '1. Executive Summary');
+    assert.equal(tokens.length, 1);
+    assert.equal(completed?.id, 'msg-done');
+  } finally {
+    restore();
+  }
+});
+
+test('Conversations API - sendMessageStream safely ignores unknown SSE events without error', async () => {
+  const encoder = new TextEncoder();
+  const chunks = [
+    'event: future_unknown_event\ndata: {"custom_field": "future_value"}\n\n',
+    'event: message\ndata: {"type": "content", "content": "Working "}\n\n',
+    'event: done\ndata: {"type": "done", "message": {"id": "msg-done-2", "role": "assistant", "content": "Working "}}\n\n',
+  ];
+
+  const restore = setupMockFetch(async () => {
+    const stream = new ReadableStream({
+      start(controller) {
+        for (const chunk of chunks) {
+          controller.enqueue(encoder.encode(chunk));
+        }
+        controller.close();
+      },
+    });
+
+    return {
+      ok: true,
+      status: 200,
+      body: stream,
+    };
+  });
+
+  try {
+    const { sendMessageStream } = await import('../src/api/conversations.ts');
+
+    const tokens = [];
+    let completed = null;
+
+    await sendMessageStream({
+      projectId: 'p1',
+      conversationId: 'c1',
+      content: 'Check unknown events',
+      onToken: (t) => tokens.push(t),
+      onDone: (m) => {
+        completed = m;
+      },
+    });
+
+    assert.equal(tokens.join(''), 'Working ');
+    assert.equal(completed?.id, 'msg-done-2');
+  } finally {
+    restore();
+  }
+});
+
+test('Conversations API - sendMessageStream handles unexpected stream closure by raising error', async () => {
+  const encoder = new TextEncoder();
+  const chunks = [
+    'event: progress\ndata: {"type": "progress", "phase": "1_INITIAL_CONTEXT", "message": "Starting..."}\n\n',
+    'event: message\ndata: {"type": "content", "content": "Incomplete "}\n\n',
+    // Closes without event: done or event: error
+  ];
+
+  const restore = setupMockFetch(async () => {
+    const stream = new ReadableStream({
+      start(controller) {
+        for (const chunk of chunks) {
+          controller.enqueue(encoder.encode(chunk));
+        }
+        controller.close();
+      },
+    });
+
+    return {
+      ok: true,
+      status: 200,
+      body: stream,
+    };
+  });
+
+  try {
+    const { sendMessageStream } = await import('../src/api/conversations.ts');
+
+    let reportedError = null;
+    await assert.rejects(
+      async () => {
+        await sendMessageStream({
+          projectId: 'p1',
+          conversationId: 'c1',
+          content: 'Test unexpected drop',
+          onError: (err) => {
+            reportedError = err;
+          },
+        });
+      },
+      /Stream closed unexpectedly before completion/
+    );
+
+    assert.equal(reportedError, 'Stream closed unexpectedly before completion');
+  } finally {
+    restore();
+  }
+});
+
+test('Workflow State - getMessageWorkflowStatus correctly identifies workflow states', async () => {
+  const { getMessageWorkflowStatus } = await import('../src/types/index.ts');
+
+  // 1. Normal user message
+  const userMsg = {
+    id: 'u1',
+    conversation_id: 'c1',
+    role: 'user',
+    content: 'Hello',
+  };
+  assert.equal(getMessageWorkflowStatus(userMsg), 'NORMAL');
+
+  // 2. Normal assistant message without workflow state
+  const normalAsstMsg = {
+    id: 'a1',
+    conversation_id: 'c1',
+    role: 'assistant',
+    content: 'Hi there',
+  };
+  assert.equal(getMessageWorkflowStatus(normalAsstMsg), 'NORMAL');
+
+  // 3. Waiting for clarification
+  const waitingMsg = {
+    id: 'a2',
+    conversation_id: 'c1',
+    role: 'assistant',
+    content: 'Which compliance tier is required?',
+    metadata: {
+      workflow_state: {
+        waiting_for_user: true,
+        pending_clarification: 'Which compliance tier is required?',
+      },
+    },
+  };
+  assert.equal(getMessageWorkflowStatus(waitingMsg), 'WAITING_FOR_CLARIFICATION');
+
+  // 4. Halted with failure diagnostics
+  const haltedMsg = {
+    id: 'a3',
+    conversation_id: 'c1',
+    role: 'assistant',
+    content: 'Diagnostic failure summary',
+    metadata: {
+      workflow_state: {
+        waiting_for_user: false,
+        failure_diagnostics: {
+          failure_category: 'generation_quality',
+          unresolved_issues: ['Scope unclear'],
+        },
+      },
+    },
+  };
+  assert.equal(getMessageWorkflowStatus(haltedMsg), 'HALTED');
+
+  // 5. Completed BRD workflow
+  const completedMsg = {
+    id: 'a4',
+    conversation_id: 'c1',
+    role: 'assistant',
+    content: '# Complete BRD Document',
+    metadata: {
+      workflow_state: {
+        waiting_for_user: false,
+        section_progress: {
+          '1. Executive Summary': 'Completed',
+          '2. Scope': 'Completed',
+        },
+      },
+    },
+  };
+  assert.equal(getMessageWorkflowStatus(completedMsg), 'COMPLETED');
+});
+

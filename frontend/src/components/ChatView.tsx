@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Conversation, Message } from '../types';
+import { Conversation, Message, WorkflowProgressEvent, getMessageWorkflowStatus } from '../types';
 import { sendMessageStream } from '../api/conversations';
 
 interface ChatViewProps {
@@ -22,6 +22,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
   const [inputText, setInputText] = useState('');
   const [isGenerating, setIsGenerating] = useState(false);
   const [streamingContent, setStreamingContent] = useState<string | null>(null);
+  const [activeProgress, setActiveProgress] = useState<WorkflowProgressEvent | null>(null);
   const [chatError, setChatError] = useState<string | null>(null);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -33,7 +34,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
   useEffect(() => {
     scrollToBottom();
-  }, [messages, streamingContent]);
+  }, [messages, streamingContent, activeProgress]);
 
   useEffect(() => {
     // Focus input when conversation is selected
@@ -62,6 +63,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
     setChatError(null);
     setIsGenerating(true);
     setStreamingContent('');
+    setActiveProgress(null);
 
     // Optimistic user message for immediate UI responsiveness
     const optimisticUserMessage: Message = {
@@ -83,8 +85,12 @@ export const ChatView: React.FC<ChatViewProps> = ({
           accumulatedContent += token;
           setStreamingContent(accumulatedContent);
         },
+        onProgress: (prog: WorkflowProgressEvent) => {
+          setActiveProgress(prog);
+        },
         onDone: (finalAssistantMessage: Message) => {
           setStreamingContent(null);
+          setActiveProgress(null);
           setIsGenerating(false);
           onMessageSent(optimisticUserMessage, finalAssistantMessage);
         },
@@ -92,6 +98,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
           setChatError(err);
           setIsGenerating(false);
           setStreamingContent(null);
+          setActiveProgress(null);
           // Refresh messages from server to sync state
           onRefreshMessages();
         },
@@ -101,6 +108,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
       setChatError(errMsg);
       setIsGenerating(false);
       setStreamingContent(null);
+      setActiveProgress(null);
       onRefreshMessages();
     }
   };
@@ -111,6 +119,11 @@ export const ChatView: React.FC<ChatViewProps> = ({
       handleSend();
     }
   };
+
+  const lastAssistantMessage = [...messages].reverse().find((m) => m.role === 'assistant');
+  const isWaitingForClarification =
+    lastAssistantMessage &&
+    getMessageWorkflowStatus(lastAssistantMessage) === 'WAITING_FOR_CLARIFICATION';
 
   return (
     <div className="chat-view" id="chat-view-container">
@@ -149,6 +162,8 @@ export const ChatView: React.FC<ChatViewProps> = ({
           <>
             {messages.map((msg) => {
               const isUser = msg.role === 'user';
+              const workflowStatus = isUser ? 'NORMAL' : getMessageWorkflowStatus(msg);
+
               return (
                 <div
                   key={msg.id}
@@ -159,6 +174,28 @@ export const ChatView: React.FC<ChatViewProps> = ({
                     <div className="bubble-sender">
                       {isUser ? 'User' : 'BRD Agent'}
                     </div>
+
+                    {!isUser && workflowStatus === 'WAITING_FOR_CLARIFICATION' && (
+                      <div className="workflow-status-badge badge-clarification" id={`clarification-badge-${msg.id}`}>
+                        <span className="badge-icon">⏳</span>
+                        <span><strong>Clarification Required</strong> — Reply below to resume the BRD workflow.</span>
+                      </div>
+                    )}
+
+                    {!isUser && workflowStatus === 'HALTED' && (
+                      <div className="workflow-status-badge badge-halted" id={`halted-badge-${msg.id}`}>
+                        <span className="badge-icon">⚠</span>
+                        <span><strong>Section Progression Halted</strong> — Review the diagnostic report below.</span>
+                      </div>
+                    )}
+
+                    {!isUser && workflowStatus === 'COMPLETED' && (
+                      <div className="workflow-status-badge badge-completed" id={`completed-badge-${msg.id}`}>
+                        <span className="badge-icon">✓</span>
+                        <span><strong>BRD Completed</strong></span>
+                      </div>
+                    )}
+
                     <div className="bubble-content">{msg.content}</div>
                     {msg.created_at && (
                       <div className="bubble-time">
@@ -177,11 +214,24 @@ export const ChatView: React.FC<ChatViewProps> = ({
               <div className="chat-bubble-row row-agent" id="streaming-agent-bubble">
                 <div className="chat-bubble bubble-agent">
                   <div className="bubble-sender">
-                    BRD Agent <span className="typing-indicator">thinking & writing...</span>
+                    BRD Agent <span className="typing-indicator">generating...</span>
                   </div>
-                  <div className="bubble-content">
-                    {streamingContent || '...'}
+                  <div className="workflow-live-progress" id="workflow-live-progress">
+                    <div className="progress-status-line">
+                      <span className="progress-spinner">●</span>
+                      <span className="progress-message">
+                        {activeProgress?.message || 'Initiating BRD workflow...'}
+                      </span>
+                    </div>
+                    {activeProgress?.section && (
+                      <div className="progress-section-badge">
+                        Section: <strong>{activeProgress.section}</strong>
+                      </div>
+                    )}
                   </div>
+                  {streamingContent ? (
+                    <div className="bubble-content mt-2">{streamingContent}</div>
+                  ) : null}
                 </div>
               </div>
             )}
@@ -196,7 +246,9 @@ export const ChatView: React.FC<ChatViewProps> = ({
             ref={inputRef}
             rows={2}
             placeholder={
-              isGenerating
+              isWaitingForClarification && !isGenerating
+                ? 'Provide clarification to resume BRD workflow...'
+                : isGenerating
                 ? 'BRD Agent is generating a response...'
                 : 'Type a message... (Press Enter to send, Shift+Enter for new line)'
             }
