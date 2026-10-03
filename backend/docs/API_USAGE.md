@@ -1141,7 +1141,7 @@ The Messages API powers multi-turn dialogue within a conversation. Sending a `us
 - **Query Parameters**:
   | Parameter | Type | Default | Description |
   | :--- | :--- | :--- | :--- |
-  | `stream` | boolean | `true` | When `true` (default) and `role="user"`, returns a `text/event-stream` SSE response streaming the agent's output. When `false`, persists the message directly and returns `201 Created`. |
+  | `stream` | boolean | `true` | When `true` (default) and `role="user"`, returns a `text/event-stream` SSE response streaming the agent's output. When `false` and `role="user"`, executes the full 9-phase BRD workflow synchronously and returns the generated assistant message as HTTP `201 Created` (`MessageResponse`). |
 - **Required Headers**: `Content-Type: application/json`
 - **Authentication**: None
 - **Prerequisites**: Obtain `project_id` from [Create Project](#create-project) and `conversation_id` from [Create Conversation](#create-conversation).
@@ -1183,7 +1183,7 @@ The stream emits standard SSE events:
    Emitted when the agent finishes execution and the final assistant response has been persisted to the database. The `data` payload contains the persisted `MessageResponse`.
    ```text
    event: done
-   data: {"id": "77777777-8888-9999-aaaa-bbbbbbbbbbbb", "conversation_id": "c3d2e1f0-1234-5678-9abc-def012345678", "role": "assistant", "content": "The Executive Summary outlines the key business objectives...", "metadata": {"model": "gpt-4o", "agent": "brd_lead_agent", "user_message_id": "66666666-5555-4444-3333-222222222222", "finish_reason": "stop"}, "created_at": "2026-09-14T12:12:05.000000Z"}
+   data: {"id": "77777777-8888-9999-aaaa-bbbbbbbbbbbb", "conversation_id": "c3d2e1f0-1234-5678-9abc-def012345678", "role": "assistant", "content": "The Executive Summary outlines the key business objectives...", "metadata": {"agent_run_id": "88888888-7777-6666-5555-444444444444", "user_message_id": "66666666-5555-4444-3333-222222222222", "workflow_state": {...}}, "created_at": "2026-09-14T12:12:05.000000Z"}
    ```
 
 3. **Error Event (`event: error`)**:
@@ -1193,20 +1193,46 @@ The stream emits standard SSE events:
    data: {"error": "LLM provider timeout during inference"}
    ```
 
-#### Direct Persistence Response (`stream=false` or `role="assistant"`)
-When `stream=false` or `role="assistant"` (e.g. for non-streaming clients or manual message seeding), the endpoint directly saves the message and returns HTTP `201 Created` with JSON:
+#### Non-Streaming Agent Execution (`stream=false`, `role="user"`)
+When `stream=false` (via query parameter or body payload) and `role="user"`, the endpoint executes the exact same 9-phase BRD workflow synchronously via `BRDLeadAgent.run_workflow_async`.
+It persists both the incoming user message and the generated assistant response to the conversation database, returning HTTP `201 Created` with the **assistant** `MessageResponse` JSON including durable `workflow_state` metadata:
 
 ```json
 {
-  "id": "66666666-5555-4444-3333-222222222222",
+  "id": "77777777-8888-9999-aaaa-bbbbbbbbbbbb",
   "conversation_id": "c3d2e1f0-1234-5678-9abc-def012345678",
-  "role": "user",
-  "content": "Draft the Executive Summary section for the BRD based on the uploaded RFP.",
+  "role": "assistant",
+  "content": "## 1.0 Executive Summary\n\nThis Business Requirements Document defines the core payment gateway architecture...",
   "metadata": {
-    "client_session": "web-client-v1"
+    "user_message_id": "66666666-5555-4444-3333-222222222222",
+    "agent_run_id": "88888888-7777-6666-5555-444444444444",
+    "conversation_id": "c3d2e1f0-1234-5678-9abc-def012345678",
+    "project_id": "b7e6c5a1-4321-4def-9876-543210abcdef",
+    "duration_seconds": 3.42,
+    "workflow_state": {
+      "objective": "Produce an evidence-grounded Business Requirements Document",
+      "section_progress": {
+        "1.0 Executive Summary": "Completed"
+      },
+      "waiting_for_user": false,
+      "pending_clarification": null
+    }
   },
-  "created_at": "2026-09-14T12:12:00.000000Z"
+  "created_at": "2026-09-14T12:12:05.000000Z"
 }
+```
+
+#### Direct Message Seeding (`role="assistant"`)
+When `role="assistant"` is provided (e.g. for historical seeding or manual transcription), the endpoint persists the assistant message directly to the conversation history and returns HTTP `201 Created` without invoking the BRD agent.
+
+#### cURL (Non-Streaming Execution)
+```bash
+curl -X POST "http://localhost:8000/projects/b7e6c5a1-4321-4def-9876-543210abcdef/conversations/c3d2e1f0-1234-5678-9abc-def012345678/messages?stream=false" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "content": "Draft the Executive Summary section for the BRD based on the uploaded RFP.",
+    "role": "user"
+  }'
 ```
 
 #### cURL (Streaming)

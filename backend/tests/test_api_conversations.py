@@ -165,23 +165,23 @@ async def test_message_flow_endpoints(api_client: AsyncClient):
     )
     conversation_id = conv_resp.json()["id"]
 
-    # 2. Post a user message with stream=false for raw message CRUD test
-    msg_user_resp = await api_client.post(
-        f"/projects/{project_id}/conversations/{conversation_id}/messages?stream=false",
+    # 2. Post an initial message (assistant role for raw CRUD verification)
+    msg1_resp = await api_client.post(
+        f"/projects/{project_id}/conversations/{conversation_id}/messages",
         json={
-            "role": "user",
+            "role": "assistant",
             "content": "What are the company's Q2 milestones?",
             "metadata": {"client": "web-ui"},
         },
     )
-    assert msg_user_resp.status_code == 201
-    user_msg = msg_user_resp.json()
-    assert user_msg["role"] == "user"
-    assert user_msg["content"] == "What are the company's Q2 milestones?"
-    assert user_msg["metadata"] == {"client": "web-ui"}
-    assert user_msg["conversation_id"] == conversation_id
+    assert msg1_resp.status_code == 201
+    msg1 = msg1_resp.json()
+    assert msg1["role"] == "assistant"
+    assert msg1["content"] == "What are the company's Q2 milestones?"
+    assert msg1["metadata"] == {"client": "web-ui"}
+    assert msg1["conversation_id"] == conversation_id
 
-    # 3. Post an assistant message
+    # 3. Post a second assistant message
     msg_asst_resp = await api_client.post(
         f"/projects/{project_id}/conversations/{conversation_id}/messages",
         json={
@@ -201,7 +201,7 @@ async def test_message_flow_endpoints(api_client: AsyncClient):
     assert history_resp.status_code == 200
     messages = history_resp.json()
     assert len(messages) == 2
-    assert messages[0]["id"] == user_msg["id"]
+    assert messages[0]["id"] == msg1["id"]
     assert messages[1]["id"] == asst_msg["id"]
 
     # 5. Retrieve conversation detail includes messages
@@ -231,10 +231,10 @@ async def test_api_project_isolation_enforcement(api_client: AsyncClient):
     )
     conv_a_id = conv_a.json()["id"]
 
-    # Create a message in Project A's conversation
+    # Create a message in Project A's conversation (seed turn)
     await api_client.post(
-        f"/projects/{proj_a_id}/conversations/{conv_a_id}/messages?stream=false",
-        json={"role": "user", "content": "Confidential data for Tenant A"},
+        f"/projects/{proj_a_id}/conversations/{conv_a_id}/messages",
+        json={"role": "assistant", "content": "Confidential data for Tenant A"},
     )
 
     # 1. Tenant B tries to GET Tenant A's conversation
@@ -497,13 +497,23 @@ async def test_streaming_error_handling_emits_error_event_and_does_not_persist_a
 
 @pytest.mark.anyio
 async def test_agent_receives_correct_project_context_and_stream_flag(api_client: AsyncClient):
-    """Verify that BRDLeadAgent receives application-controlled project_id and stream=false bypasses agent."""
+    """Verify that BRDLeadAgent receives application-controlled project_id in both streaming and non-streaming modes."""
     captured_contexts: list[Any] = []
 
     class ContextCapturingAgent(BRDLeadAgent):
         async def stream_async(self, request, context=None, prior_messages=None, **kwargs):
             captured_contexts.append(context)
-            yield {"type": "content", "content": "Context verified."}
+            yield {"type": "content", "content": "Streaming context verified."}
+
+        async def run_workflow_async(self, request=None, context=None, **kwargs):
+            from agents.brd.context import AgentRunResponse
+            captured_contexts.append(context)
+            return AgentRunResponse(
+                output_text="Non-streaming context verified.",
+                context=context,
+                success=True,
+                state=self._state,
+            )
 
     mock_agent = ContextCapturingAgent(model=MockStreamingChatModel())
     app.dependency_overrides[get_brd_lead_agent] = lambda: mock_agent
@@ -519,38 +529,43 @@ async def test_agent_receives_correct_project_context_and_stream_flag(api_client
         async with api_client.stream(
             "POST",
             f"/projects/{project_id}/conversations/{conversation_id}/messages",
-            json={"role": "user", "content": "Check context"},
+            json={"role": "user", "content": "Check streaming context"},
         ) as resp:
             assert resp.status_code == 200
             async for _ in resp.aiter_lines():
                 pass
 
         assert len(captured_contexts) == 1
-        ctx = captured_contexts[0]
-        assert ctx.project_id == project_id
-        assert ctx.conversation_id == conversation_id
-        assert "user_message_id" in ctx.metadata
-        assert "agent_run_id" in ctx.metadata
+        ctx1 = captured_contexts[0]
+        assert ctx1.project_id == project_id
+        assert ctx1.conversation_id == conversation_id
+        assert "user_message_id" in ctx1.metadata
+        assert "agent_run_id" in ctx1.metadata
 
-        # 2. Test stream=false in payload: should persist immediately with 201 without invoking stream_async
-        initial_capture_count = len(captured_contexts)
+        # 2. Test stream=false in payload: should invoke run_workflow_async with application-controlled context
         direct_resp = await api_client.post(
             f"/projects/{project_id}/conversations/{conversation_id}/messages",
-            json={"role": "user", "content": "Direct persist message", "stream": False},
+            json={"role": "user", "content": "Check non-streaming context", "stream": False},
         )
         assert direct_resp.status_code == 201
-        assert direct_resp.json()["content"] == "Direct persist message"
-        # stream_async should NOT have been called
-        assert len(captured_contexts) == initial_capture_count
+        assert direct_resp.json()["role"] == "assistant"
+        assert direct_resp.json()["content"] == "Non-streaming context verified."
 
-        # 3. Test assistant role message: should persist immediately with 201 without invoking stream_async
+        assert len(captured_contexts) == 2
+        ctx2 = captured_contexts[1]
+        assert ctx2.project_id == project_id
+        assert ctx2.conversation_id == conversation_id
+        assert "user_message_id" in ctx2.metadata
+        assert "agent_run_id" in ctx2.metadata
+
+        # 3. Test assistant role message: should persist immediately with 201 without invoking agent
         asst_direct_resp = await api_client.post(
             f"/projects/{project_id}/conversations/{conversation_id}/messages",
             json={"role": "assistant", "content": "Manual assistant log"},
         )
         assert asst_direct_resp.status_code == 201
         assert asst_direct_resp.json()["content"] == "Manual assistant log"
-        assert len(captured_contexts) == initial_capture_count
+        assert len(captured_contexts) == 2
 
     finally:
         app.dependency_overrides.pop(get_brd_lead_agent, None)

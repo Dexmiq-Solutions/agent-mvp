@@ -5,12 +5,13 @@ import time
 from typing import Any, Optional, Union
 import uuid
 
-from fastapi import APIRouter, Depends, Query, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from fastapi.responses import StreamingResponse
 from langchain_core.messages import AIMessage, HumanMessage
 
 from agents.brd.agent import BRDLeadAgent
 from agents.brd.context import AgentContext
+from agents.brd.state import BRDAgentState
 from api.dependencies import get_brd_lead_agent, get_conversation_service
 from observability.logging import get_logger
 from schemas.conversation import (
@@ -179,11 +180,14 @@ async def create_message(
 ) -> Any:
     """Send and persist a message turn within a conversation under project boundary isolation.
 
-    When a user message is sent with streaming enabled, the BRD Lead Agent executes the
-    controlled BRD workflow directly. The response and phase progress are streamed back via
-    Server-Sent Events (SSE). The final assistant response is automatically persisted in the
-    conversation message history.
-    Non-user messages or requests with stream=false are persisted directly and return HTTP 201.
+    When a user message is sent, the BRD Lead Agent executes the controlled BRD workflow
+    directly under project boundary isolation.
+    - If streaming is enabled (stream=true), response content and phase progress are
+      streamed via Server-Sent Events (SSE). The final assistant response is persisted
+      and emitted in a completion event.
+    - If streaming is disabled (stream=false), the workflow executes synchronously and
+      returns the persisted assistant response directly as HTTP 201 Created (MessageResponse).
+    Non-user messages (e.g. role="assistant" for seeding) are persisted directly and return HTTP 201.
     """
     # 1. Enforce Project Isolation & Conversation validation using existing services
     conversation = await service.get_conversation(
@@ -194,17 +198,15 @@ async def create_message(
     # Retrieve authoritative project context and document inventory
     project_ctx = await service.get_project_context(project_id=project_id)
 
-    # Determine streaming mode: only user messages trigger the agent execution
-    if payload.role != "user":
-        effective_stream = False
-    elif payload.stream is not None:
+    # Determine streaming mode for user messages
+    if payload.stream is not None:
         effective_stream = payload.stream
     else:
         effective_stream = stream
 
     # 2. Persist message turn
-    # If not streaming (e.g. assistant message turn or stream=false), persist and return immediately
-    if not effective_stream:
+    # If not a user message (e.g. manual assistant message turn or seeding), persist and return immediately
+    if payload.role != "user":
         message = await service.create_message(
             project_id=project_id,
             conversation_id=conversation_id,
@@ -222,6 +224,7 @@ async def create_message(
         role="user",
         metadata=payload.metadata,
     )
+    await service._session.commit()
 
     # 3. Create agent execution context preserving application-controlled project_id, conversation_id, and project context
     agent_run_id = str(uuid.uuid4())
@@ -272,7 +275,74 @@ async def create_message(
                         exc,
                     )
 
-    # 6. Stream agent response back to frontend and collect assistant output
+    # 6. Branch on streaming mode: both modes execute the controlled BRD workflow
+    if not effective_stream:
+        start_time = time.perf_counter()
+        run_kwargs: dict[str, Any] = {
+            "request": payload.content,
+            "context": agent_context,
+        }
+        if initial_workflow_state is not None:
+            run_kwargs["initial_state"] = initial_workflow_state
+
+        try:
+            response = await agent.run_workflow_async(**run_kwargs)
+        except Exception as exc:
+            logger.error(
+                "Error during agent non-streaming response (project_id: %s, conversation_id: %s, agent_run_id: %s): %s",
+                project_id,
+                conversation_id,
+                agent_run_id,
+                exc,
+                exc_info=True,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Agent execution failed: {str(exc)}",
+            )
+
+        final_state = getattr(response, "state", None) or getattr(agent, "state", None)
+        persisted_state_dict = (
+            final_state.to_dict()
+            if final_state is not None and hasattr(final_state, "to_dict")
+            else None
+        )
+
+        final_text = (
+            response.output_text.strip()
+            if response and response.output_text and response.output_text.strip()
+            else "*(No response generated)*"
+        )
+
+        # Persist final assistant response and durable workflow state snapshot
+        assistant_message = await service.create_message(
+            project_id=project_id,
+            conversation_id=conversation_id,
+            content=final_text,
+            role="assistant",
+            metadata={
+                "user_message_id": user_message.id,
+                "agent_run_id": agent_run_id,
+                "conversation_id": conversation_id,
+                "project_id": project_id,
+                "duration_seconds": round(time.perf_counter() - start_time, 3),
+                "workflow_state": persisted_state_dict,
+            },
+        )
+
+        logger.info(
+            "Assistant response persisted (non-streaming, project_id: %s, conversation_id: %s, user_msg_id: %s, asst_msg_id: %s, agent_run_id: %s, duration: %.2fs)",
+            project_id,
+            conversation_id,
+            user_message.id,
+            assistant_message.id,
+            agent_run_id,
+            time.perf_counter() - start_time,
+        )
+
+        return MessageResponse.from_model(assistant_message)
+
+    # 7. Stream agent response back to frontend and collect assistant output
     async def event_generator() -> AsyncIterator[str]:
         accumulated_parts: list[str] = []
         start_time = time.perf_counter()
