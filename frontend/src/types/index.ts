@@ -120,10 +120,33 @@ export interface SendMessagePayload {
  * The backend may include additional keys; we type the known ones here.
  */
 export interface TelemetryMetadata {
+  // Core
   model?: string;
-  retrieval_results?: RetrievalResult[];
-  groundedness_score?: number;
   processing_time_ms?: number;
+  total_duration_ms?: number;
+  // Token usage
+  usage?: {
+    prompt_tokens?: number;
+    completion_tokens?: number;
+    total_tokens?: number;
+  };
+  // Retrieval
+  retrieval?: {
+    query?: string;
+    duration_ms?: number;
+    chunks_retrieved?: number;
+    results?: RetrievalResult[];
+  };
+  retrieval_results?: RetrievalResult[];   // Legacy / alternate shape
+  // Evaluation / quality-gate
+  evaluation?: string;                     // e.g. 'passed' | 'failed'
+  evaluation_passed?: boolean;
+  groundedness_score?: number;
+  grounded?: boolean;
+  safety?: string;                         // e.g. 'safe' | 'flagged'
+  generation_attempts?: number;
+  // Internal markers
+  error?: boolean;
   [key: string]: unknown;               // Allow extra backend-supplied fields
 }
 
@@ -133,6 +156,30 @@ export interface RetrievalResult {
   source_document_id: string;
   source_document_name: string;
   relevance_score: number;
+}
+
+// ---------------------------------------------------------------------------
+// Chat State Machine
+// ---------------------------------------------------------------------------
+
+/**
+ * Explicit frontend state for the chat generation lifecycle.
+ *
+ * IDLE      — Ready for input
+ * SENDING   — User submitted; request is being initiated
+ * THINKING  — POST .../messages?generate=true in-flight
+ * ERROR     — Generation failed; retry is possible
+ */
+export type ChatStatus = 'idle' | 'sending' | 'thinking' | 'error';
+
+/** A UI-only message wrapper that adds client-side state. */
+export interface UIMessage extends Message {
+  /** True when optimistically rendered (not yet confirmed by backend). */
+  _optimistic?: boolean;
+  /** True when this message represents a failed AI generation. */
+  _error?: boolean;
+  /** The human-readable error string for failed assistant turns. */
+  _errorText?: string;
 }
 
 // ---------------------------------------------------------------------------

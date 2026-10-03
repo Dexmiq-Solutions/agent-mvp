@@ -37,20 +37,16 @@ export const ProjectCard: React.FC<ProjectCardProps> = ({
       tabIndex={0}
       onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleCardClick(e as any); } }}
       role="button"
+      className={`
+        relative flex flex-col p-6 rounded-2xl cursor-pointer select-none
+        transition-all duration-200 ease-out
+        bg-gradient-to-b from-zinc-900/80 to-zinc-950/80 backdrop-blur-md
+        border border-white/10 border-t-white/15
+        shadow-2xl shadow-black/50
+        ${hovered ? '-translate-y-1 border-indigo-500/40 bg-gradient-to-b from-zinc-900/90 to-zinc-950/90' : 'translate-y-0'}
+      `}
       style={{
-        position: 'relative',
-        display: 'flex',
-        flexDirection: 'column',
-        padding: '18px',
-        borderRadius: '10px',
-        border: hovered
-          ? '1px solid #2e2e2e'
-          : '1px solid #1e1e1e',
-        background: hovered ? '#191919' : '#141414',
-        cursor: 'pointer',
-        transition: 'background 0.15s ease, border-color 0.15s ease',
-        minHeight: '148px',
-        userSelect: 'none',
+        minHeight: '160px',
       }}
     >
       {/* ── Top row: icon + menu trigger ── */}
@@ -58,24 +54,13 @@ export const ProjectCard: React.FC<ProjectCardProps> = ({
 
         {/* Project icon badge */}
         <div
-          style={{
-            width: '36px',
-            height: '36px',
-            borderRadius: '8px',
-            background: hovered ? 'rgba(99,102,241,0.12)' : 'rgba(99,102,241,0.07)',
-            border: hovered ? '1px solid rgba(99,102,241,0.25)' : '1px solid rgba(99,102,241,0.14)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            flexShrink: 0,
-            transition: 'background 0.15s ease, border-color 0.15s ease',
-          }}
+          className={`
+            w-9 h-9 rounded-lg flex items-center justify-center shrink-0 transition-colors duration-150
+            bg-indigo-500/10 text-indigo-400
+            ${hovered ? 'bg-indigo-500/20 shadow-[0_0_15px_rgba(99,102,241,0.2)]' : ''}
+          `}
         >
-          <Folder
-            size={15}
-            strokeWidth={1.75}
-            style={{ color: hovered ? 'rgba(165,180,252,0.95)' : 'rgba(165,180,252,0.65)' }}
-          />
+          <Folder size={16} strokeWidth={2} />
         </div>
 
         {/* Action menu */}
@@ -145,12 +130,12 @@ export const ProjectCard: React.FC<ProjectCardProps> = ({
       <div className="flex flex-col flex-1 min-w-0">
         <h3
           style={{
-            fontSize: '13.5px',
+            fontSize: '15px',
             fontWeight: 600,
             color: '#FFFFFF',
-            letterSpacing: '-0.015em',
-            lineHeight: '1.25',
-            marginBottom: '6px',
+            letterSpacing: '-0.02em',
+            lineHeight: '1.3',
+            marginBottom: '8px',
             overflow: 'hidden',
             textOverflow: 'ellipsis',
             whiteSpace: 'nowrap',
@@ -189,22 +174,19 @@ export const ProjectCard: React.FC<ProjectCardProps> = ({
         )}
       </div>
 
-      {/* ── Footer metadata ── */}
       <div
-        style={{
-          paddingTop: '12px',
-          marginTop: '12px',
-          borderTop: '1px solid #1e1e1e',
-        }}
+        className="pt-4 mt-4 flex items-center justify-between border-t border-white/5"
       >
-        <span
-          style={{
-            fontSize: '11px',
-            color: 'rgba(255,255,255,0.25)',
-            letterSpacing: '0.01em',
-          }}
-        >
+        <span className="text-[11.5px] text-zinc-500 font-medium tracking-wide">
           {updatedAt ? `Updated ${updatedAt}` : 'Unknown'}
+        </span>
+        <span
+          className={`
+            text-[11.5px] font-semibold text-indigo-400 transition-opacity duration-200
+            ${hovered ? 'opacity-100' : 'opacity-0'}
+          `}
+        >
+          Open &rarr;
         </span>
       </div>
     </article>

@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useMemo, useRef, useCallback } from 'react';
-import { Search, Plus, FolderOpen, AlertCircle, RotateCcw } from 'lucide-react';
+import { Search, Plus, FolderOpen, AlertCircle, RotateCcw, X as XIcon } from 'lucide-react';
 import { mockProjectService } from '../services/mockData';
 import type { Project } from '../types';
 import { ProjectCard } from '../components/projects/ProjectCard';
@@ -33,6 +33,19 @@ export const ProjectsHubView: React.FC = () => {
       setLoading(false);
     }
   };
+
+  // Ctrl+K — focus search
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
+        e.preventDefault();
+        searchRef.current?.focus();
+        searchRef.current?.select();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
 
   const handleRenameRequest = useCallback(async (project: Project) => {
     const newName = window.prompt('Rename project:', project.name);
@@ -86,7 +99,7 @@ export const ProjectsHubView: React.FC = () => {
       >
         <div
           style={{
-            maxWidth: '1200px',
+            maxWidth: '1400px',
             margin: '0 auto',
             display: 'flex',
             alignItems: 'flex-start',
@@ -143,14 +156,14 @@ export const ProjectsHubView: React.FC = () => {
               <input
                 ref={searchRef}
                 type="text"
-                placeholder="Search projects..."
+                placeholder="Search projects…"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 onFocus={focusInput}
                 onBlur={blurInput}
                 style={{
                   width: '220px',
-                  padding: '7px 44px 7px 30px',
+                  padding: '7px 36px 7px 30px',
                   borderRadius: '7px',
                   border: '1px solid #2a2a2a',
                   background: '#141414',
@@ -161,35 +174,62 @@ export const ProjectsHubView: React.FC = () => {
                   transition: 'border-color 0.15s ease, background 0.15s ease, box-shadow 0.15s ease',
                 }}
               />
-              {/* Keyboard hint */}
-              <div
-                style={{
-                  position: 'absolute',
-                  right: '8px',
-                  top: '50%',
-                  transform: 'translateY(-50%)',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '2px',
-                  pointerEvents: 'none',
-                }}
-              >
-                <kbd
+              {/* Clear button when searching */}
+              {searchQuery ? (
+                <button
+                  onClick={() => { setSearchQuery(''); searchRef.current?.focus(); }}
+                  aria-label="Clear search"
                   style={{
-                    padding: '2px 5px',
+                    position: 'absolute',
+                    right: '8px',
+                    top: '50%',
+                    transform: 'translateY(-50%)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    width: '18px',
+                    height: '18px',
                     borderRadius: '4px',
                     background: 'rgba(255,255,255,0.06)',
-                    border: '1px solid rgba(255,255,255,0.09)',
-                    fontSize: '10.5px',
-                    color: 'rgba(148,163,184,0.5)',
-                    fontFamily: 'Inter, sans-serif',
-                    lineHeight: '14px',
-                    letterSpacing: '0.01em',
+                    border: 'none',
+                    cursor: 'pointer',
+                    color: 'rgba(148,163,184,0.6)',
+                    padding: 0,
                   }}
                 >
-                  Ctrl K
-                </kbd>
-              </div>
+                  <XIcon size={11} strokeWidth={2.5} />
+                </button>
+              ) : (
+                /* Keyboard hint */
+                <div
+                  style={{
+                    position: 'absolute',
+                    right: '8px',
+                    top: '50%',
+                    transform: 'translateY(-50%)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '2px',
+                    pointerEvents: 'none',
+                  }}
+                >
+                  <kbd
+                    style={{
+                      padding: '2px 5px',
+                      borderRadius: '4px',
+                      background: 'rgba(255,255,255,0.06)',
+                      border: '1px solid rgba(255,255,255,0.09)',
+                      fontSize: '10.5px',
+                      color: 'rgba(148,163,184,0.5)',
+                      fontFamily: 'Inter, sans-serif',
+                      lineHeight: '14px',
+                      letterSpacing: '0.01em',
+                    }}
+                  >
+                    Ctrl K
+                  </kbd>
+                </div>
+              )}
             </div>
 
             {/* New Project */}
@@ -202,10 +242,10 @@ export const ProjectsHubView: React.FC = () => {
       <main
         style={{
           flex: 1,
-          maxWidth: '1200px',
+          maxWidth: '1400px',
           width: '100%',
           margin: '0 auto',
-          padding: '28px 32px 64px',
+          padding: '36px 32px 80px',
         }}
       >
 
@@ -280,8 +320,8 @@ export const ProjectsHubView: React.FC = () => {
           <div
             style={{
               display: 'grid',
-              gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))',
-              gap: '12px',
+              gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))',
+              gap: '24px',
             }}
           >
             {[...Array(6)].map((_, i) => (
@@ -354,8 +394,8 @@ export const ProjectsHubView: React.FC = () => {
           <div
             style={{
               display: 'grid',
-              gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))',
-              gap: '12px',
+              gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))',
+              gap: '24px',
             }}
           >
             {filteredProjects.map((project) => (
@@ -382,19 +422,12 @@ export const ProjectsHubView: React.FC = () => {
             }}
           >
             <div
-              style={{
-                width: '48px',
-                height: '48px',
-                borderRadius: '12px',
-                background: '#141414',
-                border: '1px solid #222222',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                marginBottom: '18px',
-              }}
+              className="w-16 h-16 rounded-2xl flex items-center justify-center mb-5 relative
+                         bg-gradient-to-b from-zinc-800/50 to-zinc-900/50 backdrop-blur-md border border-white/10
+                         shadow-[inset_0_1px_0_rgba(255,255,255,0.1)]"
             >
-              <FolderOpen size={20} strokeWidth={1.5} color="rgba(99,102,241,0.6)" />
+              <div className="absolute inset-0 bg-indigo-500/20 blur-xl rounded-full" />
+              <FolderOpen size={26} strokeWidth={1.5} className="text-zinc-400 relative z-10" />
             </div>
 
             {searchQuery ? (
@@ -410,17 +443,9 @@ export const ProjectsHubView: React.FC = () => {
                 >
                   No projects found
                 </h2>
-                <p
-                  style={{
-                    fontSize: '13px',
-                    color: '#8E8E93',
-                    maxWidth: '280px',
-                    lineHeight: 1.6,
-                    marginBottom: '20px',
-                  }}
-                >
+                <p className="text-[13.5px] text-zinc-400 max-w-[280px] leading-relaxed mb-5">
                   No projects match{' '}
-                  <span style={{ color: 'rgba(255,255,255,0.6)', fontWeight: 500 }}>“{searchQuery}”</span>.
+                  <span className="text-zinc-200 font-medium">“{searchQuery}”</span>.
                 </p>
                 <button
                   onClick={() => setSearchQuery('')}
@@ -461,15 +486,7 @@ export const ProjectsHubView: React.FC = () => {
                 >
                   No projects yet
                 </h2>
-                <p
-                  style={{
-                    fontSize: '13px',
-                    color: '#8E8E93',
-                    maxWidth: '260px',
-                    lineHeight: 1.6,
-                    marginBottom: '20px',
-                  }}
-                >
+                <p className="text-[13.5px] text-zinc-400 max-w-[260px] leading-relaxed mb-5">
                   Create your first workspace to start organizing your knowledge and chats.
                 </p>
                 <NewProjectButton onClick={() => setIsCreateOpen(true)} />
@@ -503,37 +520,24 @@ export const ProjectsHubView: React.FC = () => {
 
 /* ── New Project button (shared between header + empty state) ── */
 function NewProjectButton({ onClick }: { onClick: () => void }) {
-  const [hov, setHov] = useState(false);
   const [pressed, setPressed] = useState(false);
 
   return (
     <button
       onClick={onClick}
-      onMouseEnter={() => setHov(true)}
-      onMouseLeave={() => { setHov(false); setPressed(false); }}
+      onMouseLeave={() => setPressed(false)}
       onMouseDown={() => setPressed(true)}
       onMouseUp={() => setPressed(false)}
       aria-label="Create a new project"
-      style={{
-        display: 'inline-flex',
-        alignItems: 'center',
-        gap: '6px',
-        padding: '7px 13px',
-        borderRadius: '7px',
-        border: '1px solid rgba(99,102,241,0.35)',
-        background: hov ? 'rgba(99,102,241,0.2)' : 'rgba(99,102,241,0.12)',
-        color: hov ? '#c7d2fe' : '#a5b4fc',
-        fontSize: '13px',
-        fontFamily: 'Inter, sans-serif',
-        fontWeight: 500,
-        letterSpacing: '-0.01em',
-        cursor: 'pointer',
-        transition: 'background 0.12s ease, color 0.12s ease, transform 0.1s ease',
-        transform: pressed ? 'scale(0.97)' : 'scale(1)',
-        whiteSpace: 'nowrap',
-      }}
+      className={`
+        inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-[13.5px] font-semibold tracking-tight transition-all duration-200 whitespace-nowrap
+        bg-gradient-to-tr from-indigo-600 to-indigo-500 text-white
+        shadow-lg shadow-indigo-500/30
+        hover:shadow-indigo-500/50 hover:-translate-y-0.5
+        ${pressed ? 'scale-[0.97]' : 'scale-100'}
+      `}
     >
-      <Plus size={13} strokeWidth={2.5} />
+      <Plus size={16} strokeWidth={2.5} />
       New project
     </button>
   );

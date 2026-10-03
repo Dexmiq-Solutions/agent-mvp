@@ -2,7 +2,7 @@
 // Mock Data — Standalone frontend development without backend
 // =============================================================================
 
-import type { Project, PaginatedResponse } from '../types';
+import type { Project, PaginatedResponse, SourceDocument, Conversation } from '../types';
 
 const MOCK_PROJECTS: Project[] = [
   {
@@ -93,11 +93,117 @@ export const mockProjectService = {
   },
 };
 
+let mockConversations: Conversation[] = [];
+
 export const mockChatService = {
   async listConversations(projectId: string, limit = 20, offset = 0) {
     await delay(300);
-    return { items: [], total: 0, limit, offset };
+    const items = mockConversations
+      .filter((c) => c.project_id === projectId)
+      .sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime())
+      .slice(offset, offset + limit);
+    return { items, total: mockConversations.filter(c => c.project_id === projectId).length, limit, offset };
   },
+
+  async getConversation(projectId: string, conversationId: string) {
+    await delay(200);
+    const conv = mockConversations.find(c => c.id === conversationId && c.project_id === projectId);
+    if (!conv) throw new Error('404 Not Found');
+    return conv;
+  },
+
+  async createConversation(projectId: string, payload: { title?: string }) {
+    await delay(400);
+    const now = new Date().toISOString();
+    const conv: Conversation = {
+      id: crypto.randomUUID(),
+      project_id: projectId,
+      title: payload.title || 'New Conversation',
+      created_at: now,
+      updated_at: now,
+      messages_count: 0,
+      messages: []
+    };
+    mockConversations = [conv, ...mockConversations];
+    return conv;
+  },
+
+  async updateConversation(projectId: string, conversationId: string, payload: { title: string }) {
+    await delay(300);
+    mockConversations = mockConversations.map(c => 
+      (c.id === conversationId && c.project_id === projectId) 
+        ? { ...c, title: payload.title, updated_at: new Date().toISOString() } 
+        : c
+    );
+    const updated = mockConversations.find(c => c.id === conversationId);
+    if (!updated) throw new Error('404 Not Found');
+    return updated;
+  },
+
+  async deleteConversation(projectId: string, conversationId: string) {
+    await delay(400);
+    mockConversations = mockConversations.filter(c => !(c.id === conversationId && c.project_id === projectId));
+  },
+
+  async sendMessage(projectId: string, conversationId: string, payload: { content: string }, generate: boolean = true) {
+    // Simulate realistic latency for LLM calls
+    await delay(1200);
+    const conv = mockConversations.find(c => c.id === conversationId && c.project_id === projectId);
+    if (!conv) throw new Error('404 Not Found');
+    
+    // Simulate adding user message silently to our store
+    const now = new Date().toISOString();
+    const userMsg = {
+      id: crypto.randomUUID(),
+      conversation_id: conversationId,
+      role: 'user' as const,
+      content: payload.content,
+      created_at: now,
+      metadata: {}
+    };
+    conv.messages.push(userMsg);
+    conv.messages_count++;
+    
+    if (generate) {
+
+      // Build mock markdown response
+      const lines = [
+        `Here is a **mock response** to your question about: *"${payload.content}"*`,
+        '',
+        'I am running **locally without a backend**. When connected to the real API:',
+        '',
+        '- The AI will search through your uploaded project sources',
+        '- Responses will be grounded in retrieved document chunks',
+        '- You will see live telemetry data below each message',
+        '',
+        '```python',
+        '# Example code block with copy button',
+        'def greet(name: str) -> str:',
+        '    return f"Hello, {name}!"',
+        '',
+        'print(greet("Dexmiq"))',
+        '```',
+        '',
+        'You can also use `inline code` and **bold** or *italic* text.',
+      ];
+
+      const aiMsg = {
+        id: crypto.randomUUID(),
+        conversation_id: conversationId,
+        role: 'assistant' as const,
+        content: lines.join('\n'),
+        created_at: new Date().toISOString(),
+        metadata: {},
+      };
+      conv.messages.push(aiMsg);
+      conv.messages_count++;
+      conv.updated_at = new Date().toISOString();
+      return aiMsg;
+    }
+    
+    conv.updated_at = new Date().toISOString();
+    return userMsg;
+  }
 };
 
 let mockSources: SourceDocument[] = [];
@@ -148,7 +254,7 @@ export const mockSourceService = {
     return source;
   },
 
-  async updateSource(projectId: string, sourceId: string, payload: { name: string }) {
+  async updateSource(_projectId: string, sourceId: string, payload: { name: string }) {
     await delay(300);
     const s = mockSources.find(doc => doc.id === sourceId);
     if (!s) throw new Error('Source not found');
@@ -157,7 +263,7 @@ export const mockSourceService = {
     return { ...s };
   },
 
-  async deleteSource(projectId: string, sourceId: string) {
+  async deleteSource(_projectId: string, sourceId: string) {
     await delay(400);
     mockSources = mockSources.filter(s => s.id !== sourceId);
   },

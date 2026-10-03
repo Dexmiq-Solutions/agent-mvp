@@ -23,6 +23,11 @@ export const WorkspaceTabs: React.FC<WorkspaceTabsProps> = ({ children }) => {
     );
   };
 
+  const TAB_LABELS: Record<Tab, string> = {
+    chats: 'Chats',
+    sources: 'Sources',
+  };
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
       {/* Tab bar */}
@@ -30,8 +35,8 @@ export const WorkspaceTabs: React.FC<WorkspaceTabsProps> = ({ children }) => {
         style={{
           display: 'flex',
           alignItems: 'center',
-          gap: '16px',
-          borderBottom: '1px solid #222222',
+          gap: '0',
+          borderBottom: '1px solid #1e1e1e',
           flexShrink: 0,
         }}
       >
@@ -42,10 +47,9 @@ export const WorkspaceTabs: React.FC<WorkspaceTabsProps> = ({ children }) => {
               key={tab}
               onClick={() => handleTabChange(tab)}
               style={{
-                padding: '16px 0',
-                marginRight: '8px',
-                fontSize: '14px',
-                fontWeight: isActive ? 600 : 500,
+                padding: '10px 16px',
+                fontSize: '13px',
+                fontWeight: isActive ? 600 : 400,
                 fontFamily: 'Inter, sans-serif',
                 letterSpacing: '-0.01em',
                 color: isActive ? '#FFFFFF' : '#8E8E93',
@@ -55,16 +59,17 @@ export const WorkspaceTabs: React.FC<WorkspaceTabsProps> = ({ children }) => {
                 marginBottom: '-1px',
                 cursor: 'pointer',
                 transition: 'color 0.15s ease, border-color 0.15s ease',
-                textTransform: 'capitalize',
               }}
               onMouseEnter={(e) => {
-                if (!isActive) (e.currentTarget as HTMLButtonElement).style.color = '#FFFFFF';
+                if (!isActive) (e.currentTarget as HTMLButtonElement).style.color = 'rgba(255,255,255,0.8)';
               }}
               onMouseLeave={(e) => {
                 if (!isActive) (e.currentTarget as HTMLButtonElement).style.color = '#8E8E93';
               }}
+              aria-selected={isActive}
+              role="tab"
             >
-              {tab === 'chats' ? 'Chats' : 'Sources'}
+              {TAB_LABELS[tab]}
             </button>
           );
         })}

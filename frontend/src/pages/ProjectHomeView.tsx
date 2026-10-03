@@ -5,7 +5,6 @@ import { mockProjectService } from '../services/mockData';
 import { createConversation } from '../services/chatService';
 import type { Project } from '../types';
 import { ProjectHeader } from '../components/workspace/ProjectHeader';
-import { WorkModeSwitcher } from '../components/workspace/WorkModeSwitcher';
 import { NewChatComposer } from '../components/workspace/NewChatComposer';
 import { WorkspaceTabs } from '../components/workspace/WorkspaceTabs';
 import { ChatsTab } from '../components/workspace/ChatsTab';
@@ -94,7 +93,7 @@ function NotFound() {
 }
 
 // ── General error state ───────────────────────────────────────────────────────
-function ErrorState({ message, onRetry }: { message: string; onRetry: () => void }) {
+function ErrorState({ message: _message, onRetry }: { message: string; onRetry: () => void }) {
   return (
     <div
       style={{
@@ -317,15 +316,18 @@ export const ProjectHomeView: React.FC = () => {
 
       {/* Scrollable workspace body */}
       <main className="flex-1 overflow-y-auto">
-        <div className="mx-auto w-full max-w-[1120px] px-6 py-8 flex flex-col">
-          
-          {/* Top section: mode switcher */}
-          <div className="mb-4">
-            <WorkModeSwitcher />
-          </div>
-
+        <div
+          style={{
+            maxWidth: '1000px',
+            width: '100%',
+            margin: '0 auto',
+            padding: '40px 32px 80px',
+            display: 'flex',
+            flexDirection: 'column',
+          }}
+        >
           {/* New chat composer */}
-          <div className="mb-8">
+          <div style={{ marginBottom: '40px' }}>
             <NewChatComposer
               projectName={project.name}
               onSubmit={handleNewChat}
@@ -333,17 +335,15 @@ export const ProjectHomeView: React.FC = () => {
           </div>
 
           {/* Tabs section */}
-          <div className="mb-8">
-            <WorkspaceTabs>
-              {(activeTab) =>
-                activeTab === 'chats' ? (
-                  <ChatsTab projectId={project.id} />
-                ) : (
-                  <SourcesTab projectId={project.id} />
-                )
-              }
-            </WorkspaceTabs>
-          </div>
+          <WorkspaceTabs>
+            {(activeTab) =>
+              activeTab === 'chats' ? (
+                <ChatsTab projectId={project.id} />
+              ) : (
+                <SourcesTab projectId={project.id} />
+              )
+            }
+          </WorkspaceTabs>
         </div>
       </main>
 

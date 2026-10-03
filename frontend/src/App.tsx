@@ -7,7 +7,7 @@ import { ConversationView } from './pages/ConversationView';
 function App() {
   return (
     <BrowserRouter>
-      <div className="min-h-screen bg-[#0A0A0A] text-[#FAFAFA] font-sans">
+      <div className="min-h-screen bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-zinc-900 via-zinc-950 to-black text-[#FAFAFA] font-sans">
         <Routes>
           {/* Redirect root to projects */}
           <Route path="/" element={<Navigate to="/projects" replace />} />

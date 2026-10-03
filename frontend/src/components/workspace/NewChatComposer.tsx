@@ -1,51 +1,16 @@
 import React, { useState, useRef, useCallback } from 'react';
-import { ArrowUp, Brain, Mic, AudioWaveform, X } from 'lucide-react';
+import { ArrowUp, Brain } from 'lucide-react';
 
 interface NewChatComposerProps {
   projectName: string;
   onSubmit: (prompt: string) => Promise<void>;
 }
 
-// ── Voice/audio coming soon notice ───────────────────────────────────────────
-function VoiceNotice({ onDismiss }: { onDismiss: () => void }) {
-  return (
-    <div
-      className="slide-up"
-      style={{
-        position: 'absolute',
-        bottom: 'calc(100% + 8px)',
-        left: '50%',
-        transform: 'translateX(-50%)',
-        zIndex: 50,
-        display: 'flex',
-        alignItems: 'center',
-        gap: '8px',
-        padding: '8px 12px',
-        background: '#1a1a1a',
-        border: '1px solid #2e2e2e',
-        borderRadius: '8px',
-        boxShadow: '0 8px 32px rgba(0,0,0,0.5)',
-        fontSize: '12.5px',
-        color: '#8E8E93',
-        whiteSpace: 'nowrap',
-      }}
-    >
-      <span>Voice inputs coming soon</span>
-      <button
-        onClick={onDismiss}
-        aria-label="Dismiss"
-        style={{ background: 'none', border: 'none', color: '#8E8E93', cursor: 'pointer', display: 'flex', padding: 0 }}
-      >
-        <X size={12} />
-      </button>
-    </div>
-  );
-}
+
 
 export const NewChatComposer: React.FC<NewChatComposerProps> = ({ projectName, onSubmit }) => {
   const [input, setInput] = useState('');
   const [submitting, setSubmitting] = useState(false);
-  const [showVoiceNotice, setShowVoiceNotice] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   // Auto-resize textarea
@@ -87,31 +52,15 @@ export const NewChatComposer: React.FC<NewChatComposerProps> = ({ projectName, o
 
   return (
     <div
-      style={{
-        background: '#141414',
-        border: '1px solid #222222',
-        borderRadius: '20px',
-        transition: 'border-color 0.15s ease, box-shadow 0.15s ease',
-        boxShadow: '0 4px 12px rgba(0,0,0,0.2)',
-        display: 'flex',
-        flexDirection: 'column',
-      }}
-      onFocusCapture={(e) => {
-        const el = e.currentTarget as HTMLDivElement;
-        el.style.borderColor = 'rgba(99,102,241,0.5)';
-        el.style.boxShadow = '0 4px 12px rgba(0,0,0,0.4), 0 0 0 1px rgba(99,102,241,0.2)';
-      }}
-      onBlurCapture={(e) => {
-        // Only reset if focus leaves the composer entirely
-        if (!e.currentTarget.contains(e.relatedTarget as Node)) {
-          const el = e.currentTarget as HTMLDivElement;
-          el.style.borderColor = '#222222';
-          el.style.boxShadow = '0 4px 12px rgba(0,0,0,0.2)';
-        }
-      }}
+      className="group relative flex flex-col overflow-hidden rounded-[24px] transition-all duration-300
+                 bg-zinc-950/60 backdrop-blur-xl border border-white/10
+                 shadow-2xl shadow-black/40
+                 focus-within:border-indigo-500/40 focus-within:bg-zinc-900/80 focus-within:shadow-[0_0_30px_rgba(99,102,241,0.15)]"
     >
+      {/* Subtle multi-color gradient background glow behind the composer */}
+      <div className="pointer-events-none absolute inset-0 -z-10 opacity-0 group-focus-within:opacity-100 transition-opacity duration-500 bg-gradient-to-r from-indigo-500/10 via-purple-500/10 to-cyan-500/10" />
       {/* Textarea */}
-      <div style={{ padding: '16px 20px 12px', flex: 1 }}>
+      <div style={{ padding: '20px 24px 12px', flex: 1 }}>
         <textarea
           ref={textareaRef}
           value={input}
@@ -128,11 +77,11 @@ export const NewChatComposer: React.FC<NewChatComposerProps> = ({ projectName, o
             outline: 'none',
             resize: 'none',
             color: '#FFFFFF',
-            fontSize: '15px',
+            fontSize: '15.5px',
             fontFamily: 'Inter, sans-serif',
             lineHeight: '1.6',
-            minHeight: '48px',
-            maxHeight: '200px',
+            minHeight: '52px',
+            maxHeight: '240px',
             overflow: 'auto',
           }}
         />
@@ -147,95 +96,32 @@ export const NewChatComposer: React.FC<NewChatComposerProps> = ({ projectName, o
           padding: '10px 16px 16px',
         }}
       >
-        {/* Left controls */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', position: 'relative' }}>
+        <div className="flex items-center gap-2">
           {/* Think button */}
           <button
             onClick={() => {}}
-            style={{
-              display: 'flex', alignItems: 'center', gap: '6px',
-              padding: '6px 12px', borderRadius: '18px',
-              border: '1px solid #2a2a2a', background: '#1a1a1a',
-              color: '#a5b4fc', fontSize: '13px', fontWeight: 500,
-              cursor: 'pointer', transition: 'all 0.15s ease',
-            }}
-            onMouseEnter={(e) => {
-              (e.currentTarget as HTMLButtonElement).style.background = '#222222';
-              (e.currentTarget as HTMLButtonElement).style.borderColor = '#333333';
-            }}
-            onMouseLeave={(e) => {
-              (e.currentTarget as HTMLButtonElement).style.background = '#1a1a1a';
-              (e.currentTarget as HTMLButtonElement).style.borderColor = '#2a2a2a';
-            }}
+            className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-[13.5px] font-medium transition-all duration-200
+                       bg-white/5 border border-white/10 text-zinc-300
+                       hover:bg-white/10 hover:border-white/20 hover:text-white"
           >
-            <Brain size={14} strokeWidth={2} />
+            <Brain size={15} strokeWidth={2} />
             Think
           </button>
-
-          <div style={{ width: '1px', height: '16px', background: '#2a2a2a', margin: '0 4px' }} />
-
-          <div style={{ position: 'relative' }}>
-            <ControlButton
-              icon={<Mic size={15} strokeWidth={2} />}
-              label="Voice input (coming soon)"
-              onClick={() => setShowVoiceNotice((v) => !v)}
-            />
-            {showVoiceNotice && (
-              <>
-                <div
-                  style={{ position: 'fixed', inset: 0, zIndex: 49 }}
-                  onClick={() => setShowVoiceNotice(false)}
-                />
-                <VoiceNotice onDismiss={() => setShowVoiceNotice(false)} />
-              </>
-            )}
-          </div>
-          <ControlButton
-            icon={<AudioWaveform size={15} strokeWidth={2} />}
-            label="Audio waveform (coming soon)"
-            onClick={() => setShowVoiceNotice(true)}
-          />
         </div>
 
         {/* Right controls */}
         <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-          {/* Send button */}
           <button
             onClick={handleSubmit}
             disabled={!canSubmit}
             aria-label="Send message"
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              width: '36px',
-              height: '36px',
-              borderRadius: '10px',
-              border: 'none',
-              background: canSubmit ? '#6366f1' : '#1e1e1e',
-              color: canSubmit ? '#FFFFFF' : '#444444',
-              cursor: canSubmit ? 'pointer' : 'not-allowed',
-              transition: 'all 0.15s ease',
-              flexShrink: 0,
-            }}
-            onMouseEnter={(e) => {
-              if (canSubmit) {
-                (e.currentTarget as HTMLButtonElement).style.background = '#818CF8';
-                (e.currentTarget as HTMLButtonElement).style.transform = 'scale(1.05)';
+            className={`
+              flex items-center justify-center w-9 h-9 rounded-xl shrink-0 transition-all duration-200
+              ${canSubmit
+                ? 'bg-gradient-to-tr from-indigo-600 to-indigo-500 text-white shadow-lg shadow-indigo-500/30 hover:shadow-indigo-500/50 hover:-translate-y-0.5 active:translate-y-0'
+                : 'bg-white/5 text-zinc-600 cursor-not-allowed'
               }
-            }}
-            onMouseLeave={(e) => {
-              if (canSubmit) {
-                (e.currentTarget as HTMLButtonElement).style.background = '#6366f1';
-                (e.currentTarget as HTMLButtonElement).style.transform = 'scale(1)';
-              }
-            }}
-            onMouseDown={(e) => {
-              if (canSubmit) (e.currentTarget as HTMLButtonElement).style.transform = 'scale(0.95)';
-            }}
-            onMouseUp={(e) => {
-              if (canSubmit) (e.currentTarget as HTMLButtonElement).style.transform = 'scale(1.05)';
-            }}
+            `}
           >
             {submitting ? (
               <div style={{ width: '16px', height: '16px', border: '2px solid rgba(255,255,255,0.3)', borderTopColor: '#FFFFFF', borderRadius: '50%', animation: 'spin 0.8s linear infinite' }} />
@@ -249,31 +135,3 @@ export const NewChatComposer: React.FC<NewChatComposerProps> = ({ projectName, o
   );
 };
 
-// ── Small control icon button ─────────────────────────────────────────────────
-function ControlButton({ icon, label, onClick }: { icon: React.ReactNode; label: string; onClick: () => void }) {
-  const [hov, setHov] = useState(false);
-  return (
-    <button
-      onClick={onClick}
-      aria-label={label}
-      title={label}
-      onMouseEnter={() => setHov(true)}
-      onMouseLeave={() => setHov(false)}
-      style={{
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        width: '28px',
-        height: '28px',
-        borderRadius: '6px',
-        border: 'none',
-        background: hov ? '#1e1e1e' : 'transparent',
-        color: hov ? '#FFFFFF' : '#8E8E93',
-        cursor: 'pointer',
-        transition: 'all 0.12s ease',
-      }}
-    >
-      {icon}
-    </button>
-  );
-}

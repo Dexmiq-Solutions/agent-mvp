@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react';
 import {
   FileText, AlertCircle, RotateCcw, CheckCircle2,
-  Clock, AlertTriangle, Pencil, Trash2, Upload, Plus,
+  AlertTriangle, Pencil, Trash2, Upload, Plus,
 } from 'lucide-react';
 import { formatDistanceToNow } from 'date-fns';
 import { mockSourceService } from '../../services/mockData';
@@ -65,7 +65,7 @@ export const SourcesTab: React.FC<SourcesTabProps> = ({ projectId }) => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [addOpen, setAddOpen] = useState(false);
-  const [pendingDelete, setPendingDelete] = useState<SourceDocument | null>(null);
+  const [_pendingDelete, setPendingDelete] = useState<SourceDocument | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -200,19 +200,17 @@ export const SourcesTab: React.FC<SourcesTabProps> = ({ projectId }) => {
 
         {/* Source list */}
         {sources.length === 0 ? (
-          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', paddingTop: '16px', textAlign: 'center' }}>
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', paddingTop: '40px', textAlign: 'center' }}>
             <div
-              style={{
-                width: '40px', height: '40px', borderRadius: '10px',
-                background: '#1a1a1a', border: '1px solid #2a2a2a',
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                marginBottom: '12px',
-              }}
+              className="w-16 h-16 rounded-2xl flex items-center justify-center mb-5 relative
+                         bg-gradient-to-b from-zinc-800/50 to-zinc-900/50 backdrop-blur-md border border-white/10
+                         shadow-[inset_0_1px_0_rgba(255,255,255,0.1)]"
             >
-              <FileText size={16} strokeWidth={1.75} color="#8E8E93" />
+              <div className="absolute inset-0 bg-indigo-500/20 blur-xl rounded-full" />
+              <FileText size={26} strokeWidth={1.5} className="text-zinc-400 relative z-10" />
             </div>
-            <p style={{ fontSize: '14px', fontWeight: 600, color: '#FFFFFF', marginBottom: '4px' }}>No knowledge base documents yet</p>
-            <p style={{ fontSize: '13px', color: '#8E8E93', maxWidth: '300px', lineHeight: 1.5, marginBottom: '20px' }}>
+            <p className="text-[15px] font-semibold text-white mb-2">No knowledge base documents yet</p>
+            <p className="text-[13.5px] text-zinc-400 max-w-[300px] leading-relaxed mb-6">
               Add documents to ground your AI assistant in this project.
             </p>
             <button
@@ -311,28 +309,30 @@ function SourceCard({
         display: 'flex',
         alignItems: 'flex-start',
         justifyContent: 'space-between',
-        padding: '16px 20px',
-        borderRadius: '12px',
-        border: hovered ? '1px solid #2a2a2a' : '1px solid #1e1e1e',
-        background: hovered ? '#191919' : '#141414',
-        transition: 'background 0.15s ease, border-color 0.15s ease, transform 0.15s ease',
+        padding: '18px 22px',
+        borderRadius: '14px',
+        border: hovered ? '1px solid rgba(255,255,255,0.15)' : '1px solid #1e1e1e',
+        background: hovered ? '#171717' : '#111111',
+        transition: 'all 0.2s cubic-bezier(0.16, 1, 0.3, 1)',
         gap: '12px',
         flexWrap: 'wrap',
+        boxShadow: hovered ? '0 4px 12px rgba(0,0,0,0.2)' : 'none',
+        transform: hovered ? 'translateY(-1px)' : 'translateY(0)',
       }}
     >
       <div style={{ display: 'flex', alignItems: 'flex-start', gap: '16px', minWidth: 0, flex: 1 }}>
         {/* Icon */}
         <div
           style={{
-            width: '36px', height: '36px', borderRadius: '10px', flexShrink: 0,
-            background: hovered ? 'rgba(99,102,241,0.08)' : '#1a1a1a',
-            border: hovered ? '1px solid rgba(99,102,241,0.15)' : '1px solid #2a2a2a',
+            width: '40px', height: '40px', borderRadius: '12px', flexShrink: 0,
+            background: hovered ? 'rgba(99,102,241,0.08)' : '#171717',
+            border: hovered ? '1px solid rgba(99,102,241,0.2)' : '1px solid #222',
             display: 'flex', alignItems: 'center', justifyContent: 'center',
             transition: 'all 0.15s ease',
           }}
         >
           <FileText
-            size={16}
+            size={18}
             strokeWidth={1.5}
             color={hovered ? '#a5b4fc' : '#8E8E93'}
             style={{ transition: 'color 0.15s ease' }}
