@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
 from enum import Enum
 import json
 from pathlib import Path
@@ -54,10 +55,16 @@ from agents.brd.section_validation import (
     ValidationResult,
 )
 from agents.brd.template import (
+    classify_requirement_item,
     extract_brd_sections,
     extract_section_requirements,
     extract_section_template,
     get_brd_template_path,
+    is_administrative_section,
+    is_benign_administrative_metadata_finding,
+    is_metadata_or_role_item,
+    is_substantive_requirement,
+    is_tbd_value,
     load_brd_template,
 )
 from agents.brd.progression import (
@@ -2208,6 +2215,7 @@ class BRDLeadAgent:
         prior_messages: Optional[Sequence[Any]] = None,
         current_task: Optional[str] = None,
         initial_state: Optional[BRDAgentState] = None,
+        consolidate_clarification: bool = False,
     ) -> AsyncIterator[dict[str, Any]]:
         """Execute the controlled BRD workflow asynchronously via streaming.
 
@@ -2221,6 +2229,7 @@ class BRDLeadAgent:
             prior_messages: Optional sequence of prior BaseMessage instances.
             current_task: Optional immediate task context override.
             initial_state: Optional pre-existing/restored BRDAgentState for conversation resumption.
+            consolidate_clarification: Whether to consolidate unresolved business gaps until end of drafting pass.
 
         Yields:
             dict[str, Any]: Incremental content chunks and progress events from the workflow.
@@ -2267,6 +2276,8 @@ class BRDLeadAgent:
             context=effective_ctx,
             current_task=current_task,
             initial_state=self._state,
+            prior_messages=prior_messages,
+            consolidate_clarification=consolidate_clarification,
         ):
             yield event
 
@@ -3105,6 +3116,11 @@ class BRDLeadAgent:
         if effective_ctx.project_id:
             self._state.metadata["project_id"] = effective_ctx.project_id
 
+        # Skip RAG for administrative sections (mechanics and administrative metadata do not require RAG)
+        if is_administrative_section(target_sec):
+            logger.info("Skipping RAG retrieval for administrative section '%s' (mechanics and administrative metadata do not require RAG).", target_sec)
+            return None
+
         if isinstance(query, (list, tuple)):
             search_query = self.construct_section_retrieval_query(
                 section=target_sec,
@@ -3124,6 +3140,12 @@ class BRDLeadAgent:
                 section=target_sec,
                 context=effective_ctx,
             )
+
+        # Avoid executing identical retrieval query repeatedly during rework
+        executed_queries = self._state.metadata.setdefault("executed_rag_queries", {})
+        if search_query in executed_queries:
+            logger.info("Skipping duplicate RAG query for '%s': already executed (%s)", target_sec, search_query)
+            return executed_queries[search_query]
 
         agent_run_id = (effective_ctx.metadata.get("agent_run_id") if effective_ctx.metadata else None)
         log_trace_event(
@@ -3150,6 +3172,8 @@ class BRDLeadAgent:
 
         if not result_str or not isinstance(result_str, str):
             return None
+
+        executed_queries[search_query] = result_str
 
         if "[RETRIEVAL_SUCCESS]" in result_str:
             evidence_item = {
@@ -3383,6 +3407,9 @@ class BRDLeadAgent:
                 "project_name": getattr(effective_ctx, "project_name", None) or self._state.metadata.get("project_name"),
                 "project_description": getattr(effective_ctx, "project_description", None) or self._state.metadata.get("project_description"),
                 "available_documents": getattr(effective_ctx, "available_documents", None) or self._state.metadata.get("available_documents"),
+                "document_version": self.resolve_document_version(),
+                "document_date": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+                "question_id_prefix": "Q-BRD-",
             },
         )
 
@@ -3487,6 +3514,9 @@ class BRDLeadAgent:
                 "project_name": getattr(effective_ctx, "project_name", None) or self._state.metadata.get("project_name"),
                 "project_description": getattr(effective_ctx, "project_description", None) or self._state.metadata.get("project_description"),
                 "available_documents": getattr(effective_ctx, "available_documents", None) or self._state.metadata.get("available_documents"),
+                "document_version": self.resolve_document_version(),
+                "document_date": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+                "question_id_prefix": "Q-BRD-",
             },
         )
 
@@ -3801,6 +3831,113 @@ class BRDLeadAgent:
             f"Please provide the necessary business rules and requirements for {section_name}."
         )
 
+    def resolve_document_version(self) -> str:
+        """Determine document version deterministically:
+        - New BRD -> 1.0
+        - Existing BRD update -> increment minor version (e.g. 1.0 -> 1.1)
+        """
+        existing_version = self._state.metadata.get("document_version")
+        if not existing_version:
+            assembled_doc = getattr(self._state, "assembled_brd", None) or getattr(self._state, "assembled_document", None) or self._state.metadata.get("existing_brd_content")
+            if assembled_doc:
+                match = re.search(r"Version\s*[:\s|]\s*v?(\d+\.\d+)", assembled_doc, re.IGNORECASE)
+                if match:
+                    existing_version = match.group(1)
+        if existing_version:
+            try:
+                parts = existing_version.split(".")
+                major = int(parts[0])
+                minor = int(parts[1]) if len(parts) > 1 else 0
+                new_version = f"{major}.{minor + 1}"
+                self._state.metadata["document_version"] = new_version
+                return new_version
+            except Exception:
+                pass
+        self._state.metadata["document_version"] = "1.0"
+        return "1.0"
+
+    def _ingest_user_conversation_evidence(
+        self,
+        input_prompt: Optional[str],
+        prior_messages: Optional[Sequence[Any]] = None,
+    ) -> None:
+        """Extract authoritative user conversation statements into working evidence.
+
+        Strict Provenance Rules:
+        - User messages become evidence with source='user_conversation', role='user', is_authoritative=True.
+        - Assistant messages are NEVER added as authoritative evidence (prevents model-echo loops).
+        - Evidence items are deduplicated by (content, source) via state.add_evidence.
+        """
+        if prior_messages:
+            for msg in prior_messages:
+                role = None
+                content = None
+                if isinstance(msg, HumanMessage):
+                    role = "user"
+                    content = msg.content
+                elif isinstance(msg, AIMessage):
+                    role = "assistant"
+                    content = msg.content
+                elif isinstance(msg, dict):
+                    role = msg.get("role") or msg.get("sender") or msg.get("type")
+                    content = msg.get("content") or msg.get("text")
+                elif isinstance(msg, (list, tuple)) and len(msg) >= 2:
+                    role = str(msg[0])
+                    content = str(msg[1])
+                elif hasattr(msg, "role") and hasattr(msg, "content"):
+                    role = getattr(msg, "role")
+                    content = getattr(msg, "content")
+
+                # Authoritative user evidence ONLY
+                if role in ("user", "human") and content:
+                    content_str = str(content).strip()
+                    if content_str:
+                        self._state.add_evidence({
+                            "source": "user_conversation",
+                            "role": "user",
+                            "content": content_str,
+                            "is_authoritative": True,
+                        })
+
+        if input_prompt and isinstance(input_prompt, str) and input_prompt.strip():
+            self._state.add_evidence({
+                "source": "user_conversation",
+                "role": "user",
+                "content": input_prompt.strip(),
+                "is_authoritative": True,
+            })
+
+    def construct_consolidated_clarification_question(
+        self,
+        unresolved_items: Sequence[str],
+    ) -> str:
+        """Construct a consolidated clarification question grouping genuine unresolved business/technical gaps."""
+        deduped: list[str] = []
+        seen: set[str] = set()
+        for item in unresolved_items:
+            clean = str(item).strip().rstrip(".")
+            if not clean:
+                continue
+            if is_metadata_or_role_item(clean):
+                continue
+            if clean.lower() not in seen:
+                seen.add(clean.lower())
+                deduped.append(clean)
+
+        if not deduped:
+            return "Please provide any additional business or technical requirements to complete the BRD."
+
+        lines = [
+            "Before I finalize the BRD, I need clarification on the following items:\n",
+        ]
+        for i, item in enumerate(deduped, 1):
+            if not item.endswith("?"):
+                lines.append(f"{i}. Please clarify the requirement or specification for: {item}")
+            else:
+                lines.append(f"{i}. {item}")
+
+        return "\n".join(lines)
+
     def _format_section_failure_diagnostic(
         self,
         section_name: str,
@@ -3902,9 +4039,23 @@ class BRDLeadAgent:
                 for f in val_res.findings
             ]
 
+            # Filter benign administrative metadata and document mechanics findings
+            substantive_findings = [
+                f for f in val_res.findings
+                if not is_benign_administrative_metadata_finding(f, target_sec)
+            ]
+
+            if not substantive_findings:
+                strategy = SectionReworkStrategy(
+                    section_name=target_sec,
+                    requires_rework=False,
+                    reasoning=f"Section '{target_sec}' satisfies requirements (administrative placeholders are accepted).",
+                )
+                return strategy
+
             # DEF-011: Classification of Unresolved Problem
             template_findings = []
-            for f in val_res.findings:
+            for f in substantive_findings:
                 cat_val = f.category.value if hasattr(f.category, "value") else str(f.category)
                 issue_lower = (f.issue or "").lower()
                 expl_lower = (f.explanation or "").lower()
@@ -3924,7 +4075,7 @@ class BRDLeadAgent:
                 ValidationCategory.REQUIREMENT_COVERAGE.value,
             }
             evidence_gap_findings = []
-            for f in val_res.findings:
+            for f in substantive_findings:
                 cat_val = f.category.value if hasattr(f.category, "value") else str(f.category)
                 issue_lower = (f.issue or "").lower()
                 expl_lower = (f.explanation or "").lower()
@@ -4352,6 +4503,8 @@ class BRDLeadAgent:
         max_section_rework_attempts: int = 2,
         max_recovery_cycles: int = MAX_FINAL_VALIDATION_RECOVERY_CYCLES,
         initial_state: Optional[BRDAgentState] = None,
+        prior_messages: Optional[Sequence[Any]] = None,
+        consolidate_clarification: bool = False,
     ) -> AgentRunResponse:
         """Execute the Application-Owned BRD Workflow lifecycle asynchronously.
 
@@ -4411,11 +4564,15 @@ class BRDLeadAgent:
             self._state.metadata["available_documents"] = list(effective_ctx.available_documents)
 
         input_prompt = request.input_text if isinstance(request, AgentRunRequest) else (str(request) if request is not None else None)
+        self._ingest_user_conversation_evidence(input_prompt=input_prompt, prior_messages=prior_messages)
 
+        effective_consolidate = consolidate_clarification or bool(self._state.metadata.get("consolidate_clarification", False))
+        is_consolidated_resume = bool(self._state.metadata.pop("pending_consolidated_clarification", None))
         is_resuming = (
             self._state.is_waiting_for_user
             or bool(self._state.pending_clarification)
             or bool(self._state.metadata.get("pending_clarification_section"))
+            or is_consolidated_resume
         )
         if (is_resuming or (self._state.current_section and not self.is_section_processing_complete)) and self._state.objective:
             effective_obj = objective or self._state.objective
@@ -4440,7 +4597,38 @@ class BRDLeadAgent:
             )
 
         is_section_resume = False
-        if is_resuming:
+        if is_consolidated_resume:
+            log_trace_event(
+                logger,
+                agent_run_id=agent_run_id,
+                actor=TraceActor.APPLICATION,
+                event_name="WORKFLOW_RESUMING_FROM_CONSOLIDATED_CLARIFICATION",
+            )
+            if input_prompt:
+                self.receive_user_clarification(
+                    answer=input_prompt,
+                    context=effective_ctx,
+                )
+            unresolved_gaps = self._state.metadata.pop("unresolved_section_gaps", {})
+            for sec in unresolved_gaps:
+                existing = self._state.get_section_content(sec)
+                update_res = await self.update_section_async(
+                    section=sec,
+                    rework_feedback=f"Incorporate user clarification: {input_prompt}",
+                    existing_content=existing,
+                    context=effective_ctx,
+                )
+                if update_res.content:
+                    self._state.set_section_content(sec, update_res.content)
+                val_res = await self.validate_section_async(
+                    section=sec,
+                    section_content=update_res.content or existing or "",
+                    context=effective_ctx,
+                )
+                self._state.update_section_status(sec, BRDSectionStatus.COMPLETED)
+            self._state.unresolved_information.clear()
+            self._state.clear_waiting_for_user()
+        elif is_resuming:
             # Resuming controlled BRD workflow after user clarification
             pending_q = self._state.pending_clarification
             pending_sec = self._state.metadata.pop("pending_clarification_section", None)
@@ -4802,7 +4990,47 @@ class BRDLeadAgent:
                 if rework_strategy.failure_category == SectionFailureCategory.EVIDENCE_GAP:
                     clarification_counts = self._state.metadata.setdefault("section_clarification_counts", {})
                     sec_clarification_count = clarification_counts.get(cur_sec, 0)
-                    if sec_clarification_count < 1:
+                    if sec_clarification_count >= 1:
+                        # Bounded loop: clarification already attempted for this section, terminate with diagnostic
+                        pass
+                    elif effective_consolidate:
+                        sections = list(self._state.template_sections or extract_brd_sections(load_brd_template()))
+                        cur_idx = -1
+                        for i, s in enumerate(sections):
+                            if s == cur_sec or s.lower() == cur_sec.lower():
+                                cur_idx = i
+                                break
+                        next_sec = sections[cur_idx + 1] if (cur_idx >= 0 and cur_idx + 1 < len(sections)) else None
+
+                        # Record genuine substantive gap, preserve draft
+                        substantive_items = [
+                            item for item in rework_strategy.missing_evidence_items
+                            if is_substantive_requirement(item)
+                        ]
+                        for item in substantive_items:
+                            self._state.add_unresolved(item)
+                        if substantive_items:
+                            self._state.metadata.setdefault("unresolved_section_gaps", {}).setdefault(cur_sec, []).extend(substantive_items)
+                        if gen_res.content:
+                            self._state.set_section_content(cur_sec, gen_res.content)
+                        self._state.update_section_status(cur_sec, BRDSectionStatus.NEEDS_REVISION)
+
+                        if next_sec is not None:
+                            self._state.set_current_section(next_sec, auto_in_progress=True)
+                            log_trace_event(
+                                logger,
+                                agent_run_id=agent_run_id,
+                                actor=TraceActor.APPLICATION,
+                                event_name="SECTION_DRAFTED_WITH_UNRESOLVED_GAPS",
+                                section=cur_sec,
+                                next_section=next_sec,
+                                unresolved_count=len(substantive_items),
+                            )
+                            continue
+                        else:
+                            # Last section of drafting pass reached; stop section loop to enter consolidation gate
+                            break
+                    else:
                         clarification_counts[cur_sec] = sec_clarification_count + 1
                         clarification_q = (
                             rework_strategy.clarification_question
@@ -4849,6 +5077,31 @@ class BRDLeadAgent:
                     diagnostics=diagnostics,
                 )
 
+        # Consolidation Gate: inspect accumulated unresolved information
+        substantive_unresolved = [
+            u for u in self._state.unresolved_information
+            if is_substantive_requirement(u)
+        ]
+        if substantive_unresolved and not self._state.metadata.get("clarification_gate_completed"):
+            self._state.metadata["clarification_gate_completed"] = True
+            clarification_q = self.construct_consolidated_clarification_question(substantive_unresolved)
+            self._state.set_waiting_for_user(clarification_q)
+            self._state.metadata["pending_consolidated_clarification"] = True
+            log_trace_event(
+                logger,
+                agent_run_id=agent_run_id,
+                actor=TraceActor.APPLICATION,
+                event_name="USER_CONSOLIDATED_CLARIFICATION_REQUIRED",
+                question=clarification_q,
+                unresolved_items=substantive_unresolved,
+            )
+            return AgentRunResponse(
+                output_text=clarification_q,
+                context=effective_ctx,
+                state=self._state,
+                success=True,
+            )
+
         # Phase 6: Document Assembly Gate
         log_trace_event(
             logger,
@@ -4874,6 +5127,8 @@ class BRDLeadAgent:
             )
 
         assembly_res = await self.assemble_brd_async(context=effective_ctx)
+        if getattr(assembly_res, "assembled_document", None) and not self._state.assembled_brd:
+            self._state.set_assembled_brd(assembly_res.assembled_document)
         log_trace_event(
             logger,
             agent_run_id=agent_run_id,
@@ -5021,6 +5276,8 @@ class BRDLeadAgent:
         max_section_rework_attempts: int = 2,
         max_recovery_cycles: int = MAX_FINAL_VALIDATION_RECOVERY_CYCLES,
         initial_state: Optional[BRDAgentState] = None,
+        prior_messages: Optional[Sequence[Any]] = None,
+        consolidate_clarification: bool = False,
     ) -> AgentRunResponse:
         """Execute the Application-Owned BRD Workflow lifecycle synchronously."""
         import asyncio
@@ -5043,6 +5300,8 @@ class BRDLeadAgent:
                         max_section_rework_attempts=max_section_rework_attempts,
                         max_recovery_cycles=max_recovery_cycles,
                         initial_state=initial_state,
+                        prior_messages=prior_messages,
+                        consolidate_clarification=consolidate_clarification,
                     ),
                 )
                 return future.result()
@@ -5056,6 +5315,8 @@ class BRDLeadAgent:
                     max_section_rework_attempts=max_section_rework_attempts,
                     max_recovery_cycles=max_recovery_cycles,
                     initial_state=initial_state,
+                    prior_messages=prior_messages,
+                    consolidate_clarification=consolidate_clarification,
                 )
             )
 
@@ -5068,6 +5329,8 @@ class BRDLeadAgent:
         max_section_rework_attempts: int = 2,
         max_recovery_cycles: int = MAX_FINAL_VALIDATION_RECOVERY_CYCLES,
         initial_state: Optional[BRDAgentState] = None,
+        prior_messages: Optional[Sequence[Any]] = None,
+        consolidate_clarification: bool = False,
     ) -> AsyncIterator[dict[str, Any]]:
         """Stream progress events and document content throughout the BRD workflow lifecycle."""
         effective_ctx = request.context if isinstance(request, AgentRunRequest) else context
@@ -5115,11 +5378,15 @@ class BRDLeadAgent:
             self._state.metadata["available_documents"] = list(effective_ctx.available_documents)
 
         input_prompt = request.input_text if isinstance(request, AgentRunRequest) else (str(request) if request is not None else None)
+        self._ingest_user_conversation_evidence(input_prompt=input_prompt, prior_messages=prior_messages)
 
+        effective_consolidate = consolidate_clarification or bool(self._state.metadata.get("consolidate_clarification", False))
+        is_consolidated_resume = bool(self._state.metadata.pop("pending_consolidated_clarification", None))
         is_resuming = (
             self._state.is_waiting_for_user
             or bool(self._state.pending_clarification)
             or bool(self._state.metadata.get("pending_clarification_section"))
+            or is_consolidated_resume
         )
         if (is_resuming or (self._state.current_section and not self.is_section_processing_complete)) and self._state.objective:
             effective_obj = objective or self._state.objective
@@ -5146,7 +5413,45 @@ class BRDLeadAgent:
             return
 
         is_section_resume = False
-        if is_resuming:
+        if is_consolidated_resume:
+            yield {
+                "type": "progress",
+                "phase": "5_SECTION_ITERATION",
+                "actor": TraceActor.APPLICATION,
+                "message": "Incorporating user clarification and updating affected sections...",
+            }
+            if input_prompt:
+                self.receive_user_clarification(
+                    answer=input_prompt,
+                    context=effective_ctx,
+                )
+            unresolved_gaps = self._state.metadata.pop("unresolved_section_gaps", {})
+            for sec in unresolved_gaps:
+                yield {
+                    "type": "progress",
+                    "phase": "5_SECTION_ITERATION",
+                    "actor": TraceActor.APPLICATION,
+                    "section": sec,
+                    "message": f"Updating section with user clarification: {sec}",
+                }
+                existing = self._state.get_section_content(sec)
+                update_res = await self.update_section_async(
+                    section=sec,
+                    rework_feedback=f"Incorporate user clarification: {input_prompt}",
+                    existing_content=existing,
+                    context=effective_ctx,
+                )
+                if update_res.content:
+                    self._state.set_section_content(sec, update_res.content)
+                val_res = await self.validate_section_async(
+                    section=sec,
+                    section_content=update_res.content or existing or "",
+                    context=effective_ctx,
+                )
+                self._state.update_section_status(sec, BRDSectionStatus.COMPLETED)
+            self._state.unresolved_information.clear()
+            self._state.clear_waiting_for_user()
+        elif is_resuming:
             pending_q = self._state.pending_clarification
             pending_sec = self._state.metadata.pop("pending_clarification_section", None)
             if input_prompt:
@@ -5320,7 +5625,45 @@ class BRDLeadAgent:
                 if rework_strategy.failure_category == SectionFailureCategory.EVIDENCE_GAP:
                     clarification_counts = self._state.metadata.setdefault("section_clarification_counts", {})
                     sec_clarification_count = clarification_counts.get(cur_sec, 0)
-                    if sec_clarification_count < 1:
+                    if sec_clarification_count >= 1:
+                        # Bounded loop: clarification already attempted for this section, terminate with diagnostic
+                        pass
+                    elif effective_consolidate:
+                        sections = list(self._state.template_sections or extract_brd_sections(load_brd_template()))
+                        cur_idx = -1
+                        for i, s in enumerate(sections):
+                            if s == cur_sec or s.lower() == cur_sec.lower():
+                                cur_idx = i
+                                break
+                        next_sec = sections[cur_idx + 1] if (cur_idx >= 0 and cur_idx + 1 < len(sections)) else None
+
+                        # Record genuine substantive gap, preserve draft
+                        substantive_items = [
+                            item for item in rework_strategy.missing_evidence_items
+                            if is_substantive_requirement(item)
+                        ]
+                        for item in substantive_items:
+                            self._state.add_unresolved(item)
+                        if substantive_items:
+                            self._state.metadata.setdefault("unresolved_section_gaps", {}).setdefault(cur_sec, []).extend(substantive_items)
+                        if gen_res.content:
+                            self._state.set_section_content(cur_sec, gen_res.content)
+                        self._state.update_section_status(cur_sec, BRDSectionStatus.NEEDS_REVISION)
+
+                        if next_sec is not None:
+                            self._state.set_current_section(next_sec, auto_in_progress=True)
+                            yield {
+                                "type": "progress",
+                                "phase": "5_SECTION_ITERATION",
+                                "actor": TraceActor.APPLICATION,
+                                "section": cur_sec,
+                                "message": f"Section drafted with unresolved business gaps deferred to consolidation: {cur_sec}",
+                            }
+                            continue
+                        else:
+                            # Last section of drafting pass reached; stop section loop to enter consolidation gate
+                            break
+                    else:
                         clarification_counts[cur_sec] = sec_clarification_count + 1
                         clarification_q = (
                             rework_strategy.clarification_question
@@ -5362,6 +5705,33 @@ class BRDLeadAgent:
                 yield {"type": "content", "content": diag_text}
                 return
 
+        # Consolidation Gate: inspect accumulated unresolved information
+        substantive_unresolved = [
+            u for u in self._state.unresolved_information
+            if is_substantive_requirement(u)
+        ]
+        if substantive_unresolved and not self._state.metadata.get("clarification_gate_completed"):
+            self._state.metadata["clarification_gate_completed"] = True
+            clarification_q = self.construct_consolidated_clarification_question(substantive_unresolved)
+            self._state.set_waiting_for_user(clarification_q)
+            self._state.metadata["pending_consolidated_clarification"] = True
+            log_trace_event(
+                logger,
+                agent_run_id=agent_run_id,
+                actor=TraceActor.APPLICATION,
+                event_name="USER_CONSOLIDATED_CLARIFICATION_REQUIRED",
+                question=clarification_q,
+                unresolved_items=substantive_unresolved,
+            )
+            yield {
+                "type": "progress",
+                "phase": "5_SECTION_ITERATION",
+                "actor": TraceActor.APPLICATION,
+                "message": f"Consolidated clarification requested before finalization: {clarification_q}",
+            }
+            yield {"type": "content", "content": clarification_q}
+            return
+
         yield {
             "type": "progress",
             "phase": "6_DOCUMENT_ASSEMBLY",
@@ -5369,6 +5739,8 @@ class BRDLeadAgent:
             "message": "Assembling complete Business Requirements Document...",
         }
         assembly_res = await self.assemble_brd_async(context=effective_ctx)
+        if getattr(assembly_res, "assembled_document", None) and not self._state.assembled_brd:
+            self._state.set_assembled_brd(assembly_res.assembled_document)
 
         yield {
             "type": "progress",

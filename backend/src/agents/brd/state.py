@@ -381,8 +381,22 @@ class BRDAgentState:
         """
         if isinstance(item, dict):
             src = str(item.get("source", "")).lower()
-            if src in ("direct_work", ActionSource.DIRECT_WORK.value):
+            role = str(item.get("role", "")).lower()
+            if (
+                src in ("direct_work", ActionSource.DIRECT_WORK.value)
+                or role == "assistant"
+                or src == "assistant"
+            ):
                 self.add_agent_work(item)
+                return
+            # Deduplicate identical evidence items by content and source
+            content = str(item.get("content", "")).strip()
+            if content and any(
+                isinstance(e, dict)
+                and str(e.get("content", "")).strip() == content
+                and str(e.get("source", "")).lower() == src
+                for e in self.evidence
+            ):
                 return
         elif isinstance(item, ActionResult) and item.is_direct_work:
             self.add_agent_work(item)

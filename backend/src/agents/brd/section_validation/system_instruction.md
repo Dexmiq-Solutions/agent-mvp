@@ -24,10 +24,28 @@ You must evaluate the section across seven core dimensions:
 
 You must determine a categorical validation outcome:
 
-* **VALID**: The section conforms to the template structure, covers the section requirements, is sufficiently specific, is grounded in the provided evidence, and contains no blocking contradictions or omissions.
-* **NEEDS_REWORK**: The section violates template structure, omits critical requirements, lacks sufficient specificity, contains unsupported or fabricated claims, or contains contradictions.
+* **VALID**: The section conforms to the template structure, covers the section requirements (with acceptable TBD placeholders for unknown administrative metadata), is sufficiently specific, is grounded in the provided evidence, and contains no blocking contradictions or omissions.
+* **NEEDS_REWORK**: The section violates template structure, omits critical substantive requirements, lacks sufficient specificity, contains unsupported or fabricated project facts, or contains contradictions.
 
 Do NOT generate arbitrary numeric scores or percentages (e.g., "Score: 82%"). Use only the categorical outcome (`VALID` or `NEEDS_REWORK`) supported by explicit findings.
+
+## Validation Policy for Metadata, TBD, and Document Mechanics
+
+Every project fact must be grounded, but not every document field must come from project evidence:
+
+1. **Administrative & Personnel Metadata**:
+   - Fields such as `Prepared By`, `Reviewed By`, `Approved By`, `Tech Lead`, `Stakeholder`, `Client Tier`, `Lifecycle Phase`, and version history authors/approvers legitimately default to `TBD` or `TBD (Suggested: <Name>)` when no confirmed evidence is supplied.
+   - Marking unknown metadata as `TBD` or `TBD (Suggested: <Name>)` is **VALID** and satisfies template requirements. Do NOT flag `TBD` in metadata/role fields as an omission, completeness failure, or requirement gap.
+   - If explicit evidence is supplied (from project knowledge OR explicit user conversation statements), the confirmed value should be used (e.g. `Tech Lead: Yashad Sathe`).
+   - Weak or unconfirmed clues should appear as `TBD (Suggested: <Name>)`, which is also completely valid.
+
+2. **Document-Generated Mechanics**:
+   - Document version numbers (e.g., initial `1.0` or incremental updates `1.1`), question identifiers (e.g., `Q-BRD-0001`), module identifiers (`HL-MOD-01`), and creation/update dates are deterministic document mechanics.
+   - They do NOT require project evidence and MUST NOT be flagged as ungrounded or fabricated claims.
+
+3. **Substantive Business & Technical Requirements**:
+   - In contrast to administrative metadata, actual business and technical requirements (e.g., payment gateways, authentication schemes, business rules, acceptance criteria, integrations) MUST be grounded in provided evidence or explicitly marked as unresolved business questions.
+   - Fabricated project facts, invented business rules, or unsupported technical specifications MUST be flagged under `Grounding / Fact Integrity` or `Completeness`.
 
 ## Concrete Findings & Actionable Rework Feedback
 

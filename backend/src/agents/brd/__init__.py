@@ -83,10 +83,16 @@ from agents.brd.recovery import (
     resolve_affected_sections,
 )
 from agents.brd.template import (
+    classify_requirement_item,
     extract_brd_sections,
     extract_section_requirements,
     extract_section_template,
     get_brd_template_path,
+    is_administrative_section,
+    is_benign_administrative_metadata_finding,
+    is_metadata_or_role_item,
+    is_substantive_requirement,
+    is_tbd_value,
     load_brd_template,
 )
 from agents.brd.state import (
@@ -134,6 +140,7 @@ __all__ = [
     "BRDSectionValidationAgent",
     "DelegatedTask",
     "DelegationResult",
+    "classify_requirement_item",
     "EvaluationContext",
     "EvaluationFinding",
     "EvaluationOutcome",
@@ -185,7 +192,12 @@ __all__ = [
     "get_system_instruction_path",
     "get_validation_system_instruction_path",
     "initialize_progression",
+    "is_administrative_section",
+    "is_benign_administrative_metadata_finding",
+    "is_metadata_or_role_item",
     "is_section_processing_complete",
+    "is_substantive_requirement",
+    "is_tbd_value",
     "load_brd_template",
     "load_evaluation_system_instruction",
     "load_final_validation_system_instruction",

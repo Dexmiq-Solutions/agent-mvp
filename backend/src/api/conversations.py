@@ -281,6 +281,8 @@ async def create_message(
         run_kwargs: dict[str, Any] = {
             "request": payload.content,
             "context": agent_context,
+            "prior_messages": prior_messages,
+            "consolidate_clarification": True,
         }
         if initial_workflow_state is not None:
             run_kwargs["initial_state"] = initial_workflow_state
@@ -350,6 +352,7 @@ async def create_message(
             "request": payload.content,
             "context": agent_context,
             "prior_messages": prior_messages,
+            "consolidate_clarification": True,
         }
         if initial_workflow_state is not None:
             stream_kwargs["initial_state"] = initial_workflow_state

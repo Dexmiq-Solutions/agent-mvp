@@ -26,6 +26,7 @@ from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import HumanMessage
 
 from agents.brd.section_validation.agent import ValidationOutcome
+from agents.brd.template import classify_requirement_item, is_metadata_or_role_item, is_tbd_value
 from deepagents import create_deep_agent
 from agents.brd.config import AgentConfig, create_agent_model
 from observability.logging import get_logger
@@ -383,6 +384,11 @@ def _build_final_validation_prompt(context: FinalValidationContext) -> str:
         "6. Completeness: Are there critical document-level gaps, missing workflows, or unresolved dependencies?\n"
         "7. Duplication: Are there redundant or overlapping requirements?\n"
         "8. Overall Coherence: Does the document tell a unified, logical business story from context to criteria?\n\n"
+        "Special Validation Policy for Administrative Metadata & Mechanics:\n"
+        "- Administrative metadata fields (Prepared By, Reviewed By, Approved By, Tech Lead, Stakeholder, Approver) "
+        "legitimately containing 'TBD' or 'TBD (Suggested: <Name>)' are VALID placeholders and MUST NOT be flagged as errors.\n"
+        "- Document mechanics (version, question IDs, current date) are deterministic and do not require RAG evidence.\n"
+        "- Substantive business and technical requirements must still be strictly grounded.\n\n"
         "Determine the categorical outcome: VALID or NEEDS_REWORK (do NOT output numeric scores).\n"
         "For each issue identified, output a finding with category, severity (ERROR or WARNING), issue, "
         "explanation, affected_sections, evidence, and required_change.\n"
@@ -433,6 +439,27 @@ def _parse_final_validation_response(
                                 )
                             )
 
+                # Filter out benign administrative metadata TBD findings
+                substantive_findings: list[FinalValidationFinding] = []
+                for f in findings:
+                    issue_text = f"{f.issue or ''} {f.explanation or ''} {f.required_change or ''}"
+                    if is_metadata_or_role_item(issue_text) and any(
+                        kw in issue_text.lower() for kw in ["tbd", "unknown", "suggested", "placeholder", "missing tech lead", "prepared by", "reviewed by", "approved by"]
+                    ):
+                        logger.info("Filtered benign administrative metadata finding from final validation: %s", f.issue)
+                        continue
+                    substantive_findings.append(f)
+                findings = substantive_findings
+
+                # If outcome was NEEDS_REWORK purely due to filtered metadata findings, override to VALID
+                has_error_findings = any(
+                    (getattr(f, "severity", None) and str(f.severity).upper() in ("ERROR", "SEVERITY.ERROR"))
+                    for f in findings
+                )
+                if outcome == FinalValidationOutcome.NEEDS_REWORK and not has_error_findings and not findings:
+                    outcome = FinalValidationOutcome.VALID
+                    summary = "Complete BRD evaluated as VALID after administrative metadata normalization."
+
                 rework_feedback = parsed.get("rework_feedback")
                 if isinstance(rework_feedback, str):
                     rework_feedback = rework_feedback.strip() or None
@@ -450,7 +477,7 @@ def _parse_final_validation_response(
                     outcome=outcome,
                     summary=summary or f"Complete BRD evaluated as {outcome.value}.",
                     findings=findings,
-                    rework_feedback=rework_feedback,
+                    rework_feedback=rework_feedback if outcome == FinalValidationOutcome.NEEDS_REWORK else None,
                     metadata={
                         "duration_seconds": duration,
                         "document_length": len(context.assembled_document),
