@@ -40,6 +40,16 @@ class FinalValidationRecoveryResult(FinalValidationResult):
     exhausted: bool = False
     reworked_sections: list[str] = field(default_factory=list)
 
+    @property
+    def max_cycles_exhausted(self) -> bool:
+        """Indicate whether the recovery loop exhausted maximum cycles."""
+        return self.exhausted
+
+    @property
+    def success(self) -> bool:
+        """Indicate whether final validation recovered successfully."""
+        return self.is_valid
+
     @classmethod
     def from_validation_result(
         cls,

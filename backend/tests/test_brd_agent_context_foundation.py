@@ -91,7 +91,7 @@ def test_brd_template_loads_authoritative_content():
     content = load_brd_template()
     assert isinstance(content, str)
     assert len(content) > 100
-    assert "# Business Requirements Document" in content
+    assert "Dexmiq Standard Document Header" in content
 
 
 def test_missing_brd_template_file_raises_filenotfound(monkeypatch):
@@ -126,21 +126,18 @@ def test_brd_template_contains_approved_sections():
     """Verify the approved BRD template contains the canonical required sections."""
     sections = extract_brd_sections()
 
-    # Must contain the 5 canonical sections
+    # Must contain canonical template sections
     section_text = " ".join(sections)
-    assert "Introduction" in section_text
-    assert "Business Requirements" in section_text
-    assert "Functional Requirements" in section_text
-    assert "Non-Functional Requirements" in section_text
-    assert "Assumptions" in section_text
+    assert "Dexmiq Standard Document Header" in section_text
+    assert "Purpose & Scope of This Document" in section_text
+    assert "Business Context" in section_text
+    assert "In-Scope Business Modules & Feature Groups" in section_text
 
     # Preserves exact document order
-    assert len(sections) == 5
-    assert "Introduction" in sections[0]
-    assert "Business Requirements" in sections[1]
-    assert "Functional Requirements" in sections[2]
-    assert "Non-Functional Requirements" in sections[3]
-    assert "Assumptions" in sections[4]
+    assert len(sections) == 16
+    assert "Dexmiq Standard Document Header" in sections[0]
+    assert "Version History" in sections[1]
+    assert "Purpose & Scope" in sections[2]
 
 
 def test_template_is_single_source_of_truth_dynamic_extraction():
@@ -195,8 +192,8 @@ def test_system_instruction_and_template_are_distinct_files():
     assert "## Behavioral Principles" in instr_content
 
     # Template defines required document structure and headings
-    assert "## 1. Introduction" in tmpl_content
-    assert "## 3. Functional Requirements" in tmpl_content
+    assert "# Dexmiq Standard Document Header" in tmpl_content
+    assert "# 1. Purpose & Scope of This Document" in tmpl_content
 
 
 def test_brd_lead_agent_exposes_instruction_and_template_separately():
@@ -368,9 +365,9 @@ def test_brd_lead_agent_has_all_three_pillars():
     assert "BRD Lead Agent" in agent.system_instruction
 
     # 2. BRD Template (Required Document Structure)
-    assert len(agent.sections) == 5
-    assert "Introduction" in agent.sections[0]
-    assert "Assumptions" in agent.sections[-1]
+    assert len(agent.sections) == 16
+    assert "Dexmiq Standard Document Header" in agent.sections[0]
+    assert "Completeness Snapshot" in agent.sections[-1]
 
     # 3. Agent State (Working Context)
     assert isinstance(agent.state, BRDAgentState)

@@ -75,9 +75,11 @@ class Settings(BaseSettings):
     QDRANT_RETRY_DELAY: float = 0.5
     QDRANT_RETRY_BACKOFF: float = 2.0
 
-    # Embeddings (Voyage)
+    # Embeddings Configuration
+    EMBEDDING_PROVIDER: Literal["cohere", "voyage"] = "cohere"
+    COHERE_API_KEY: str | None = None
     VOYAGE_API_KEY: str | None = None
-    EMBEDDING_MODEL: str = "voyage-4"
+    EMBEDDING_MODEL: str = "embed-v4.0"
 
     # Redis Cache (Shared embedding result cache)
     REDIS_URL: str | None = None
@@ -136,9 +138,12 @@ class Settings(BaseSettings):
     FUSION_TOP_K: int = 10
     METADATA_FILTERING_ENABLED: bool = True
     METADATA_FILTERING_STRICT_MODE: bool = False
+    # Reranking Configuration (Jina Reranker v3.5)
     RERANKING_ENABLED: bool = True
-    RERANKER_MODEL: str = "rerank-2.5"
-    RERANKER_TIMEOUT: float = 10.0
+    RERANKER_PROVIDER: str = "jina"
+    RERANKER_MODEL: str = "jina-reranker-v3.5"
+    JINA_API_KEY: str | None = None
+    RERANKER_TIMEOUT: float = 15.0
     RERANKER_CANDIDATE_LIMIT: int = 50
     RERANKER_RESULT_LIMIT: int = 10
     CONTEXT_ASSEMBLY_MAX_ITEMS: int | None = None

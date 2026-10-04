@@ -107,9 +107,14 @@ async def get_db_session() -> AsyncIterator[AsyncSession]:
     async with session_maker() as session:
         try:
             yield session
-            await session.commit()
+            if session.is_active and session.in_transaction():
+                await session.commit()
         except Exception as exc:
-            await session.rollback()
+            if session.is_active:
+                try:
+                    await session.rollback()
+                except Exception as rb_exc:
+                    logger.warning("Failed to rollback database session: %s", rb_exc)
             logger.error("Database session rolled back due to error: %s", exc)
             raise
         finally:

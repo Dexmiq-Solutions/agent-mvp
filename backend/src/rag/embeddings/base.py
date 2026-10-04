@@ -18,6 +18,11 @@ class BaseEmbeddingProvider(ABC):
     def model_name(self) -> str:
         """Return the name of the active embedding model."""
 
+    @property
+    def provider_name(self) -> str:
+        """Return the identifier of the active embedding provider."""
+        return "generic"
+
     @abstractmethod
     async def embed_text(
         self,

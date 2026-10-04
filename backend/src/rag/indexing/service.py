@@ -436,7 +436,7 @@ class DocumentIndexingService:
         embeddings: Any,
         sparse_vectors: Optional[Sequence[SparseVector]] = None,
         embedding_model: Optional[str] = None,
-        embedding_provider: str = "voyage",
+        embedding_provider: Optional[str] = None,
         strict: bool = True,
     ) -> IndexingReport:
         """Index a document and its corresponding generated representations into Qdrant.
@@ -450,7 +450,7 @@ class DocumentIndexingService:
             sparse_vectors: Optional sequence of SparseVector representations corresponding 1-to-1
                 with document chunks. Required when sparse indexing is enabled.
             embedding_model: Optional model name override.
-            embedding_provider: Embedding provider identifier (default: 'voyage').
+            embedding_provider: Embedding provider identifier (default: configured EMBEDDING_PROVIDER).
             strict: If True, raises IndexingPartialFailureError on partial failure.
 
         Returns:
@@ -523,6 +523,8 @@ class DocumentIndexingService:
                     )
             validated_sparse_vectors = sparse_vectors
 
+        resolved_provider = embedding_provider or getattr(self._settings, "EMBEDDING_PROVIDER", "cohere")
+
         # Construct IndexableRecords preserving chunk metadata and representation config
         records: list[IndexableRecord] = []
         for idx, (chunk, vector) in enumerate(zip(chunks, vectors)):
@@ -535,7 +537,7 @@ class DocumentIndexingService:
                 chunk=chunk,
                 vector=vector,
                 embedding_model=model,
-                embedding_provider=embedding_provider,
+                embedding_provider=resolved_provider,
                 sparse_vector=sparse_vec,
                 sparse_encoder_strategy=self._config.sparse_encoder_strategy if sparse_vec is not None else None,
                 sparse_encoder_version=self._config.sparse_encoder_version if sparse_vec is not None else None,

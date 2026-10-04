@@ -44,6 +44,11 @@ class BRDAssemblyResult:
     metadata: dict[str, Any] = field(default_factory=dict)
     error: Optional[str] = None
 
+    @property
+    def is_complete(self) -> bool:
+        """Alias for assembly_complete."""
+        return self.assembly_complete
+
     def to_dict(self) -> dict[str, Any]:
         """Serialize assembly result to dictionary."""
         return {

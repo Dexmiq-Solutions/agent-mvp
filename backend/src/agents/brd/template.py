@@ -232,3 +232,214 @@ def extract_section_requirements(
         return lines
 
     return [f"Requirements for {section_name}"]
+
+
+def is_administrative_section(section_name: str) -> bool:
+    """Determine whether a section is purely administrative metadata or document mechanics.
+
+    Administrative and document-mechanics sections do not represent project-domain knowledge
+    and should not trigger external RAG retrieval or block workflow execution on missing fields.
+    """
+    if not section_name:
+        return False
+    norm = re.sub(r"^\d+[\.\)]\s*", "", section_name.strip()).strip().lower()
+    return (
+        "document header" in norm
+        or norm == "version history"
+        or "quality gate" in norm
+    )
+
+
+def is_metadata_or_role_item(item: str) -> bool:
+    """Check whether a requirement or finding item corresponds to personnel, roles, or administrative metadata."""
+    if not item:
+        return False
+    norm = item.strip().lower()
+    metadata_markers = [
+        "prepared by",
+        "reviewed by",
+        "approved by",
+        "tech lead",
+        "stakeholder",
+        "business owner",
+        "sme",
+        "author",
+        "approver",
+        "client tier",
+        "lifecycle phase",
+        "confidentiality level",
+        "distribution list",
+        "document title",
+        "document id",
+        "engagement id",
+        "date created",
+        "last updated",
+        "document type",
+        "version history",
+        "version number",
+        "approval date",
+    ]
+    return any(re.search(r"\b" + re.escape(marker) + r"\b", norm) for marker in metadata_markers)
+
+
+def is_tbd_value(val: str) -> bool:
+    """Check if a string represents an acceptable TBD or pending placeholder."""
+    if not val:
+        return True
+    norm = val.strip().lower()
+    return (
+        norm == "tbd"
+        or norm.startswith("tbd ")
+        or "tbd (" in norm
+        or "suggested:" in norm
+        or "pending" in norm
+        or "to be determined" in norm
+        or "unspecified" in norm
+        or "none specified" in norm
+    )
+
+
+def classify_requirement_item(item: str) -> str:
+    """Classify a template requirement into METADATA_ROLE, DOCUMENT_MECHANIC, or BUSINESS_REQUIREMENT."""
+    if not item:
+        return "BUSINESS_REQUIREMENT"
+    norm = item.strip().lower()
+    if is_metadata_or_role_item(norm):
+        if any(m in norm for m in ["version", "date", "document id", "engagement id"]):
+            return "DOCUMENT_MECHANIC"
+        return "METADATA_ROLE"
+    return "BUSINESS_REQUIREMENT"
+
+
+def is_substantive_requirement(item: str) -> bool:
+    """Check if an item is a genuine business or technical requirement rather than administrative metadata or mechanic."""
+    return classify_requirement_item(item) in ("BUSINESS_REQUIREMENT", "substantive_requirement")
+
+
+def is_benign_administrative_metadata_finding(finding: Any, section_name: str) -> bool:
+    """Check if a validation finding is a benign administrative metadata TBD that should not block validation."""
+    if finding is None:
+        return False
+
+    issue = getattr(finding, "issue", "") or ""
+    explanation = getattr(finding, "explanation", "") or ""
+    category = getattr(finding, "category", "") or ""
+    cat_str = category if isinstance(category, str) else getattr(category, "value", str(category))
+
+    full_text = f"{issue} {explanation}".lower()
+
+    # Structure / template compliance findings (missing tables, missing headings) are never benign metadata TBDs
+    if "template compliance" in cat_str.lower() or "structure" in cat_str.lower():
+        if "tbd" not in full_text and "suggested" not in full_text:
+            return False
+
+    # 1. In administrative sections (e.g. Document Header, Version History, Quality Gate)
+    if is_administrative_section(section_name):
+        if is_metadata_or_role_item(issue) or any(
+            re.search(r"\b" + re.escape(w) + r"\b", full_text)
+            for w in ["tbd", "placeholder", "pending", "unknown", "version", "date", "suggested", "metadata"]
+        ):
+            return True
+
+    # 2. In any section: only filter if specifically about an administrative role/metadata field being TBD or suggested
+    meta_fields = ["prepared by", "reviewed by", "approved by", "tech lead", "document id", "engagement id", "client tier", "confidentiality level"]
+    has_meta_field = any(field in full_text for field in meta_fields)
+    has_tbd_concept = any(
+        re.search(r"\b" + re.escape(w) + r"\b", full_text)
+        for w in ["tbd", "placeholder", "pending", "unknown", "unspecified", "suggested"]
+    )
+    if has_meta_field and has_tbd_concept:
+        return True
+
+    return False
+
+
+def is_honest_uncertainty_or_non_provided_text(text: str) -> bool:
+    """Check if a string represents an honest statement of uncertainty or non-provided information."""
+    if not text:
+        return False
+    norm = text.strip().lower()
+    phrases = [
+        "not provided",
+        "not discussed",
+        "not defined",
+        "not specified",
+        "to be clarified",
+        "to be determined",
+        "pending formal definition",
+        "pending clarification",
+        "not available in the available",
+        "not available in available",
+        "was not defined",
+        "were not defined",
+        "were not provided",
+        "was not provided",
+    ]
+    return any(p in norm for p in phrases) or is_tbd_value(norm)
+
+
+def is_documentation_quality_finding(finding: Any, section_name: str = "") -> bool:
+    """Check if a validation finding is an ordinary documentation-quality observation
+    or an observation about non-provided detail that should not block initial BRD generation.
+    """
+    if finding is None:
+        return False
+
+    if is_benign_administrative_metadata_finding(finding, section_name):
+        return True
+
+    issue = getattr(finding, "issue", "") if not isinstance(finding, str) else finding
+    explanation = getattr(finding, "explanation", "") if not isinstance(finding, str) else ""
+
+    full_text = f"{issue} {explanation}".lower()
+
+    # Never treat fabricated claims, hallucinations, or explicit contradictions as benign documentation findings
+    if any(k in full_text for k in ["hallucinat", "fabricated", "contradict", "unsupported claim presented as fact"]):
+        return False
+
+    # Check if finding is observing that the section honestly noted uncertainty/TBD/unprovided detail
+    if any(k in full_text for k in [
+        "honestly notes", "honestly states", "marked as tbd", "identified as potential capability",
+        "honestly represented", "correctly notes that", "noted as not provided",
+        "stated as not provided", "represented as unknown",
+    ]):
+        return True
+
+    # Optional detail indicators and observations that should not block initial BRD
+    doc_quality_indicators = [
+        "conceptual workflow", "workflow diagram", "persona priority",
+        "persona-to-module", "unresolved assumption", "product naming",
+        "inquiry routing", "operational process", "detailed ai",
+        "ai functionality", "ai behavior",
+    ]
+    if any(k in full_text for k in doc_quality_indicators):
+        return True
+
+    return False
+
+
+def is_substantive_business_clarification_item(item: str) -> bool:
+    """Check if an unresolved item is a genuine business requirement that warrants user clarification,
+    rather than administrative metadata, document mechanic, or ordinary documentation-quality observation.
+    """
+    if not item or not is_substantive_requirement(item):
+        return False
+
+    norm = item.strip().lower()
+
+    # Exclude raw placeholders
+    if is_tbd_value(norm) or norm in ("not provided", "tbd", "to be clarified", "unknown", "none", "n/a"):
+        return False
+
+    # Exclude optional detail findings
+    if is_documentation_quality_finding(item):
+        return False
+
+    # Exclude writing and formatting quality feedback from becoming user questions
+    writing_quality_terms = ["clarity", "vague", "precision", "formatting", "grammar", "style", "readability", "structured content"]
+    if any(t in norm for t in writing_quality_terms):
+        return False
+
+    return True
+
+

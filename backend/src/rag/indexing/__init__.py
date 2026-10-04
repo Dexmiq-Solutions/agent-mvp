@@ -39,6 +39,10 @@ from rag.indexing.service import (
     get_indexing_service,
     reset_indexing_service,
 )
+from rag.indexing.reindex import (
+    reindex_document_version,
+    reindex_project_documents,
+)
 from storage.vector import BaseVectorStore
 
 
@@ -53,6 +57,8 @@ __all__ = [
     "ChunkPersistenceService",
     "get_chunk_persistence_service",
     "reset_chunk_persistence_service",
+    "reindex_document_version",
+    "reindex_project_documents",
     # Reports & Models & Config
     "IndexingPipelineReport",
     "IndexingConfig",

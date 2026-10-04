@@ -1,6 +1,6 @@
 import logging
 import sys
-from typing import TextIO
+from typing import Any, TextIO
 
 from core.config import get_settings
 
@@ -44,3 +44,48 @@ def setup_logging(
 def get_logger(name: str) -> logging.Logger:
     """Get a named logger instance."""
     return logging.getLogger(name)
+
+
+class TraceActor:
+    """Actor taxonomy for execution tracing."""
+
+    LEAD_AGENT = "LEAD_AGENT"
+    APPLICATION = "APPLICATION"
+    SPECIALIZED_AGENT = "SPECIALIZED_AGENT"
+    TOOL = "TOOL"
+
+
+def format_trace_event(
+    agent_run_id: str | None,
+    actor: str,
+    event_name: str,
+    **metadata: Any,
+) -> str:
+    """Format a structured, correlated trace event line."""
+    run_id_str = agent_run_id or "unspecified"
+    meta_parts: list[str] = []
+    for k, v in metadata.items():
+        if v is not None:
+            if isinstance(v, str):
+                v_clean = v.replace("\n", " ").strip()
+                if len(v_clean) > 200:
+                    v_clean = v_clean[:197] + "..."
+                meta_parts.append(f'{k}="{v_clean}"')
+            else:
+                meta_parts.append(f"{k}={v}")
+    meta_str = (" " + " ".join(meta_parts)) if meta_parts else ""
+    return f"[RUN: {run_id_str}] [ACTOR: {actor}] [EVENT: {event_name}]{meta_str}"
+
+
+def log_trace_event(
+    logger: logging.Logger,
+    agent_run_id: str | None,
+    actor: str,
+    event_name: str,
+    level: int = logging.INFO,
+    **metadata: Any,
+) -> None:
+    """Log a structured, correlated trace event line."""
+    msg = format_trace_event(agent_run_id, actor, event_name, **metadata)
+    logger.log(level, msg)
+

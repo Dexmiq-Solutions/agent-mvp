@@ -28,7 +28,12 @@ from langchain_core.messages import HumanMessage
 
 from deepagents import create_deep_agent
 from agents.brd.config import AgentConfig, create_agent_model
-from agents.brd.template import extract_section_requirements, extract_section_template
+from agents.brd.template import (
+    extract_section_requirements,
+    extract_section_template,
+    is_benign_administrative_metadata_finding,
+    is_documentation_quality_finding,
+)
 from observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -336,9 +341,21 @@ def _format_available_information(info: Any) -> str:
 
 def _build_validation_prompt(context: SectionValidationContext) -> str:
     """Format prompt with focused context for the Section Validation Sub-Agent."""
-    parts: list[str] = [
+    parts: list[str] = []
+
+    proj_name = context.metadata.get("project_name") if context.metadata else None
+    proj_desc = context.metadata.get("project_description") if context.metadata else None
+    if proj_name or proj_desc:
+        proj_lines = []
+        if proj_name:
+            proj_lines.append(f"Project Name: {proj_name}")
+        if proj_desc:
+            proj_lines.append(f"Project Description: {proj_desc}")
+        parts.append("## Project Context\n" + "\n".join(proj_lines))
+
+    parts.extend([
         f"## Target Section to Validate\n{context.section_name}",
-    ]
+    ])
 
     if context.template_structure:
         parts.append(
@@ -370,6 +387,22 @@ def _build_validation_prompt(context: SectionValidationContext) -> str:
         "5. Grounding / Fact Integrity: Are all claims supported by the provided evidence? Do not accept fabricated facts.\n"
         "6. Consistency: Are there internal contradictions or conflicts with the evidence?\n"
         "7. Relevance: Does the content stay strictly focused on this section?\n\n"
+        "Validation Policy for Metadata & TBD:\n"
+        "- Administrative & Personnel Metadata: Fields such as Prepared By, Reviewed By, Approved By, Tech Lead, "
+        "Stakeholder, Approvers, Client Tier, Lifecycle Phase, etc., legitimately default to 'TBD' or 'TBD (Suggested: <Name>)' "
+        "when no confirmed evidence is supplied. Marking unknown metadata as TBD is VALID and must NOT be flagged as missing or ungrounded.\n"
+        "- Document Mechanics: Version numbers (e.g. 1.0), question IDs (e.g. Q-BRD-0001), module IDs, and dates "
+        "are deterministic mechanics and do not require RAG evidence.\n"
+        "- Substantive Requirements: Business rules, integrations, workflows, and functional requirements MUST be grounded. "
+        "Unsupported business claims must be flagged.\n"
+        "- Representation of Unknowns: When information is genuinely unavailable in project evidence, "
+        "transparent, honest statements acknowledging that specific details were not provided "
+        "(e.g., 'Conceptual workflows were not provided in the available project information', "
+        "'Detailed AI functionality was not defined in the available information', 'TBD') are VALID and grounded. "
+        "Do NOT flag honest representations of non-provided information as omissions, completeness failures, or ungrounded claims.\n"
+        "- Documentation-Quality Observations: Missing conceptual workflows, persona priorities/frustrations, "
+        "persona-to-module links, or detailed AI behaviors must NOT cause section failure when the evidence simply does not contain them.\n"
+        "- Grounding Enforcement: Unsupported or fabricated project facts presented as confirmed truth MUST be flagged under Grounding.\n\n"
         "Determine the categorical outcome: VALID or NEEDS_REWORK.\n"
         "For each issue found, provide a concrete finding with category, issue, explanation, and required_change.\n"
         "If outcome is NEEDS_REWORK, provide actionable rework_feedback summarizing what the generator must change.\n"
@@ -386,6 +419,8 @@ def _parse_validation_response(
     duration: float = 0.0,
 ) -> ValidationResult:
     """Parse LLM output text into structured ValidationResult, with robust JSON extraction and fallback."""
+    from agents.brd.template import is_administrative_section, is_metadata_or_role_item
+
     # Attempt to locate JSON object
     json_match = re.search(r"\{\s*\"outcome\".*\}\s*", response_text, re.DOTALL)
     if not json_match:
@@ -423,6 +458,21 @@ def _parse_validation_response(
                 if isinstance(rework_feedback, str):
                     rework_feedback = rework_feedback.strip() or None
 
+                # Filter out findings that falsely penalize valid administrative TBD metadata or documentation-quality observations
+                substantive_findings = [
+                    f for f in findings
+                    if not is_benign_administrative_metadata_finding(f, context.section_name)
+                    and not is_documentation_quality_finding(f, context.section_name)
+                ]
+
+                if outcome == ValidationOutcome.NEEDS_REWORK and not substantive_findings:
+                    # All findings were benign administrative metadata TBDs; section is valid
+                    outcome = ValidationOutcome.VALID
+                    rework_feedback = None
+                    findings = []
+                else:
+                    findings = substantive_findings
+
                 # Ensure actionable rework_feedback is synthesized if NEEDS_REWORK and feedback was omitted
                 if outcome == ValidationOutcome.NEEDS_REWORK and not rework_feedback and findings:
                     feedback_lines = [
@@ -430,6 +480,8 @@ def _parse_validation_response(
                         for f in findings
                     ]
                     rework_feedback = "\n".join(feedback_lines)
+                elif outcome == ValidationOutcome.VALID:
+                    rework_feedback = None
 
                 return ValidationResult(
                     outcome=outcome,

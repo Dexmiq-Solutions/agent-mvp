@@ -304,10 +304,22 @@ __all__ = ["extract_section_requirements"]
 
 def _build_evaluation_prompt(context: EvaluationContext) -> str:
     """Format input prompt containing focused evaluation context for the Evaluation Sub-Agent."""
-    parts: list[str] = [
+    parts: list[str] = []
+
+    proj_name = context.metadata.get("project_name") if context.metadata else None
+    proj_desc = context.metadata.get("project_description") if context.metadata else None
+    if proj_name or proj_desc:
+        proj_lines = []
+        if proj_name:
+            proj_lines.append(f"Project Name: {proj_name}")
+        if proj_desc:
+            proj_lines.append(f"Project Description: {proj_desc}")
+        parts.append("## Project Context\n" + "\n".join(proj_lines))
+
+    parts.extend([
         f"## Current Objective\n{context.current_objective}",
         f"## Current Section\n{context.current_section}",
-    ]
+    ])
 
     if context.section_requirements:
         req_lines = [f"- {r}" for r in context.section_requirements]

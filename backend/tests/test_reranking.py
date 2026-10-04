@@ -17,6 +17,7 @@ from exceptions.retrieval import (
 )
 from rag.retrieval import (
     BaseReranker as RagBaseReranker,
+    JinaReranker as RagJinaReranker,
     RerankedCandidate as RagRerankedCandidate,
     RerankedSearchCandidate as RagRerankedSearchCandidate,
     RerankingConfig as RagRerankingConfig,
@@ -24,6 +25,7 @@ from rag.retrieval import (
     RerankingService as RagRerankingService,
     ScoredDocument as RagScoredDocument,
     VoyageReranker as RagVoyageReranker,
+    get_reranker_provider as rag_get_reranker_provider,
     get_reranking_service as rag_get_reranking_service,
     rerank_candidates as rag_rerank_candidates,
     reset_reranking_service as rag_reset_reranking_service,
@@ -31,6 +33,7 @@ from rag.retrieval import (
 from rag.retrieval import (
     BaseReranker,
     FusedCandidate,
+    JinaReranker,
     ProcessedQuery,
     RerankedCandidate,
     RerankedSearchCandidate,
@@ -39,6 +42,7 @@ from rag.retrieval import (
     RetrievalQuerySet,
     ScoredDocument,
     VoyageReranker,
+    get_reranker_provider,
     get_reranking_service,
     rerank_candidates,
     reset_reranking_service,
@@ -480,7 +484,270 @@ async def test_query_types_and_validation():
 
 
 # ==============================================================================
-# 12. VoyageReranker Concrete Provider Tests
+# 12. JinaReranker Concrete Provider Tests
+# ==============================================================================
+
+def test_jina_reranker_init_defaults_and_validation():
+    """JinaReranker initializes with defaults and validates parameters."""
+    reranker = JinaReranker(api_key="test-key")
+    assert reranker.model_name == "jina-reranker-v3.5"
+    assert reranker._timeout_seconds == 15.0
+    assert reranker._base_url == "https://api.jina.ai/v1"
+
+    # Custom valid configuration
+    custom = JinaReranker(
+        model="custom-jina-model",
+        api_key="custom-key",
+        timeout_seconds=20.0,
+        base_url="https://custom.jina.ai/v1/",
+    )
+    assert custom.model_name == "custom-jina-model"
+    assert custom._timeout_seconds == 20.0
+    assert custom._base_url == "https://custom.jina.ai/v1"
+
+    # Invalid model
+    with pytest.raises(RerankingConfigurationError):
+        JinaReranker(model="", api_key="key")
+
+    # Invalid timeout
+    with pytest.raises(RerankingConfigurationError):
+        JinaReranker(api_key="key", timeout_seconds=0)
+
+    with pytest.raises(RerankingConfigurationError):
+        JinaReranker(api_key="key", timeout_seconds=-5.0)
+
+
+@pytest.mark.asyncio
+async def test_jina_reranker_missing_api_key():
+    """JinaReranker raises RerankingConfigurationError when API key is missing during rerank."""
+    reranker = JinaReranker(api_key=None)
+    with pytest.raises(RerankingConfigurationError) as exc_info:
+        await reranker.rerank(query="query", documents=["doc 1"])
+    assert "JINA_API_KEY is not configured" in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_jina_reranker_success_mapping():
+    """JinaReranker sends correct HTTP POST request and parses results correctly."""
+    mock_client = AsyncMock()
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = {
+        "model": "jina-reranker-v3.5",
+        "results": [
+            {"index": 1, "relevance_score": 0.96},
+            {"index": 0, "relevance_score": 0.34},
+        ],
+    }
+    mock_client.post.return_value = mock_response
+
+    provider = JinaReranker(
+        model="jina-reranker-v3.5",
+        api_key="test-api-key",
+        client=mock_client,
+        timeout_seconds=12.0,
+    )
+    docs = ["doc A", "doc B"]
+
+    results = await provider.rerank(query="search query", documents=docs, top_k=2)
+
+    mock_client.post.assert_awaited_once_with(
+        "https://api.jina.ai/v1/rerank",
+        json={
+            "model": "jina-reranker-v3.5",
+            "query": "search query",
+            "documents": docs,
+            "return_documents": False,
+            "top_n": 2,
+        },
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": "Bearer test-api-key",
+        },
+        timeout=12.0,
+    )
+    assert len(results) == 2
+    assert results[0].index == 1
+    assert results[0].score == 0.96
+    assert results[1].index == 0
+    assert results[1].score == 0.34
+
+
+@pytest.mark.asyncio
+async def test_jina_reranker_empty_documents():
+    """JinaReranker returns empty list immediately without making external HTTP calls."""
+    mock_client = AsyncMock()
+    provider = JinaReranker(api_key="key", client=mock_client)
+
+    results = await provider.rerank(query="query", documents=[])
+    assert results == []
+    mock_client.post.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_jina_reranker_input_validation():
+    """JinaReranker validates query, documents, and top_k arguments."""
+    provider = JinaReranker(api_key="key")
+
+    with pytest.raises(RerankingValidationError):
+        await provider.rerank(query="", documents=["doc"])
+
+    with pytest.raises(RerankingValidationError):
+        await provider.rerank(query="   ", documents=["doc"])
+
+    with pytest.raises(RerankingValidationError):
+        await provider.rerank(query="query", documents="not-a-sequence")  # type: ignore
+
+    with pytest.raises(RerankingValidationError):
+        await provider.rerank(query="query", documents=["valid", 1234])  # type: ignore
+
+    with pytest.raises(RerankingValidationError):
+        await provider.rerank(query="query", documents=["valid"], top_k=0)
+
+    with pytest.raises(RerankingValidationError):
+        await provider.rerank(query="query", documents=["valid"], top_k=-1)
+
+
+@pytest.mark.asyncio
+async def test_jina_reranker_timeout_error():
+    """JinaReranker translates timeout to RerankingTimeoutError."""
+    import httpx
+
+    mock_client = AsyncMock()
+    mock_client.post.side_effect = httpx.ReadTimeout("Request timed out")
+
+    provider = JinaReranker(api_key="key", client=mock_client, timeout_seconds=5.0)
+
+    with pytest.raises(RerankingTimeoutError) as exc_info:
+        await provider.rerank(query="query", documents=["doc"])
+    assert "timed out after 5.0s" in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_jina_reranker_auth_error_translation():
+    """JinaReranker translates 401 and 403 to RerankingProviderError."""
+    mock_client = AsyncMock()
+    mock_response = MagicMock()
+    mock_response.status_code = 401
+    mock_response.text = "Unauthorized"
+    mock_client.post.return_value = mock_response
+
+    provider = JinaReranker(api_key="invalid-key", client=mock_client)
+
+    with pytest.raises(RerankingProviderError) as exc_info:
+        await provider.rerank(query="query", documents=["doc"])
+    assert "Authentication failed with Jina AI" in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_jina_reranker_rate_limit_error_translation():
+    """JinaReranker translates 429 to RerankingProviderError."""
+    mock_client = AsyncMock()
+    mock_response = MagicMock()
+    mock_response.status_code = 429
+    mock_response.text = "Too Many Requests"
+    mock_client.post.return_value = mock_response
+
+    provider = JinaReranker(api_key="key", client=mock_client)
+
+    with pytest.raises(RerankingProviderError) as exc_info:
+        await provider.rerank(query="query", documents=["doc"])
+    assert "rate limit exceeded" in str(exc_info.value).lower()
+
+
+@pytest.mark.asyncio
+async def test_jina_reranker_server_and_client_errors():
+    """JinaReranker translates 5xx and 4xx status codes to RerankingProviderError."""
+    mock_client = AsyncMock()
+
+    # 500 error
+    mock_resp_500 = MagicMock(status_code=500, text="Internal Server Error")
+    mock_client.post.return_value = mock_resp_500
+    provider = JinaReranker(api_key="key", client=mock_client)
+
+    with pytest.raises(RerankingProviderError) as exc_info:
+        await provider.rerank(query="query", documents=["doc"])
+    assert "Jina AI server error (HTTP 500)" in str(exc_info.value)
+
+    # 400 error
+    mock_resp_400 = MagicMock(status_code=400, text="Bad Request: invalid query")
+    mock_client.post.return_value = mock_resp_400
+
+    with pytest.raises(RerankingProviderError) as exc_info:
+        await provider.rerank(query="query", documents=["doc"])
+    assert "Jina AI error (HTTP 400)" in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_jina_reranker_malformed_response():
+    """JinaReranker rejects malformed responses missing results or containing out-of-bounds indices."""
+    mock_client = AsyncMock()
+    provider = JinaReranker(api_key="key", client=mock_client)
+
+    # Missing results key
+    mock_resp = MagicMock(status_code=200)
+    mock_resp.json.return_value = {"model": "jina-reranker-v3.5"}
+    mock_client.post.return_value = mock_resp
+
+    with pytest.raises(RerankingValidationError) as exc_info:
+        await provider.rerank(query="query", documents=["doc 0"])
+    assert "missing or invalid 'results'" in str(exc_info.value)
+
+    # Out of bounds index
+    mock_resp.json.return_value = {
+        "results": [{"index": 5, "relevance_score": 0.8}]
+    }
+    with pytest.raises(RerankingValidationError) as exc_info:
+        await provider.rerank(query="query", documents=["doc 0"])
+    assert "invalid candidate index" in str(exc_info.value)
+
+    # Non-finite score
+    mock_resp.json.return_value = {
+        "results": [{"index": 0, "relevance_score": float("nan")}]
+    }
+    with pytest.raises(RerankingValidationError) as exc_info:
+        await provider.rerank(query="query", documents=["doc 0"])
+    assert "non-finite score" in str(exc_info.value)
+
+
+# ==============================================================================
+# 13. Provider Factory and Service Default Tests
+# ==============================================================================
+
+def test_get_reranker_provider_factory():
+    """get_reranker_provider resolves providers cleanly."""
+    # Default is Jina
+    jina_prov = get_reranker_provider(api_key="key" if hasattr(JinaReranker, "api_key") else None)
+    assert isinstance(jina_prov, JinaReranker)
+    assert jina_prov.model_name == "jina-reranker-v3.5"
+
+    # Explicit Jina
+    jina_explicit = get_reranker_provider(provider="jina", model="custom-jina")
+    assert isinstance(jina_explicit, JinaReranker)
+    assert jina_explicit.model_name == "custom-jina"
+
+    # Explicit Voyage
+    voyage_prov = get_reranker_provider(provider="voyage", model="rerank-2.5")
+    assert isinstance(voyage_prov, VoyageReranker)
+    assert voyage_prov.model_name == "rerank-2.5"
+
+    # Unsupported provider
+    with pytest.raises(RerankingConfigurationError) as exc_info:
+        get_reranker_provider(provider="unknown-vendor")
+    assert "Unsupported reranker provider: 'unknown-vendor'" in str(exc_info.value)
+
+
+def test_reranking_service_defaults_to_jina():
+    """RerankingService defaults to JinaReranker with jina-reranker-v3.5."""
+    service = RerankingService()
+    assert isinstance(service.reranker, JinaReranker)
+    assert service.reranker.model_name == "jina-reranker-v3.5"
+    assert service.config.provider == "jina"
+    assert service.config.model == "jina-reranker-v3.5"
+
+
+# ==============================================================================
+# 14. VoyageReranker Legacy Provider Tests
 # ==============================================================================
 
 @pytest.mark.asyncio
@@ -571,7 +838,7 @@ async def test_voyage_reranker_invalid_response_indices():
 
 
 # ==============================================================================
-# 13. Service Lifecycle, Facades, and Functional Entrypoints
+# 15. Service Lifecycle, Facades, and Functional Entrypoints
 # ==============================================================================
 
 def test_service_lifecycle_and_rag_reexports():
@@ -587,7 +854,9 @@ def test_service_lifecycle_and_rag_reexports():
     # Verify RAG facade compatibility
     assert RagRerankingService is RerankingService
     assert RagBaseReranker is BaseReranker
+    assert RagJinaReranker is JinaReranker
     assert RagVoyageReranker is VoyageReranker
+    assert rag_get_reranker_provider is get_reranker_provider
     assert RagScoredDocument is ScoredDocument
     assert RagRerankedCandidate is RerankedCandidate
     assert RagRerankedSearchCandidate is RerankedSearchCandidate
@@ -611,11 +880,14 @@ async def test_functional_rerank_candidates_helper():
 
 
 # ==============================================================================
-# 14. Configuration Validation
+# 16. Configuration Validation
 # ==============================================================================
 
 def test_reranking_config_validation():
     """Invalid configuration values raise ValueError upon initialization."""
+    with pytest.raises(ValueError):
+        RerankingConfig(provider="")
+
     with pytest.raises(ValueError):
         RerankingConfig(model="")
 
@@ -628,9 +900,24 @@ def test_reranking_config_validation():
     with pytest.raises(ValueError):
         RerankingConfig(timeout_seconds=0)
 
-    # Valid config
-    cfg = RerankingConfig(model="rerank-2.5", candidate_limit=40, result_limit=8, timeout_seconds=5.0)
-    assert cfg.model == "rerank-2.5"
+    # Valid config with defaults
+    cfg_default = RerankingConfig()
+    assert cfg_default.provider == "jina"
+    assert cfg_default.model == "jina-reranker-v3.5"
+    assert cfg_default.candidate_limit == 50
+    assert cfg_default.result_limit == 10
+    assert cfg_default.timeout_seconds == 15.0
+
+    # Custom valid config
+    cfg = RerankingConfig(
+        provider="jina",
+        model="jina-reranker-v3.5",
+        candidate_limit=40,
+        result_limit=8,
+        timeout_seconds=5.0,
+    )
+    assert cfg.provider == "jina"
+    assert cfg.model == "jina-reranker-v3.5"
     assert cfg.candidate_limit == 40
     assert cfg.result_limit == 8
     assert cfg.timeout_seconds == 5.0

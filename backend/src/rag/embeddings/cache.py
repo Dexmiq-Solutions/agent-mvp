@@ -15,7 +15,7 @@ _redis_embedding_cache: Optional["RedisEmbeddingCache"] = None
 def generate_embedding_cache_key(
     text: str,
     model: str,
-    provider: str = "voyage",
+    provider: str = "cohere",
     input_type: str = "query",
     dimension: Optional[int] = None,
     version: Optional[str] = None,

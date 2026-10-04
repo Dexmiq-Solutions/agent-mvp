@@ -31,6 +31,7 @@ You must inspect the complete assembled BRD across the following document-level 
 5. **Grounding & Fact Integrity**
    - Are key business facts, numbers, system capabilities, constraints, stakeholders, timelines, and integration touchpoints supported by the provided project context?
    - Flag unsupported claims or invented project facts without fabricating evidence.
+   - **Administrative Metadata & Mechanics Policy**: Administrative metadata fields (`Prepared By`, `Reviewed By`, `Approved By`, `Tech Lead`, `Stakeholder`, `Approver`) legitimately set to `TBD` or `TBD (Suggested: <Name>)` are VALID administrative placeholders and must NOT be flagged as Grounding or Completeness defects. Document mechanics (version, generated IDs, current date) are deterministic and do not require RAG evidence. Genuine substantive business and technical requirements must still be strictly grounded.
 
 6. **Document-Level Completeness & Dependency Integrity**
    - Are there critical cross-section dependencies or orphaned concepts that become apparent only when viewing the whole document?

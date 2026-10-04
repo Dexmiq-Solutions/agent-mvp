@@ -438,6 +438,7 @@ class EndToEndIndexingService:
             embeddings=embedding_result,
             sparse_vectors=sparse_vectors,
             embedding_model=self._embedding_provider.model_name,
+            embedding_provider=getattr(self._embedding_provider, "provider_name", "cohere"),
             strict=True,
         )
         stage_reports["qdrant_indexing"] = {

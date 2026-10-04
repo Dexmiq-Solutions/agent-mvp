@@ -12,11 +12,15 @@ Maintains its working context and progress via BRDAgentState.
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
 from enum import Enum
+import json
 from pathlib import Path
 import re
 import time
 from typing import Any, Optional, Sequence
+import uuid
 
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage
@@ -51,10 +55,18 @@ from agents.brd.section_validation import (
     ValidationResult,
 )
 from agents.brd.template import (
+    classify_requirement_item,
     extract_brd_sections,
     extract_section_requirements,
     extract_section_template,
     get_brd_template_path,
+    is_administrative_section,
+    is_benign_administrative_metadata_finding,
+    is_documentation_quality_finding,
+    is_metadata_or_role_item,
+    is_substantive_business_clarification_item,
+    is_substantive_requirement,
+    is_tbd_value,
     load_brd_template,
 )
 from agents.brd.progression import (
@@ -96,7 +108,12 @@ from agents.brd.context import (
     reset_current_agent_context,
     set_current_agent_context,
 )
-from observability.logging import get_logger
+from observability.logging import (
+    TraceActor,
+    format_trace_event,
+    get_logger,
+    log_trace_event,
+)
 from services.rag_service import RAGService
 from tools import get_default_tools
 from tools.diagnostic import echo_diagnostic_tool
@@ -174,12 +191,222 @@ class _BRDTemplateDescriptor:
         return load_brd_template()
 
 
+class ActionType(str, Enum):
+    """Action type decided by the BRD Lead Agent for objective execution."""
+
+    RAG = "rag"
+    DIRECT_WORK = "direct_work"
+    DELEGATION = "delegation"
+
+
+@dataclass
+class ActionDecision:
+    """Action decision formulated by the BRD Lead Agent.
+
+    Attributes:
+        action_type: ActionType (RAG, DIRECT_WORK, DELEGATION)
+        query: Specific search query if action_type is RAG
+        direct_work_objective: Objective to focus on if action_type is DIRECT_WORK
+        direct_work_instructions: Specific analytical instructions for DIRECT_WORK
+        delegated_tasks: List of subtasks if action_type is DELEGATION
+        reasoning: Rationale behind selecting this action
+        metadata: Extensible metadata dictionary
+    """
+
+    action_type: ActionType
+    query: Optional[str] = None
+    direct_work_objective: Optional[str] = None
+    direct_work_instructions: Optional[str] = None
+    delegated_tasks: list[str] = field(default_factory=list)
+    reasoning: str = ""
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "action_type": self.action_type.value,
+            "query": self.query,
+            "direct_work_objective": self.direct_work_objective,
+            "direct_work_instructions": self.direct_work_instructions,
+            "delegated_tasks": list(self.delegated_tasks),
+            "reasoning": self.reasoning,
+            "metadata": dict(self.metadata),
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> ActionDecision:
+        action_type_raw = data.get("action_type", ActionType.DIRECT_WORK.value)
+        action_type = ActionType(action_type_raw) if isinstance(action_type_raw, str) else action_type_raw
+        return cls(
+            action_type=action_type,
+            query=data.get("query"),
+            direct_work_objective=data.get("direct_work_objective"),
+            direct_work_instructions=data.get("direct_work_instructions"),
+            delegated_tasks=data.get("delegated_tasks", []),
+            reasoning=data.get("reasoning", ""),
+            metadata=data.get("metadata", {}),
+        )
+
+
 class WorkflowDecision(str, Enum):
     """Workflow decision determined by the BRD Lead Agent following evaluation."""
 
     PROCEED_TO_SECTION_GENERATION = "proceed_to_section_generation"
     RAG = "rag"
     ASK_USER = "ask_user"
+
+
+class GapResolutionAction(str, Enum):
+    """Gap resolution path decided by Lead Agent after interpreting evaluation findings."""
+
+    PROCEED_TO_SECTION_GENERATION = "proceed_to_section_generation"
+    RAG = "rag"
+    ASK_USER = "ask_user"
+
+
+@dataclass
+class GapResolutionDecision:
+    """Decision formulated by the Lead Agent upon interpreting an EvaluationResult.
+
+    Attributes:
+        action: GapResolutionAction (PROCEED_TO_SECTION_GENERATION, RAG, ASK_USER)
+        query: Focused knowledge search query if action is RAG
+        clarification_question: Specific targeted question if action is ASK_USER
+        reasoning: Rationale for gap resolution strategy
+        identified_gaps: Summary of identified gaps
+        metadata: Extensible metadata dictionary
+    """
+
+    action: GapResolutionAction
+    query: Optional[str] = None
+    clarification_question: Optional[str] = None
+    reasoning: str = ""
+    identified_gaps: list[str] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def decision(self) -> WorkflowDecision:
+        """Backward compatibility with WorkflowDecision."""
+        if self.action == GapResolutionAction.PROCEED_TO_SECTION_GENERATION:
+            return WorkflowDecision.PROCEED_TO_SECTION_GENERATION
+        elif self.action == GapResolutionAction.RAG:
+            return WorkflowDecision.RAG
+        else:
+            return WorkflowDecision.ASK_USER
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "action": self.action.value,
+            "query": self.query,
+            "clarification_question": self.clarification_question,
+            "reasoning": self.reasoning,
+            "identified_gaps": list(self.identified_gaps),
+            "metadata": dict(self.metadata),
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> GapResolutionDecision:
+        action_raw = data.get("action", GapResolutionAction.PROCEED_TO_SECTION_GENERATION.value)
+        action = GapResolutionAction(action_raw) if isinstance(action_raw, str) else action_raw
+        return cls(
+            action=action,
+            query=data.get("query"),
+            clarification_question=data.get("clarification_question"),
+            reasoning=data.get("reasoning", ""),
+            identified_gaps=data.get("identified_gaps", []),
+            metadata=data.get("metadata", {}),
+        )
+
+
+class SectionFailureCategory(str, Enum):
+    """Categorical classification of unresolved section validation failure."""
+
+    EVIDENCE_GAP = "evidence_gap"
+    GENERATION_QUALITY = "generation_quality"
+    TEMPLATE_CONFIGURATION = "template_configuration"
+    INFRASTRUCTURE_FAILURE = "infrastructure_failure"
+
+
+@dataclass
+class SectionReworkStrategy:
+    """Strategy formulated by the Lead Agent upon interpreting section validation findings."""
+
+    section_name: str
+    requires_rework: bool
+    rework_guidance: str = ""
+    specific_adjustments: list[str] = field(default_factory=list)
+    reasoning: str = ""
+    requires_retrieval: bool = False
+    retrieval_query: Optional[str] = None
+    missing_evidence_items: list[str] = field(default_factory=list)
+    failure_category: Optional[SectionFailureCategory | str] = None
+    clarification_question: Optional[str] = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        cat_val = (
+            self.failure_category.value
+            if isinstance(self.failure_category, SectionFailureCategory)
+            else self.failure_category
+        )
+        return {
+            "section_name": self.section_name,
+            "requires_rework": self.requires_rework,
+            "rework_guidance": self.rework_guidance,
+            "specific_adjustments": list(self.specific_adjustments),
+            "reasoning": self.reasoning,
+            "requires_retrieval": self.requires_retrieval,
+            "retrieval_query": self.retrieval_query,
+            "missing_evidence_items": list(self.missing_evidence_items),
+            "failure_category": cat_val,
+            "clarification_question": self.clarification_question,
+            "metadata": dict(self.metadata),
+        }
+
+
+@dataclass
+class FinalValidationStrategy:
+    """Recovery strategy formulated by the Lead Agent upon interpreting complete BRD validation findings."""
+
+    requires_recovery: bool
+    affected_sections: list[str] = field(default_factory=list)
+    section_guidance: dict[str, str] = field(default_factory=dict)
+    overall_strategy: str = ""
+    cycle: int = 0
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "requires_recovery": self.requires_recovery,
+            "affected_sections": list(self.affected_sections),
+            "section_guidance": dict(self.section_guidance),
+            "overall_strategy": self.overall_strategy,
+            "cycle": self.cycle,
+            "metadata": dict(self.metadata),
+        }
+
+
+def _build_project_context_prompt_block(
+    context: Optional[AgentContext] = None,
+    state_metadata: Optional[dict[str, Any]] = None,
+) -> str:
+    """Format non-intrusive explicit project context for prompt grounding (DEF-004)."""
+    meta = state_metadata or {}
+    proj_name = getattr(context, "project_name", None) or meta.get("project_name")
+    proj_desc = getattr(context, "project_description", None) or meta.get("project_description")
+    avail_docs = getattr(context, "available_documents", None) or meta.get("available_documents", [])
+
+    lines = []
+    if proj_name:
+        lines.append(f"Project Name: {proj_name}")
+    if proj_desc:
+        lines.append(f"Project Description: {proj_desc}")
+    if avail_docs:
+        docs_str = ", ".join(avail_docs) if isinstance(avail_docs, (list, tuple)) else str(avail_docs)
+        lines.append(f"Available Project Sources (indexed in RAG): {docs_str}")
+
+    if not lines:
+        return ""
+    return "## Project Context\n" + "\n".join(lines) + "\n\n"
 
 
 class BRDLeadAgent:
@@ -254,7 +481,12 @@ class BRDLeadAgent:
             enable_memory: Whether to equip long-term project memory on the Lead Agent (defaults to True).
             checkpointer: Optional checkpointer for state persistence.
         """
-        resolved_instruction = system_instruction or system_prompt or load_system_instruction()
+        if system_instruction is not None:
+            resolved_instruction = system_instruction
+        elif system_prompt is not None:
+            resolved_instruction = system_prompt
+        else:
+            resolved_instruction = load_system_instruction()
         self._system_instruction = resolved_instruction
         self._evaluator = evaluator
         self._section_generator = section_generator
@@ -391,6 +623,8 @@ class BRDLeadAgent:
     @property
     def sections(self) -> list[str]:
         """Return ordered required BRD sections dynamically extracted from the template."""
+        if hasattr(self, "_state") and self._state and self._state.template_sections:
+            return list(self._state.template_sections)
         return extract_brd_sections(self._template)
 
     @property
@@ -703,6 +937,82 @@ class BRDLeadAgent:
 
         return result
 
+    def interpret_final_validation(
+        self,
+        final_validation_result: Optional[FinalValidationResult] = None,
+        context: Optional[AgentContext] = None,
+        assembled_content: Optional[str] = None,
+    ) -> FinalValidationStrategy:
+        """Intelligently interpret complete BRD final validation findings and formulate recovery strategy.
+
+        Responsibilities:
+        - Sub-agent evaluates complete BRD document and returns FinalValidationResult.
+        - Lead Agent interprets the findings and determines the recovery strategy:
+          * Resolves and prioritizes affected sections.
+          * Generates section-specific rework guidance.
+          * Formulates the overall recovery plan.
+        - Application enforces the deterministic recovery limits (max 3 cycles) and executes the rework.
+        """
+        current_res = final_validation_result or self._state.get_latest_final_validation_result()
+        if current_res is None:
+            raise ValueError("No FinalValidationResult available to interpret.")
+
+        effective_ctx = context or AgentContext(project_id=self.project_id)
+        agent_run_id = (effective_ctx.metadata.get("agent_run_id") if effective_ctx.metadata else None)
+
+        if current_res.is_valid:
+            strategy = FinalValidationStrategy(
+                requires_recovery=False,
+                overall_strategy="Complete BRD satisfies all cross-section consistency and completeness gates.",
+                cycle=self._state.final_validation_recovery_cycles,
+            )
+            log_trace_event(
+                logger,
+                agent_run_id=agent_run_id,
+                actor=TraceActor.LEAD_AGENT,
+                event_name="FINAL_VALIDATION_INTERPRETED",
+                requires_recovery=False,
+            )
+            return strategy
+
+        candidate_affected = current_res.affected_sections
+        resolved_affected = resolve_affected_sections(candidate_affected, self.sections)
+
+        section_guidance: dict[str, str] = {}
+        for sec in resolved_affected:
+            section_guidance[sec] = format_section_rework_guidance(sec, current_res)
+
+        strategy = FinalValidationStrategy(
+            requires_recovery=True,
+            affected_sections=resolved_affected,
+            section_guidance=section_guidance,
+            overall_strategy=f"Rework required across {len(resolved_affected)} sections ({', '.join(resolved_affected)}) to resolve cross-section findings.",
+            cycle=self._state.final_validation_recovery_cycles,
+        )
+
+        log_trace_event(
+            logger,
+            agent_run_id=agent_run_id,
+            actor=TraceActor.LEAD_AGENT,
+            event_name="FINAL_VALIDATION_INTERPRETED",
+            requires_recovery=True,
+            affected_sections=resolved_affected,
+        )
+        return strategy
+
+    async def interpret_final_validation_async(
+        self,
+        final_validation_result: Optional[FinalValidationResult] = None,
+        context: Optional[AgentContext] = None,
+        assembled_content: Optional[str] = None,
+    ) -> FinalValidationStrategy:
+        """Asynchronously interpret complete BRD final validation findings and formulate recovery strategy."""
+        return self.interpret_final_validation(
+            final_validation_result=final_validation_result,
+            context=context,
+            assembled_content=assembled_content,
+        )
+
     def recover_final_validation(
         self,
         initial_result: Optional[FinalValidationResult] = None,
@@ -776,16 +1086,18 @@ class BRDLeadAgent:
                 cycle += 1
                 self._state.increment_final_validation_recovery_cycle()
 
-                # 1. Identify affected sections from current validation findings
-                candidate_affected = current_result.affected_sections
-                resolved_affected = resolve_affected_sections(candidate_affected, self.sections)
+                # 1. Lead Agent interprets final validation findings and determines recovery strategy
+                recovery_strategy = self.interpret_final_validation(
+                    final_validation_result=current_result,
+                    context=effective_ctx,
+                )
+                resolved_affected = recovery_strategy.affected_sections
 
-                if not resolved_affected:
+                if not recovery_strategy.requires_recovery or not resolved_affected:
                     logger.warning(
-                        "Final validation recovery identified no resolvable affected sections (project_id: %s, cycle: %d, candidates: %s); stopping recovery safely",
+                        "Final validation recovery identified no resolvable affected sections (project_id: %s, cycle: %d); stopping recovery safely",
                         project_id,
                         cycle,
-                        candidate_affected,
                     )
                     break
 
@@ -809,7 +1121,7 @@ class BRDLeadAgent:
                         cycle,
                     )
 
-                    sec_feedback = format_section_rework_guidance(sec, current_result)
+                    sec_feedback = recovery_strategy.section_guidance.get(sec) or format_section_rework_guidance(sec, current_result)
 
                     try:
                         gen_res, sec_val_res = self.generate_and_validate_section(
@@ -986,15 +1298,18 @@ class BRDLeadAgent:
                 cycle += 1
                 self._state.increment_final_validation_recovery_cycle()
 
-                candidate_affected = current_result.affected_sections
-                resolved_affected = resolve_affected_sections(candidate_affected, self.sections)
+                # 1. Lead Agent interprets final validation findings and determines recovery strategy
+                recovery_strategy = await self.interpret_final_validation_async(
+                    final_validation_result=current_result,
+                    context=effective_ctx,
+                )
+                resolved_affected = recovery_strategy.affected_sections
 
-                if not resolved_affected:
+                if not recovery_strategy.requires_recovery or not resolved_affected:
                     logger.warning(
-                        "Async final validation recovery identified no resolvable affected sections (project_id: %s, cycle: %d, candidates: %s); stopping recovery safely",
+                        "Async final validation recovery identified no resolvable affected sections (project_id: %s, cycle: %d); stopping recovery safely",
                         project_id,
                         cycle,
-                        candidate_affected,
                     )
                     break
 
@@ -1017,7 +1332,7 @@ class BRDLeadAgent:
                         cycle,
                     )
 
-                    sec_feedback = format_section_rework_guidance(sec, current_result)
+                    sec_feedback = recovery_strategy.section_guidance.get(sec) or format_section_rework_guidance(sec, current_result)
 
                     try:
                         gen_res, sec_val_res = await self.generate_and_validate_section_async(
@@ -1409,6 +1724,271 @@ class BRDLeadAgent:
             action_result=action_result,
         )
 
+    def decide_action(
+        self,
+        objective: Optional[str] = None,
+        context: Optional[AgentContext] = None,
+        input_text: Optional[str] = None,
+        section_name: Optional[str] = None,
+    ) -> ActionDecision:
+        """Intelligently analyze the objective and state to decide the next action.
+
+        Responsibilities:
+        - Lead Agent decides which action type is appropriate (RAG, DIRECT_WORK, DELEGATION).
+        - Lead Agent formulates action parameters:
+          * RAG: targeted search query
+          * DIRECT_WORK: analytical reasoning objective and instructions
+          * DELEGATION: decomposed subtasks
+        """
+        effective_obj = objective or input_text or (f"Section: {section_name}" if section_name else None) or self._state.current_task or self._state.objective or "Analyze project requirements and generate BRD"
+        effective_ctx = context or AgentContext(project_id=self.project_id)
+        agent_run_id = (effective_ctx.metadata.get("agent_run_id") if effective_ctx.metadata else None)
+
+        obj_lower = effective_obj.lower()
+
+        # If LLM model is available, attempt LLM decision
+        try:
+            project_block = _build_project_context_prompt_block(effective_ctx, self._state.metadata)
+            prompt = (
+                f"You are the BRD Lead Agent. Analyze the current objective and decide the best action.\n"
+                f"{project_block}"
+                f"Objective: {effective_obj}\n"
+                f"Section: {section_name or self._state.current_section or 'General'}\n"
+                f"Available tools: RAG equipped={self.has_rag_capability}\n\n"
+                f"Choose exactly one action_type:\n"
+                f"- 'rag': Search project knowledge base for existing documents, specs, or background.\n"
+                f"- 'direct_work': Perform direct analytical synthesis and requirements drafting.\n"
+                f"- 'delegation': Decompose a complex objective into multiple delegated subtasks.\n\n"
+                f"Respond in valid JSON with fields: 'action_type', 'query', 'direct_work_objective', 'direct_work_instructions', 'delegated_tasks', 'reasoning'."
+            )
+            msg = self._model.invoke([HumanMessage(content=prompt)])
+            raw_text = msg.content if isinstance(msg.content, str) else str(msg.content)
+            json_match = re.search(r"\{.*\}", raw_text, re.DOTALL)
+            if json_match:
+                data = json.loads(json_match.group(0))
+                act_type_str = data.get("action_type", "").lower().strip()
+                if act_type_str == "rag" and self.has_rag_capability:
+                    decision = ActionDecision(
+                        action_type=ActionType.RAG,
+                        query=data.get("query") or (data.get("rag_queries", [effective_obj])[0] if data.get("rag_queries") else effective_obj),
+                        reasoning=data.get("reasoning", data.get("rationale", "RAG selected to retrieve relevant domain information.")),
+                    )
+                elif act_type_str == "delegation":
+                    tasks = data.get("delegated_tasks") or [effective_obj]
+                    decision = ActionDecision(
+                        action_type=ActionType.DELEGATION,
+                        delegated_tasks=tasks if isinstance(tasks, list) else [str(tasks)],
+                        reasoning=data.get("reasoning", data.get("rationale", "Delegation selected for multi-task objective decomposition.")),
+                    )
+                else:
+                    decision = ActionDecision(
+                        action_type=ActionType.DIRECT_WORK,
+                        direct_work_objective=data.get("direct_work_objective") or effective_obj,
+                        direct_work_instructions=data.get("direct_work_instructions") or "Analyze and synthesize requirements.",
+                        reasoning=data.get("reasoning", data.get("rationale", "Direct work selected for analytical drafting.")),
+                    )
+                log_trace_event(
+                    logger,
+                    agent_run_id=agent_run_id,
+                    actor=TraceActor.LEAD_AGENT,
+                    event_name="ACTION_DECIDED",
+                    action_type=decision.action_type.value,
+                    reasoning=decision.reasoning,
+                )
+                return decision
+        except Exception as exc:
+            logger.debug("Lead Agent LLM action decision fell back to analytical reasoning: %s", exc)
+
+        # Fallback heuristic when model does not return structured JSON
+        if self.has_rag_capability and any(k in obj_lower for k in ["search", "find", "retrieve", "lookup", "knowledge", "rag", "docs", "security"]):
+            decision = ActionDecision(
+                action_type=ActionType.RAG,
+                query=f"Retrieve specifications and requirements for: {effective_obj}",
+                reasoning="RAG selected because objective requests information retrieval.",
+            )
+        elif any(k in obj_lower for k in ["decompose", "subtasks", "delegate", "parallel"]):
+            decision = ActionDecision(
+                action_type=ActionType.DELEGATION,
+                delegated_tasks=[f"Analyze requirements for: {effective_obj}", f"Draft scope for: {effective_obj}"],
+                reasoning="Delegation selected because objective requests decomposition into subtasks.",
+            )
+        else:
+            decision = ActionDecision(
+                action_type=ActionType.DIRECT_WORK,
+                direct_work_objective=effective_obj,
+                direct_work_instructions=f"Synthesize and analyze requirements directly for: {effective_obj}",
+                reasoning="Direct work selected as default analytical path for requirement formulation.",
+            )
+
+        log_trace_event(
+            logger,
+            agent_run_id=agent_run_id,
+            actor=TraceActor.LEAD_AGENT,
+            event_name="ACTION_DECIDED",
+            action_type=decision.action_type.value,
+            reasoning=decision.reasoning,
+        )
+        return decision
+
+    async def decide_action_async(
+        self,
+        objective: Optional[str] = None,
+        context: Optional[AgentContext] = None,
+        input_text: Optional[str] = None,
+        section_name: Optional[str] = None,
+    ) -> ActionDecision:
+        """Asynchronously analyze the objective and state to decide the next action."""
+        effective_obj = objective or input_text or (f"Section: {section_name}" if section_name else None) or self._state.current_task or self._state.objective or "Analyze project requirements and generate BRD"
+        effective_ctx = context or AgentContext(project_id=self.project_id)
+        agent_run_id = (effective_ctx.metadata.get("agent_run_id") if effective_ctx.metadata else None)
+
+        obj_lower = effective_obj.lower()
+
+        try:
+            project_block = _build_project_context_prompt_block(effective_ctx, self._state.metadata)
+            prompt = (
+                f"You are the BRD Lead Agent. Analyze the current objective and decide the best action.\n"
+                f"{project_block}"
+                f"Objective: {effective_obj}\n"
+                f"Section: {section_name or self._state.current_section or 'General'}\n"
+                f"Available tools: RAG equipped={self.has_rag_capability}\n\n"
+                f"Choose exactly one action_type:\n"
+                f"- 'rag': Search project knowledge base for existing documents, specs, or background.\n"
+                f"- 'direct_work': Perform direct analytical synthesis and requirements drafting.\n"
+                f"- 'delegation': Decompose a complex objective into multiple delegated subtasks.\n\n"
+                f"Respond in valid JSON with fields: 'action_type', 'query', 'direct_work_objective', 'direct_work_instructions', 'delegated_tasks', 'reasoning'."
+            )
+            msg = await self._model.ainvoke([HumanMessage(content=prompt)])
+            raw_text = msg.content if isinstance(msg.content, str) else str(msg.content)
+            json_match = re.search(r"\{.*\}", raw_text, re.DOTALL)
+            if json_match:
+                data = json.loads(json_match.group(0))
+                act_type_str = data.get("action_type", "").lower().strip()
+                if act_type_str == "rag" and self.has_rag_capability:
+                    decision = ActionDecision(
+                        action_type=ActionType.RAG,
+                        query=data.get("query") or (data.get("rag_queries", [effective_obj])[0] if data.get("rag_queries") else effective_obj),
+                        reasoning=data.get("reasoning", data.get("rationale", "RAG selected to retrieve relevant domain information.")),
+                    )
+                elif act_type_str == "delegation":
+                    tasks = data.get("delegated_tasks") or [effective_obj]
+                    decision = ActionDecision(
+                        action_type=ActionType.DELEGATION,
+                        delegated_tasks=tasks if isinstance(tasks, list) else [str(tasks)],
+                        reasoning=data.get("reasoning", data.get("rationale", "Delegation selected for multi-task objective decomposition.")),
+                    )
+                else:
+                    decision = ActionDecision(
+                        action_type=ActionType.DIRECT_WORK,
+                        direct_work_objective=data.get("direct_work_objective") or effective_obj,
+                        direct_work_instructions=data.get("direct_work_instructions") or "Analyze and synthesize requirements.",
+                        reasoning=data.get("reasoning", data.get("rationale", "Direct work selected for analytical drafting.")),
+                    )
+                log_trace_event(
+                    logger,
+                    agent_run_id=agent_run_id,
+                    actor=TraceActor.LEAD_AGENT,
+                    event_name="ACTION_DECIDED",
+                    action_type=decision.action_type.value,
+                    reasoning=decision.reasoning,
+                )
+                return decision
+        except Exception as exc:
+            logger.debug("Lead Agent async LLM action decision fell back to analytical reasoning: %s", exc)
+
+        return self.decide_action(objective=objective, context=context, input_text=input_text, section_name=section_name)
+
+    def perform_direct_work(
+        self,
+        objective: Optional[str] = None,
+        instructions: Optional[str] = None,
+        context: Optional[AgentContext] = None,
+    ) -> ActionResult:
+        """Perform direct analytical reasoning and synthesis without external tools or delegation.
+
+        Lead Agent directly analyzes the requirements and records the outcome as an ActionResult.
+        """
+        effective_obj = objective or self._state.current_task or self._state.objective or "Direct analytical work"
+        effective_ctx = context or AgentContext(project_id=self.project_id)
+        agent_run_id = (effective_ctx.metadata.get("agent_run_id") if effective_ctx.metadata else None)
+
+        log_trace_event(
+            logger,
+            agent_run_id=agent_run_id,
+            actor=TraceActor.LEAD_AGENT,
+            event_name="DIRECT_WORK_STARTED",
+            objective=effective_obj,
+        )
+
+        prompt = f"Objective: {effective_obj}\nInstructions: {instructions or 'Analyze the objective thoroughly and provide structured requirements.'}"
+        response = self._execute_graph(input_text=prompt, ctx=effective_ctx)
+        action_res = ActionResult(
+            source=ActionSource.DIRECT_WORK,
+            content=response.output_text,
+            success=response.success,
+            context=effective_ctx,
+            metadata={"agent_run_id": agent_run_id, "objective": effective_obj, "instructions": instructions},
+        )
+        self._state.set_action_result(action_res)
+        self._state.add_agent_work({
+            "source": ActionSource.DIRECT_WORK.value,
+            "content": action_res.content,
+            "objective": effective_obj,
+        })
+
+        log_trace_event(
+            logger,
+            agent_run_id=agent_run_id,
+            actor=TraceActor.LEAD_AGENT,
+            event_name="DIRECT_WORK_COMPLETED",
+            success=action_res.success,
+        )
+        return action_res
+
+    async def perform_direct_work_async(
+        self,
+        objective: Optional[str] = None,
+        instructions: Optional[str] = None,
+        context: Optional[AgentContext] = None,
+    ) -> ActionResult:
+        """Asynchronously perform direct analytical reasoning and synthesis."""
+        effective_obj = objective or self._state.current_task or self._state.objective or "Direct analytical work"
+        effective_ctx = context or AgentContext(project_id=self.project_id)
+        agent_run_id = (effective_ctx.metadata.get("agent_run_id") if effective_ctx.metadata else None)
+
+        log_trace_event(
+            logger,
+            agent_run_id=agent_run_id,
+            actor=TraceActor.LEAD_AGENT,
+            event_name="DIRECT_WORK_STARTED",
+            objective=effective_obj,
+        )
+
+        prompt = f"Objective: {effective_obj}\nInstructions: {instructions or 'Analyze the objective thoroughly and provide structured requirements.'}"
+        response = await self._execute_graph_async(input_text=prompt, ctx=effective_ctx)
+        action_res = ActionResult(
+            source=ActionSource.DIRECT_WORK,
+            content=response.output_text,
+            success=response.success,
+            context=effective_ctx,
+            metadata={"agent_run_id": agent_run_id, "objective": effective_obj, "instructions": instructions},
+        )
+        self._state.set_action_result(action_res)
+        self._state.add_agent_work({
+            "source": ActionSource.DIRECT_WORK.value,
+            "content": action_res.content,
+            "objective": effective_obj,
+        })
+
+        log_trace_event(
+            logger,
+            agent_run_id=agent_run_id,
+            actor=TraceActor.LEAD_AGENT,
+            event_name="DIRECT_WORK_COMPLETED",
+            success=action_res.success,
+        )
+        return action_res
+
     def execute(
         self,
         request: AgentRunRequest | str,
@@ -1452,6 +2032,17 @@ class BRDLeadAgent:
 
         if effective_ctx and effective_ctx.project_id:
             self._state.metadata["project_id"] = effective_ctx.project_id
+        if effective_ctx and effective_ctx.conversation_id:
+            self._state.metadata["conversation_id"] = effective_ctx.conversation_id
+
+        # Route to application-owned full BRD workflow if state is waiting for user
+        if self._state.is_waiting_for_user:
+            prompt_text = request.input_text if isinstance(request, AgentRunRequest) else str(request)
+            return self.run_workflow(
+                request=prompt_text,
+                context=effective_ctx,
+                current_task=current_task,
+            )
 
         # Route to delegation if requested
         should_delegate = delegate or (
@@ -1587,6 +2178,17 @@ class BRDLeadAgent:
 
         if effective_ctx and effective_ctx.project_id:
             self._state.metadata["project_id"] = effective_ctx.project_id
+        if effective_ctx and effective_ctx.conversation_id:
+            self._state.metadata["conversation_id"] = effective_ctx.conversation_id
+
+        # Route to application-owned full BRD workflow if state is waiting for user
+        if self._state.is_waiting_for_user:
+            prompt_text = request.input_text if isinstance(request, AgentRunRequest) else str(request)
+            return await self.run_workflow_async(
+                request=prompt_text,
+                context=effective_ctx,
+                current_task=current_task,
+            )
 
         should_delegate = delegate or (
             isinstance(request, AgentRunRequest)
@@ -1614,20 +2216,29 @@ class BRDLeadAgent:
         context: Optional[AgentContext] = None,
         prior_messages: Optional[Sequence[Any]] = None,
         current_task: Optional[str] = None,
+        initial_state: Optional[BRDAgentState] = None,
+        consolidate_clarification: bool = False,
     ) -> AsyncIterator[dict[str, Any]]:
-        """Execute an asynchronous streaming interaction cycle via the DeepAgents harness.
+        """Execute the controlled BRD workflow asynchronously via streaming.
+
+        The controlled BRD workflow is the sole user-facing execution path for BRD
+        conversations. Every user message (initial request, follow-up, clarification
+        answer, or resume) directly enters the controlled BRD workflow.
 
         Args:
             request: AgentRunRequest or raw input string prompt.
             context: Optional AgentContext for project isolation.
-            prior_messages: Optional sequence of prior BaseMessage instances to seed
-                thread state if uninitialized.
-            current_task: Optional immediate task context override to associate with this execution.
+            prior_messages: Optional sequence of prior BaseMessage instances.
+            current_task: Optional immediate task context override.
+            initial_state: Optional pre-existing/restored BRDAgentState for conversation resumption.
+            consolidate_clarification: Whether to consolidate unresolved business gaps until end of drafting pass.
 
         Yields:
-            dict[str, Any]: Incremental content chunks, e.g. {"type": "content", "content": "..."}.
+            dict[str, Any]: Incremental content chunks and progress events from the workflow.
         """
-        if isinstance(request, AgentRunRequest) and request.state is not None:
+        if initial_state is not None:
+            self._state = initial_state
+        elif isinstance(request, AgentRunRequest) and request.state is not None:
             if isinstance(request.state, BRDAgentState):
                 self._state = request.state
             elif isinstance(request.state, dict):
@@ -1644,61 +2255,33 @@ class BRDLeadAgent:
                 project_id=self.project_id,
                 conversation_id=effective_ctx.conversation_id,
                 user_id=effective_ctx.user_id,
+                project_name=effective_ctx.project_name,
+                project_description=effective_ctx.project_description,
+                available_documents=list(effective_ctx.available_documents),
                 metadata=effective_ctx.metadata,
             )
 
         if effective_ctx and effective_ctx.project_id:
             self._state.metadata["project_id"] = effective_ctx.project_id
-
-        token = set_current_agent_context(effective_ctx)
-        exec_config: dict[str, Any] = {}
-        if effective_ctx.conversation_id:
-            exec_config["configurable"] = {"thread_id": effective_ctx.conversation_id}
-        elif self._checkpointer is not None:
-            exec_config["configurable"] = {"thread_id": "default"}
-
-        has_thread_state = False
-        if self._checkpointer is not None and exec_config.get("configurable"):
-            if hasattr(self._graph, "get_state"):
-                try:
-                    state = self._graph.get_state(exec_config)
-                    if state and state.values.get("messages"):
-                        has_thread_state = True
-                    elif prior_messages and hasattr(self._graph, "update_state"):
-                        self._graph.update_state(exec_config, {"messages": list(prior_messages)})
-                        has_thread_state = True
-                except Exception as seed_exc:
-                    logger.warning("Failed to inspect/seed checkpointer state: %s", seed_exc)
+        if effective_ctx and effective_ctx.conversation_id:
+            self._state.metadata["conversation_id"] = effective_ctx.conversation_id
+        if effective_ctx and effective_ctx.project_name:
+            self._state.metadata["project_name"] = effective_ctx.project_name
+        if effective_ctx and effective_ctx.project_description:
+            self._state.metadata["project_description"] = effective_ctx.project_description
+        if effective_ctx and effective_ctx.available_documents:
+            self._state.metadata["available_documents"] = list(effective_ctx.available_documents)
 
         prompt_text = request.input_text if isinstance(request, AgentRunRequest) else str(request)
-        if has_thread_state:
-            inputs = {"messages": [HumanMessage(content=prompt_text)]}
-        elif prior_messages:
-            inputs = {"messages": list(prior_messages) + [HumanMessage(content=prompt_text)]}
-        else:
-            inputs = {"messages": [HumanMessage(content=prompt_text)]}
-
-        try:
-            async for msg, metadata in self._graph.astream(
-                inputs,
-                config=exec_config if exec_config else None,
-                stream_mode="messages",
-            ):
-                if isinstance(msg, (AIMessageChunk, AIMessage)):
-                    if not getattr(msg, "tool_calls", None):
-                        content = getattr(msg, "content", "")
-                        if isinstance(content, str) and content:
-                            yield {"type": "content", "content": content}
-                        elif isinstance(content, list):
-                            text_parts = [
-                                part.get("text", "") if isinstance(part, dict) else str(part)
-                                for part in content
-                            ]
-                            combined = "".join(text_parts)
-                            if combined:
-                                yield {"type": "content", "content": combined}
-        finally:
-            reset_current_agent_context(token)
+        async for event in self.stream_workflow_async(
+            request=prompt_text,
+            context=effective_ctx,
+            current_task=current_task,
+            initial_state=self._state,
+            prior_messages=prior_messages,
+            consolidate_clarification=consolidate_clarification,
+        ):
+            yield event
 
     def set_project_memory(
         self,
@@ -2167,6 +2750,9 @@ class BRDLeadAgent:
             action_result=target_result,
             metadata={
                 "project_id": effective_ctx.project_id or self._state.metadata.get("project_id"),
+                "project_name": getattr(effective_ctx, "project_name", None) or self._state.metadata.get("project_name"),
+                "project_description": getattr(effective_ctx, "project_description", None) or self._state.metadata.get("project_description"),
+                "available_documents": getattr(effective_ctx, "available_documents", None) or self._state.metadata.get("available_documents"),
             },
         )
 
@@ -2218,12 +2804,155 @@ class BRDLeadAgent:
             action_result=target_result,
             metadata={
                 "project_id": effective_ctx.project_id or self._state.metadata.get("project_id"),
+                "project_name": getattr(effective_ctx, "project_name", None) or self._state.metadata.get("project_name"),
+                "project_description": getattr(effective_ctx, "project_description", None) or self._state.metadata.get("project_description"),
+                "available_documents": getattr(effective_ctx, "available_documents", None) or self._state.metadata.get("available_documents"),
             },
         )
 
         eval_result = await self.evaluator.evaluate_async(context=eval_ctx)
         self._state.set_evaluation_result(eval_result)
         return eval_result
+
+    def interpret_evaluation(
+        self,
+        evaluation_result: Optional[EvaluationResult] = None,
+        objective: Optional[str] = None,
+        context: Optional[AgentContext] = None,
+        can_rag_resolve: Optional[bool] = None,
+        eval_result: Optional[EvaluationResult] = None,
+    ) -> GapResolutionDecision:
+        """Intelligently interpret an EvaluationResult and decide the gap resolution strategy.
+
+        Responsibilities:
+        - Sub-agent evaluates and returns findings.
+        - Lead Agent interprets the findings:
+          * If SUFFICIENT: proceeds toward BRD section generation.
+          * If INSUFFICIENT: decides whether gaps warrant further RAG retrieval or User Clarification,
+            synthesizing the targeted search query or clarification question.
+        """
+        eval_res = evaluation_result or eval_result or self._state.latest_evaluation_result
+        if eval_res is None:
+            raise ValueError("No EvaluationResult provided or available in state to interpret.")
+
+        effective_ctx = context or AgentContext(project_id=self.project_id)
+        agent_run_id = (effective_ctx.metadata.get("agent_run_id") if effective_ctx.metadata else None)
+
+        if eval_res.is_sufficient:
+            decision = GapResolutionDecision(
+                action=GapResolutionAction.PROCEED_TO_SECTION_GENERATION,
+                reasoning="Evaluation outcome is SUFFICIENT. Proceeding toward BRD section generation.",
+            )
+            log_trace_event(
+                logger,
+                agent_run_id=agent_run_id,
+                actor=TraceActor.LEAD_AGENT,
+                event_name="EVALUATION_INTERPRETED",
+                outcome="SUFFICIENT",
+                action=decision.action.value,
+            )
+            return decision
+
+        all_gaps = list(eval_res.missing_information) + list(eval_res.unresolved_information)
+        if not self.has_rag_capability:
+            q_text = f"Clarification needed on: {', '.join(all_gaps[:3])}" if all_gaps else "Please provide additional project specifications."
+            decision = GapResolutionDecision(
+                action=GapResolutionAction.ASK_USER,
+                clarification_question=q_text,
+                reasoning="RAG capability is not available. Missing information requires direct user clarification.",
+                identified_gaps=all_gaps,
+            )
+            log_trace_event(
+                logger,
+                agent_run_id=agent_run_id,
+                actor=TraceActor.LEAD_AGENT,
+                event_name="EVALUATION_INTERPRETED",
+                outcome="INSUFFICIENT",
+                action=decision.action.value,
+                reasoning=decision.reasoning,
+            )
+            return decision
+
+        if can_rag_resolve is not None:
+            if can_rag_resolve:
+                query = f"Retrieve specifications for: {', '.join(all_gaps[:3])}" if all_gaps else "Retrieve project requirements"
+                decision = GapResolutionDecision(
+                    action=GapResolutionAction.RAG,
+                    query=query,
+                    reasoning="Explicit RAG feasibility specified: RAG will retrieve missing evidence.",
+                    identified_gaps=all_gaps,
+                )
+            else:
+                q_text = f"Clarification needed on: {', '.join(all_gaps[:3])}" if all_gaps else "Please clarify missing project specifications."
+                decision = GapResolutionDecision(
+                    action=GapResolutionAction.ASK_USER,
+                    clarification_question=q_text,
+                    reasoning="Explicit RAG feasibility specified as False: User clarification required.",
+                    identified_gaps=all_gaps,
+                )
+            log_trace_event(
+                logger,
+                agent_run_id=agent_run_id,
+                actor=TraceActor.LEAD_AGENT,
+                event_name="EVALUATION_INTERPRETED",
+                outcome="INSUFFICIENT",
+                action=decision.action.value,
+            )
+            return decision
+
+        # Lead Agent analytical evaluation of gaps
+        user_centric_indicators = [
+            "user preference", "user confirmation", "stakeholder sign-off",
+            "budget approval", "confirm with user", "ask user",
+            "client preference", "pricing decision", "timeline agreement",
+            "sign-off", "approval", "budget", "pricing",
+        ]
+        has_user_gap = any(any(ind in g.lower() for ind in user_centric_indicators) for g in all_gaps)
+
+        if has_user_gap:
+            q_text = f"Clarification needed regarding: {', '.join(all_gaps[:3])}"
+            decision = GapResolutionDecision(
+                action=GapResolutionAction.ASK_USER,
+                clarification_question=q_text,
+                reasoning="Lead Agent determined that identified gaps require business sign-off or user decision.",
+                identified_gaps=all_gaps,
+            )
+        else:
+            rag_query = f"Retrieve requirements and specifications for: {', '.join(all_gaps[:3])}" if all_gaps else f"Retrieve project details for section {self._state.current_section or 'BRD'}"
+            decision = GapResolutionDecision(
+                action=GapResolutionAction.RAG,
+                query=rag_query,
+                reasoning="Lead Agent determined that identified gaps pertain to specifications discoverable via project documentation.",
+                identified_gaps=all_gaps,
+            )
+
+        log_trace_event(
+            logger,
+            agent_run_id=agent_run_id,
+            actor=TraceActor.LEAD_AGENT,
+            event_name="EVALUATION_INTERPRETED",
+            outcome="INSUFFICIENT",
+            action=decision.action.value,
+            reasoning=decision.reasoning,
+        )
+        return decision
+
+    async def interpret_evaluation_async(
+        self,
+        evaluation_result: Optional[EvaluationResult] = None,
+        objective: Optional[str] = None,
+        context: Optional[AgentContext] = None,
+        can_rag_resolve: Optional[bool] = None,
+        eval_result: Optional[EvaluationResult] = None,
+    ) -> GapResolutionDecision:
+        """Asynchronously interpret an EvaluationResult and decide the gap resolution strategy."""
+        return self.interpret_evaluation(
+            evaluation_result=evaluation_result,
+            objective=objective,
+            context=context,
+            can_rag_resolve=can_rag_resolve,
+            eval_result=eval_result,
+        )
 
     def decide_next_step(
         self,
@@ -2232,53 +2961,13 @@ class BRDLeadAgent:
     ) -> WorkflowDecision:
         """Decide the next workflow action based on an EvaluationResult.
 
-        Architectural Rule:
-        The Evaluation Sub-Agent evaluates. The BRD Lead Agent decides what happens next:
-        - If SUFFICIENT: Proceed toward BRD section generation.
-        - If INSUFFICIENT:
-            - If RAG can reasonably provide the missing information: execute RAG.
-            - If RAG cannot reasonably provide it: ask the user for clarification.
-
-        Args:
-            evaluation_result: Optional specific EvaluationResult to base the decision on.
-                Defaults to self.state.latest_evaluation_result.
-            can_rag_resolve: Optional explicit boolean flag indicating whether RAG can
-                resolve the gaps. If omitted, heuristic assessment is performed.
-
-        Returns:
-            WorkflowDecision: PROCEED_TO_SECTION_GENERATION, RAG, or ASK_USER.
-
-        Raises:
-            ValueError: If no EvaluationResult is provided or available in state.
+        Delegates to interpret_evaluation to preserve single source of intelligence.
         """
-        eval_res = evaluation_result or self._state.latest_evaluation_result
-        if eval_res is None:
-            raise ValueError(
-                "No EvaluationResult provided or available in state to decide next step."
-            )
-
-        if eval_res.is_sufficient:
-            logger.info("Evaluation outcome is SUFFICIENT -> Proceeding toward section generation")
-            return WorkflowDecision.PROCEED_TO_SECTION_GENERATION
-
-        logger.info("Evaluation outcome is INSUFFICIENT -> Assessing gap resolution path")
-
-        if not self.has_rag_capability:
-            logger.info("RAG capability not equipped -> Choosing ASK_USER")
-            return WorkflowDecision.ASK_USER
-
-        if can_rag_resolve is not None:
-            decision = WorkflowDecision.RAG if can_rag_resolve else WorkflowDecision.ASK_USER
-            logger.info("Explicit RAG feasibility provided -> Choosing %s", decision.value)
-            return decision
-
-        is_rag_feasible = self._can_rag_reasonably_provide(
-            missing_items=eval_res.missing_information,
-            unresolved_items=eval_res.unresolved_information,
+        gap_dec = self.interpret_evaluation(
+            evaluation_result=evaluation_result,
+            can_rag_resolve=can_rag_resolve,
         )
-        decision = WorkflowDecision.RAG if is_rag_feasible else WorkflowDecision.ASK_USER
-        logger.info("Lead Agent assessed gap feasibility -> Choosing %s", decision.value)
-        return decision
+        return gap_dec.decision
 
     def _can_rag_reasonably_provide(
         self,
@@ -2351,6 +3040,14 @@ class BRDLeadAgent:
         request = AgentRunRequest(input_text=query, context=effective_ctx)
         response = self.execute(request=request, context=effective_ctx)
 
+        if response.action_result and response.action_result.is_rag and response.action_result.content:
+            self._state.add_evidence({
+                "source": ActionSource.RAG.value,
+                "query": query,
+                "content": response.action_result.content,
+                "is_authoritative": True,
+            })
+
         eval_result = None
         if evaluate_after and response.action_result:
             eval_result = self.evaluate(
@@ -2359,6 +3056,204 @@ class BRDLeadAgent:
             )
 
         return response, eval_result
+
+    def construct_section_retrieval_query(
+        self,
+        section: str,
+        requirements: Optional[Sequence[str]] = None,
+        context: Optional[AgentContext] = None,
+    ) -> str:
+        """Construct a section-aware RAG search query driven by the section's specific requirements.
+
+        Enforces DEF-008:
+        Different BRD sections have different information needs. The query incorporates
+        the current section name and its authoritative template requirements.
+        """
+        sec_reqs = (
+            list(requirements)
+            if requirements is not None
+            else extract_section_requirements(section, self._template)
+        )
+        if sec_reqs:
+            clean_reqs = [re.sub(r"^[0-9\.\-\*\s]+", "", r).strip() for r in sec_reqs if r.strip()]
+            req_summary = "; ".join(clean_reqs[:3])
+            return f"Section: {section}. Requirements: {req_summary}"
+        return f"Project requirements, specifications, and architecture for {section}"
+
+    def construct_section_rework_query(
+        self,
+        section: str,
+        missing_items: Sequence[str],
+        context: Optional[AgentContext] = None,
+    ) -> str:
+        """Construct a targeted RAG retrieval query to recover missing information for section rework.
+
+        Enforces DEF-010:
+        Recovers missing information by querying the project knowledge base for the
+        specific gaps identified during validation.
+        """
+        clean_items = [re.sub(r"^[0-9\.\-\*\s]+", "", it).strip() for it in missing_items if it.strip()]
+        topic_summary = "; ".join(clean_items[:3])
+        return f"Section: {section}. Missing information: {topic_summary}"
+
+    async def retrieve_section_evidence_async(
+        self,
+        section: Optional[str] = None,
+        query: Optional[str | Sequence[str]] = None,
+        requirements: Optional[Sequence[str]] = None,
+        context: Optional[AgentContext] = None,
+        **kwargs: Any,
+    ) -> Optional[str]:
+        """Execute project-scoped RAG retrieval for a specific BRD section and store authoritative evidence.
+
+        Preserves project boundary isolation by passing project_id via runtime AgentContext.
+        Adds retrieved knowledge to state.evidence with source='rag' and is_authoritative=True.
+        """
+        if not self.has_rag_capability:
+            logger.info("Skipping section retrieval for '%s': RAG capability not equipped.", section)
+            return None
+
+        target_sec = section or kwargs.get("section_name") or self._state.current_section or "BRD Section"
+        effective_ctx = context or AgentContext(project_id=self.project_id)
+        if effective_ctx.project_id:
+            self._state.metadata["project_id"] = effective_ctx.project_id
+
+        # Skip RAG for administrative sections (mechanics and administrative metadata do not require RAG)
+        if is_administrative_section(target_sec):
+            logger.info("Skipping RAG retrieval for administrative section '%s' (mechanics and administrative metadata do not require RAG).", target_sec)
+            return None
+
+        if isinstance(query, (list, tuple)):
+            search_query = self.construct_section_retrieval_query(
+                section=target_sec,
+                requirements=query,
+                context=effective_ctx,
+            )
+        elif query:
+            search_query = str(query)
+        elif requirements:
+            search_query = self.construct_section_retrieval_query(
+                section=target_sec,
+                requirements=requirements,
+                context=effective_ctx,
+            )
+        else:
+            search_query = self.construct_section_retrieval_query(
+                section=target_sec,
+                context=effective_ctx,
+            )
+
+        # Avoid executing identical retrieval query repeatedly during rework
+        executed_queries = self._state.metadata.setdefault("executed_rag_queries", {})
+        if search_query in executed_queries:
+            logger.info("Skipping duplicate RAG query for '%s': already executed (%s)", target_sec, search_query)
+            return executed_queries[search_query]
+
+        agent_run_id = (effective_ctx.metadata.get("agent_run_id") if effective_ctx.metadata else None)
+        log_trace_event(
+            logger,
+            agent_run_id=agent_run_id,
+            actor=TraceActor.TOOL,
+            event_name="SECTION_RAG_RETRIEVAL_STARTED",
+            section=target_sec,
+            query=search_query,
+        )
+
+        rag_tool = next((t for t in self._tools if getattr(t, "name", "") == "search_project_knowledge"), None)
+        if rag_tool is None:
+            return None
+
+        token = set_current_agent_context(effective_ctx)
+        try:
+            if hasattr(rag_tool, "ainvoke"):
+                result_str = await rag_tool.ainvoke({"query": search_query})
+            else:
+                result_str = rag_tool.invoke({"query": search_query})
+        finally:
+            reset_current_agent_context(token)
+
+        if not result_str or not isinstance(result_str, str):
+            return None
+
+        executed_queries[search_query] = result_str
+
+        if "[RETRIEVAL_SUCCESS]" in result_str:
+            evidence_item = {
+                "source": ActionSource.RAG.value,
+                "section": target_sec,
+                "query": search_query,
+                "content": result_str,
+                "is_authoritative": True,
+            }
+            self._state.add_evidence(evidence_item)
+            log_trace_event(
+                logger,
+                agent_run_id=agent_run_id,
+                actor=TraceActor.TOOL,
+                event_name="SECTION_RAG_RETRIEVAL_COMPLETED",
+                section=target_sec,
+                success=True,
+            )
+            return result_str
+        elif "[NO_EVIDENCE]" in result_str:
+            log_trace_event(
+                logger,
+                agent_run_id=agent_run_id,
+                actor=TraceActor.TOOL,
+                event_name="SECTION_RAG_RETRIEVAL_NO_EVIDENCE",
+                section=target_sec,
+            )
+            return None
+        else:
+            log_trace_event(
+                logger,
+                agent_run_id=agent_run_id,
+                actor=TraceActor.TOOL,
+                event_name="SECTION_RAG_RETRIEVAL_FAILED",
+                section=target_sec,
+                result=result_str,
+            )
+            return None
+
+    def retrieve_section_evidence(
+        self,
+        section: Optional[str] = None,
+        query: Optional[str | Sequence[str]] = None,
+        requirements: Optional[Sequence[str]] = None,
+        context: Optional[AgentContext] = None,
+        **kwargs: Any,
+    ) -> Optional[str]:
+        """Synchronous execution of section-specific RAG retrieval."""
+        import asyncio
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+
+        if loop.is_running():
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                return pool.submit(
+                    asyncio.run,
+                    self.retrieve_section_evidence_async(
+                        section=section,
+                        query=query,
+                        requirements=requirements,
+                        context=context,
+                        **kwargs,
+                    ),
+                ).result()
+        else:
+            return loop.run_until_complete(
+                self.retrieve_section_evidence_async(
+                    section=section,
+                    query=query,
+                    requirements=requirements,
+                    context=context,
+                    **kwargs,
+                )
+            )
 
     def receive_user_clarification(
         self,
@@ -2378,6 +3273,14 @@ class BRDLeadAgent:
         if effective_ctx.project_id:
             self._state.metadata["project_id"] = effective_ctx.project_id
 
+        clarification_res = ActionResult(
+            source="user_clarification",
+            content=answer,
+            success=True,
+            metadata={"resolved_item": resolved_item},
+        )
+        self._state.set_action_result(clarification_res)
+
         self._state.add_evidence({
             "source": "user_clarification",
             "content": answer,
@@ -2386,6 +3289,8 @@ class BRDLeadAgent:
 
         if resolved_item:
             self._state.resolve_unresolved(resolved_item)
+
+        self._state.clear_waiting_for_user()
 
     def generate_section(
         self,
@@ -2443,13 +3348,25 @@ class BRDLeadAgent:
             info_payload = available_information
         else:
             info_parts: list[Any] = []
-            if self._state.latest_action_result and self._state.latest_action_result.content:
-                info_parts.append({
-                    "source": str(self._state.latest_action_result.source),
-                    "content": self._state.latest_action_result.content,
-                })
             if self._state.evidence:
                 info_parts.extend(self._state.evidence)
+            if self._state.latest_action_result and self._state.latest_action_result.content:
+                if self._state.latest_action_result.is_rag:
+                    info_parts.append({
+                        "source": ActionSource.RAG.value,
+                        "content": self._state.latest_action_result.content,
+                    })
+                elif self._state.latest_action_result.is_direct_work:
+                    info_parts.append({
+                        "source": "agent_analysis",
+                        "content": self._state.latest_action_result.content,
+                    })
+            if self._state.agent_work:
+                for w in self._state.agent_work[-2:]:
+                    info_parts.append({
+                        "source": "agent_analysis",
+                        "content": w.get("content") if isinstance(w, dict) else getattr(w, "content", str(w)),
+                    })
             if self._state.task_results:
                 for tr in self._state.task_results:
                     info_parts.append({
@@ -2489,6 +3406,12 @@ class BRDLeadAgent:
             operation=op,
             metadata={
                 "project_id": effective_ctx.project_id or self._state.metadata.get("project_id"),
+                "project_name": getattr(effective_ctx, "project_name", None) or self._state.metadata.get("project_name"),
+                "project_description": getattr(effective_ctx, "project_description", None) or self._state.metadata.get("project_description"),
+                "available_documents": getattr(effective_ctx, "available_documents", None) or self._state.metadata.get("available_documents"),
+                "document_version": self.resolve_document_version(),
+                "document_date": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+                "question_id_prefix": "Q-BRD-",
             },
         )
 
@@ -2532,13 +3455,25 @@ class BRDLeadAgent:
             info_payload = available_information
         else:
             info_parts: list[Any] = []
-            if self._state.latest_action_result and self._state.latest_action_result.content:
-                info_parts.append({
-                    "source": str(self._state.latest_action_result.source),
-                    "content": self._state.latest_action_result.content,
-                })
             if self._state.evidence:
                 info_parts.extend(self._state.evidence)
+            if self._state.latest_action_result and self._state.latest_action_result.content:
+                if self._state.latest_action_result.is_rag:
+                    info_parts.append({
+                        "source": ActionSource.RAG.value,
+                        "content": self._state.latest_action_result.content,
+                    })
+                elif self._state.latest_action_result.is_direct_work:
+                    info_parts.append({
+                        "source": "agent_analysis",
+                        "content": self._state.latest_action_result.content,
+                    })
+            if self._state.agent_work:
+                for w in self._state.agent_work[-2:]:
+                    info_parts.append({
+                        "source": "agent_analysis",
+                        "content": w.get("content") if isinstance(w, dict) else getattr(w, "content", str(w)),
+                    })
             if self._state.task_results:
                 for tr in self._state.task_results:
                     info_parts.append({
@@ -2578,6 +3513,12 @@ class BRDLeadAgent:
             operation=op,
             metadata={
                 "project_id": effective_ctx.project_id or self._state.metadata.get("project_id"),
+                "project_name": getattr(effective_ctx, "project_name", None) or self._state.metadata.get("project_name"),
+                "project_description": getattr(effective_ctx, "project_description", None) or self._state.metadata.get("project_description"),
+                "available_documents": getattr(effective_ctx, "available_documents", None) or self._state.metadata.get("available_documents"),
+                "document_version": self.resolve_document_version(),
+                "document_date": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+                "question_id_prefix": "Q-BRD-",
             },
         )
 
@@ -2699,20 +3640,14 @@ class BRDLeadAgent:
             info_payload = available_information
         else:
             info_parts: list[Any] = []
-            if self._state.latest_action_result and self._state.latest_action_result.content:
-                info_parts.append({
-                    "source": str(self._state.latest_action_result.source),
-                    "content": self._state.latest_action_result.content,
-                })
             if self._state.evidence:
                 info_parts.extend(self._state.evidence)
-            if self._state.task_results:
-                for tr in self._state.task_results:
-                    info_parts.append({
-                        "source": f"delegated_task:{tr.task_id}",
-                        "content": tr.output,
-                    })
-            info_payload = info_parts if info_parts else "*(No prior evidence collected)*"
+            if self._state.latest_action_result and self._state.latest_action_result.is_rag and self._state.latest_action_result.content:
+                info_parts.append({
+                    "source": ActionSource.RAG.value,
+                    "content": self._state.latest_action_result.content,
+                })
+            info_payload = info_parts if info_parts else "*(No prior project evidence collected)*"
 
         resolved_prior_rework = (
             prior_rework_feedback
@@ -2733,6 +3668,8 @@ class BRDLeadAgent:
             prior_rework_feedback=resolved_prior_rework,
             metadata={
                 "project_id": effective_ctx.project_id or self._state.metadata.get("project_id"),
+                "project_name": getattr(effective_ctx, "project_name", None) or self._state.metadata.get("project_name"),
+                "project_description": getattr(effective_ctx, "project_description", None) or self._state.metadata.get("project_description"),
             },
         )
 
@@ -2802,20 +3739,14 @@ class BRDLeadAgent:
             info_payload = available_information
         else:
             info_parts: list[Any] = []
-            if self._state.latest_action_result and self._state.latest_action_result.content:
-                info_parts.append({
-                    "source": str(self._state.latest_action_result.source),
-                    "content": self._state.latest_action_result.content,
-                })
             if self._state.evidence:
                 info_parts.extend(self._state.evidence)
-            if self._state.task_results:
-                for tr in self._state.task_results:
-                    info_parts.append({
-                        "source": f"delegated_task:{tr.task_id}",
-                        "content": tr.output,
-                    })
-            info_payload = info_parts if info_parts else "*(No prior evidence collected)*"
+            if self._state.latest_action_result and self._state.latest_action_result.is_rag and self._state.latest_action_result.content:
+                info_parts.append({
+                    "source": ActionSource.RAG.value,
+                    "content": self._state.latest_action_result.content,
+                })
+            info_payload = info_parts if info_parts else "*(No prior project evidence collected)*"
 
         resolved_prior_rework = (
             prior_rework_feedback
@@ -2836,6 +3767,8 @@ class BRDLeadAgent:
             prior_rework_feedback=resolved_prior_rework,
             metadata={
                 "project_id": effective_ctx.project_id or self._state.metadata.get("project_id"),
+                "project_name": getattr(effective_ctx, "project_name", None) or self._state.metadata.get("project_name"),
+                "project_description": getattr(effective_ctx, "project_description", None) or self._state.metadata.get("project_description"),
             },
         )
 
@@ -2857,6 +3790,386 @@ class BRDLeadAgent:
             )
 
         return result
+
+    def construct_section_clarification_question(
+        self,
+        section_name: str,
+        validation_result: Optional[ValidationResult] = None,
+        missing_items: Optional[Sequence[str]] = None,
+    ) -> str:
+        """Construct a targeted, domain-specific clarification question for an evidence gap.
+
+        Follows DEF-011 policy: communicates clearly what project/business information
+        is missing from available evidence without exposing internal prompt or implementation details.
+        """
+        items = list(missing_items or [])
+        findings = validation_result.findings if validation_result else []
+
+        details: list[str] = []
+        for f in findings:
+            cat_val = f.category.value if hasattr(f.category, "value") else str(f.category)
+            if cat_val in {
+                ValidationCategory.GROUNDING.value,
+                ValidationCategory.COMPLETENESS.value,
+                ValidationCategory.REQUIREMENT_COVERAGE.value,
+            }:
+                desc = getattr(f, "issue", None) or getattr(f, "explanation", None) or getattr(f, "required_change", None)
+                if desc and desc not in details:
+                    details.append(desc)
+
+        if not details and items:
+            details = items
+
+        if details:
+            specifics = "; ".join(details[:3])
+            return (
+                f"The \"{section_name}\" section could not be completed because required project/business information "
+                f"is missing from the available documentation: {specifics}.\n\n"
+                f"Please provide clarification or specific details for {section_name} so we can complete this section."
+            )
+        return (
+            f"The \"{section_name}\" section could not be completed because required project specifications "
+            f"are missing from the available evidence.\n\n"
+            f"Please provide the necessary business rules and requirements for {section_name}."
+        )
+
+    def resolve_document_version(self) -> str:
+        """Determine document version deterministically:
+        - New BRD -> 1.0
+        - Existing BRD update -> increment minor version (e.g. 1.0 -> 1.1)
+        """
+        existing_version = self._state.metadata.get("document_version")
+        if not existing_version:
+            assembled_doc = getattr(self._state, "assembled_brd", None) or getattr(self._state, "assembled_document", None) or self._state.metadata.get("existing_brd_content")
+            if assembled_doc:
+                match = re.search(r"Version\s*[:\s|]\s*v?(\d+\.\d+)", assembled_doc, re.IGNORECASE)
+                if match:
+                    existing_version = match.group(1)
+        if existing_version:
+            try:
+                parts = existing_version.split(".")
+                major = int(parts[0])
+                minor = int(parts[1]) if len(parts) > 1 else 0
+                new_version = f"{major}.{minor + 1}"
+                self._state.metadata["document_version"] = new_version
+                return new_version
+            except Exception:
+                pass
+        self._state.metadata["document_version"] = "1.0"
+        return "1.0"
+
+    def _ingest_user_conversation_evidence(
+        self,
+        input_prompt: Optional[str],
+        prior_messages: Optional[Sequence[Any]] = None,
+    ) -> None:
+        """Extract authoritative user conversation statements into working evidence.
+
+        Strict Provenance Rules:
+        - User messages become evidence with source='user_conversation', role='user', is_authoritative=True.
+        - Assistant messages are NEVER added as authoritative evidence (prevents model-echo loops).
+        - Evidence items are deduplicated by (content, source) via state.add_evidence.
+        """
+        if prior_messages:
+            for msg in prior_messages:
+                role = None
+                content = None
+                if isinstance(msg, HumanMessage):
+                    role = "user"
+                    content = msg.content
+                elif isinstance(msg, AIMessage):
+                    role = "assistant"
+                    content = msg.content
+                elif isinstance(msg, dict):
+                    role = msg.get("role") or msg.get("sender") or msg.get("type")
+                    content = msg.get("content") or msg.get("text")
+                elif isinstance(msg, (list, tuple)) and len(msg) >= 2:
+                    role = str(msg[0])
+                    content = str(msg[1])
+                elif hasattr(msg, "role") and hasattr(msg, "content"):
+                    role = getattr(msg, "role")
+                    content = getattr(msg, "content")
+
+                # Authoritative user evidence ONLY
+                if role in ("user", "human") and content:
+                    content_str = str(content).strip()
+                    if content_str:
+                        self._state.add_evidence({
+                            "source": "user_conversation",
+                            "role": "user",
+                            "content": content_str,
+                            "is_authoritative": True,
+                        })
+
+        if input_prompt and isinstance(input_prompt, str) and input_prompt.strip():
+            self._state.add_evidence({
+                "source": "user_conversation",
+                "role": "user",
+                "content": input_prompt.strip(),
+                "is_authoritative": True,
+            })
+
+    def construct_consolidated_clarification_question(
+        self,
+        unresolved_items: Sequence[str],
+    ) -> str:
+        """Construct a consolidated clarification question grouping genuine unresolved business/technical gaps."""
+        deduped: list[str] = []
+        seen: set[str] = set()
+        for item in unresolved_items:
+            clean = str(item).strip().rstrip(".")
+            if not clean:
+                continue
+            if is_metadata_or_role_item(clean):
+                continue
+            if clean.lower() not in seen:
+                seen.add(clean.lower())
+                deduped.append(clean)
+
+        if not deduped:
+            return "Please provide any additional business or technical requirements to complete the BRD."
+
+        lines = [
+            "Before I finalize the BRD, I need clarification on the following items:\n",
+        ]
+        for i, item in enumerate(deduped, 1):
+            if not item.endswith("?"):
+                lines.append(f"{i}. Please clarify the requirement or specification for: {item}")
+            else:
+                lines.append(f"{i}. {item}")
+
+        return "\n".join(lines)
+
+    def _format_section_failure_diagnostic(
+        self,
+        section_name: str,
+        failure_category: SectionFailureCategory | str,
+        validation_result: Optional[ValidationResult] = None,
+        completed_sections: Optional[list[str]] = None,
+    ) -> tuple[dict[str, Any], str]:
+        """Format structured diagnostic dictionary and user-facing diagnostic text for section rework failure."""
+        cat_str = (
+            failure_category.value
+            if isinstance(failure_category, SectionFailureCategory)
+            else str(failure_category)
+        )
+        completed = completed_sections if completed_sections is not None else [
+            sec for sec in self.sections if self._state.get_section_status(sec) == BRDSectionStatus.COMPLETED
+        ]
+        findings_data = []
+        findings_bullets = []
+        if validation_result and validation_result.findings:
+            for f in validation_result.findings:
+                c_val = f.category.value if hasattr(f.category, "value") else str(f.category)
+                sev = getattr(f, "severity", None)
+                sev_str = sev.value if hasattr(sev, "value") else (str(sev) if sev is not None else "high")
+                findings_data.append({
+                    "category": c_val,
+                    "issue": f.issue,
+                    "explanation": f.explanation,
+                    "required_change": f.required_change,
+                    "severity": sev_str,
+                })
+                findings_bullets.append(f"- [{c_val}] {f.issue}: {f.explanation}")
+
+        findings_text = "\n".join(findings_bullets) if findings_bullets else "- No specific findings reported."
+
+        diagnostics = {
+            "status": "failed",
+            "reason": "rework_exhausted",
+            "failure_category": cat_str,
+            "section": section_name,
+            "completed_sections": completed,
+            "validation_findings": findings_data,
+            "section_status": (
+                self._state.get_section_status(section_name).value
+                if self._state.get_section_status(section_name)
+                else "needs_revision"
+            ),
+        }
+
+        output_text = (
+            f"BRD workflow halted: not all template sections could be completed. "
+            f"Section '{section_name}' failed validation after rework was exhausted due to {cat_str.replace('_', ' ')} issues.\n"
+            f"Completed sections ({len(completed)}/{len(self.sections)}): {', '.join(completed) if completed else 'None'}.\n"
+            f"Validation findings:\n{findings_text}"
+        )
+        return diagnostics, output_text
+
+    def interpret_section_validation(
+        self,
+        validation_result: Optional[ValidationResult] = None,
+        section_name: Optional[str] = None,
+        context: Optional[AgentContext] = None,
+        current_content: Optional[str] = None,
+        rework_attempt: int = 1,
+    ) -> SectionReworkStrategy:
+        """Intelligently interpret section validation findings and formulate rework strategy.
+
+        Responsibilities:
+        - Sub-agent validates section against requirements and returns ValidationResult.
+        - Lead Agent interprets the findings and determines the rework strategy:
+          * Identifies whether rework is required.
+          * Formulates actionable rework guidance.
+          * Specifies targeted adjustments to content.
+          * Classifies unresolved failures into approved DEF-011 categories:
+            EVIDENCE_GAP, GENERATION_QUALITY, TEMPLATE_CONFIGURATION.
+        - Application enforces the deterministic retry limit (max 2 attempts) and executes updates.
+        """
+        # Handle if section_name and validation_result were passed inverted as positional arguments
+        if isinstance(validation_result, str) and (section_name is None or isinstance(section_name, ValidationResult)):
+            validation_result, section_name = section_name, validation_result
+
+        target_sec = section_name or self._state.current_section or "Current Section"
+        effective_ctx = context or AgentContext(project_id=self.project_id)
+        agent_run_id = (effective_ctx.metadata.get("agent_run_id") if effective_ctx.metadata else None)
+
+        val_res = validation_result or self._state.get_section_validation_result(target_sec)
+        if val_res is None:
+            raise ValueError(f"No validation result available for section '{target_sec}' to interpret.")
+
+        if val_res.is_valid:
+            strategy = SectionReworkStrategy(
+                section_name=target_sec,
+                requires_rework=False,
+                reasoning=f"Section '{target_sec}' satisfies all validation requirements.",
+            )
+        else:
+            guidance = val_res.rework_feedback or f"Address validation findings for {target_sec}."
+            specific_adjs = [
+                (getattr(f, "required_change", None) or getattr(f, "issue", None) or getattr(f, "observation", str(f)))
+                for f in val_res.findings
+            ]
+
+            # Filter benign administrative metadata and documentation-quality findings
+            substantive_findings = [
+                f for f in val_res.findings
+                if not is_benign_administrative_metadata_finding(f, target_sec)
+                and not is_documentation_quality_finding(f, target_sec)
+            ]
+
+            if not substantive_findings:
+                strategy = SectionReworkStrategy(
+                    section_name=target_sec,
+                    requires_rework=False,
+                    reasoning=f"Section '{target_sec}' satisfies requirements (documentation observations and administrative placeholders are accepted).",
+                )
+                return strategy
+
+            # DEF-011: Classification of Unresolved Problem
+            template_findings = []
+            for f in substantive_findings:
+                cat_val = f.category.value if hasattr(f.category, "value") else str(f.category)
+                issue_lower = (f.issue or "").lower()
+                expl_lower = (f.explanation or "").lower()
+                if (
+                    cat_val == ValidationCategory.TEMPLATE_COMPLIANCE.value
+                    or "contradict" in issue_lower
+                    or "contradict" in expl_lower
+                    or "template constraint" in issue_lower
+                    or "configuration" in issue_lower
+                    or "structural inconsistency" in issue_lower
+                ):
+                    template_findings.append(f)
+
+            evidence_gap_categories = {
+                ValidationCategory.GROUNDING.value,
+                ValidationCategory.COMPLETENESS.value,
+                ValidationCategory.REQUIREMENT_COVERAGE.value,
+            }
+            evidence_gap_findings = []
+            for f in substantive_findings:
+                cat_val = f.category.value if hasattr(f.category, "value") else str(f.category)
+                issue_lower = (f.issue or "").lower()
+                expl_lower = (f.explanation or "").lower()
+                if cat_val in evidence_gap_categories:
+                    if any(w in issue_lower or w in expl_lower for w in ["missing", "not found", "ungrounded", "unverified", "evidence", "specify", "unknown", "lack of", "absent", "gap"]):
+                        evidence_gap_findings.append(f)
+                    elif cat_val == ValidationCategory.GROUNDING.value:
+                        evidence_gap_findings.append(f)
+
+            requires_retrieval = False
+            retrieval_query = None
+            missing_items: list[str] = []
+            clarification_question = None
+
+            if template_findings and not evidence_gap_findings:
+                failure_category = SectionFailureCategory.TEMPLATE_CONFIGURATION
+                reasoning = (
+                    f"Section '{target_sec}' validation identified template or configuration contradictions: "
+                    f"{', '.join(getattr(f, 'issue', str(f)) for f in template_findings[:2])}."
+                )
+            elif evidence_gap_findings:
+                failure_category = SectionFailureCategory.EVIDENCE_GAP
+                missing_items = [
+                    (getattr(f, "issue", None) or getattr(f, "required_change", str(f)))
+                    for f in evidence_gap_findings
+                ]
+                clarification_question = self.construct_section_clarification_question(
+                    section_name=target_sec,
+                    validation_result=val_res,
+                    missing_items=missing_items,
+                )
+                if self.has_rag_capability:
+                    requires_retrieval = True
+                    retrieval_query = self.construct_section_rework_query(
+                        section=target_sec,
+                        missing_items=missing_items,
+                        context=effective_ctx,
+                    )
+                    reasoning = (
+                        f"Section '{target_sec}' validation identified missing or ungrounded information. "
+                        f"Rework required with targeted RAG retrieval for: {', '.join(missing_items[:2])}."
+                    )
+                else:
+                    reasoning = (
+                        f"Section '{target_sec}' validation identified evidence gap: {', '.join(missing_items[:2])}. "
+                        f"Direct user clarification will be required if rework cannot be resolved."
+                    )
+            else:
+                failure_category = SectionFailureCategory.GENERATION_QUALITY
+                reasoning = f"Section '{target_sec}' validation status is {val_res.outcome.value}. Rework required for writing/compliance."
+
+            strategy = SectionReworkStrategy(
+                section_name=target_sec,
+                requires_rework=True,
+                rework_guidance=guidance,
+                specific_adjustments=specific_adjs,
+                reasoning=reasoning,
+                requires_retrieval=requires_retrieval,
+                retrieval_query=retrieval_query,
+                missing_evidence_items=missing_items,
+                failure_category=failure_category,
+                clarification_question=clarification_question,
+            )
+
+        log_trace_event(
+            logger,
+            agent_run_id=agent_run_id,
+            actor=TraceActor.LEAD_AGENT,
+            event_name="SECTION_VALIDATION_INTERPRETED",
+            section=target_sec,
+            requires_rework=strategy.requires_rework,
+            failure_category=strategy.failure_category.value if strategy.failure_category else None,
+        )
+        return strategy
+
+    async def interpret_section_validation_async(
+        self,
+        validation_result: Optional[ValidationResult] = None,
+        section_name: Optional[str] = None,
+        context: Optional[AgentContext] = None,
+        current_content: Optional[str] = None,
+        rework_attempt: int = 1,
+    ) -> SectionReworkStrategy:
+        """Asynchronously interpret section validation findings and formulate rework strategy."""
+        return self.interpret_section_validation(
+            validation_result=validation_result,
+            section_name=section_name,
+            context=context,
+            current_content=current_content,
+            rework_attempt=rework_attempt,
+        )
 
     def generate_and_validate_section(
         self,
@@ -3183,6 +4496,1292 @@ class BRDLeadAgent:
                     await self.validate_final_brd_async(context=context)
 
         return results
+
+    async def run_workflow_async(
+        self,
+        request: Optional[AgentRunRequest | str] = None,
+        context: Optional[AgentContext] = None,
+        objective: Optional[str] = None,
+        current_task: Optional[str] = None,
+        max_section_rework_attempts: int = 2,
+        max_recovery_cycles: int = MAX_FINAL_VALIDATION_RECOVERY_CYCLES,
+        initial_state: Optional[BRDAgentState] = None,
+        prior_messages: Optional[Sequence[Any]] = None,
+        consolidate_clarification: bool = False,
+    ) -> AgentRunResponse:
+        """Execute the Application-Owned BRD Workflow lifecycle asynchronously.
+
+        The application owns and enforces the 9-phase workflow sequence, gates, and bounded loops:
+        - Phase 1: Context & Objective Initialization
+        - Phase 2: Action Decision (Lead Agent Intelligence)
+        - Phase 3: Action Execution (Application executes RAG, Direct Work, or Delegation)
+        - Phase 4: Evidence Evaluation (Evaluation Sub-Agent) & Interpretation (Lead Agent)
+        - Phase 5: Section Iteration Loop (Sequential processing with Max 2 Reworks & Progression Gate)
+        - Phase 6: Document Assembly Gate (Assembly only when all sections complete)
+        - Phase 7: Final Validation (Final Validation Sub-Agent)
+        - Phase 8: Final Validation Interpretation (Lead Agent) & Recovery (Max 3 Cycles)
+        - Phase 9: Workflow Completion & Normalized Response
+        """
+        effective_ctx = request.context if isinstance(request, AgentRunRequest) else context
+        if effective_ctx is None:
+            effective_ctx = AgentContext(project_id=self.project_id)
+        elif not effective_ctx.project_id and self.project_id:
+            effective_ctx = AgentContext(
+                project_id=self.project_id,
+                conversation_id=effective_ctx.conversation_id,
+                user_id=effective_ctx.user_id,
+                project_name=getattr(effective_ctx, "project_name", None),
+                project_description=getattr(effective_ctx, "project_description", None),
+                available_documents=list(getattr(effective_ctx, "available_documents", [])),
+                metadata=effective_ctx.metadata,
+            )
+
+        if initial_state is not None:
+            self._state = initial_state
+        elif isinstance(request, AgentRunRequest) and request.state is not None:
+            if isinstance(request.state, BRDAgentState):
+                self._state = request.state
+            elif isinstance(request.state, dict):
+                self._state = BRDAgentState.from_dict(request.state)
+        elif (
+            effective_ctx and (
+                (self._state.metadata.get("conversation_id") and effective_ctx.conversation_id and self._state.metadata.get("conversation_id") != effective_ctx.conversation_id)
+                or (self._state.metadata.get("project_id") and effective_ctx.project_id and self._state.metadata.get("project_id") != effective_ctx.project_id)
+            )
+        ):
+            # Guard against cross-conversation and cross-project state pollution if an agent instance is reused
+            self._state = BRDAgentState.initialize_from_template(sections=self.sections)
+
+        agent_run_id = (effective_ctx.metadata.get("agent_run_id") if effective_ctx.metadata else None) or str(uuid.uuid4())
+        if effective_ctx.metadata is not None:
+            effective_ctx.metadata["agent_run_id"] = agent_run_id
+        if effective_ctx.project_id:
+            self._state.metadata["project_id"] = effective_ctx.project_id
+        if effective_ctx.conversation_id:
+            self._state.metadata["conversation_id"] = effective_ctx.conversation_id
+        if getattr(effective_ctx, "project_name", None):
+            self._state.metadata["project_name"] = effective_ctx.project_name
+        if getattr(effective_ctx, "project_description", None):
+            self._state.metadata["project_description"] = effective_ctx.project_description
+        if getattr(effective_ctx, "available_documents", None):
+            self._state.metadata["available_documents"] = list(effective_ctx.available_documents)
+
+        input_prompt = request.input_text if isinstance(request, AgentRunRequest) else (str(request) if request is not None else None)
+        self._ingest_user_conversation_evidence(input_prompt=input_prompt, prior_messages=prior_messages)
+
+        effective_consolidate = consolidate_clarification or bool(self._state.metadata.get("consolidate_clarification", False))
+        is_consolidated_resume = bool(self._state.metadata.pop("pending_consolidated_clarification", None))
+        is_resuming = (
+            self._state.is_waiting_for_user
+            or bool(self._state.pending_clarification)
+            or bool(self._state.metadata.get("pending_clarification_section"))
+            or is_consolidated_resume
+        )
+        if (is_resuming or (self._state.current_section and not self.is_section_processing_complete)) and self._state.objective:
+            effective_obj = objective or self._state.objective
+        else:
+            effective_obj = objective or input_prompt or self._state.objective or "Generate Business Requirements Document"
+        self._state.objective = effective_obj
+
+        if current_task is not None:
+            self._state.current_task = current_task
+
+        # DEF-013: Fail explicitly if RAG capability is unavailable for grounded BRD generation
+        if not self.has_rag_capability:
+            logger.error(
+                "BRD workflow aborted: RAG capability is unavailable. Grounded BRD generation requires project knowledge retrieval."
+            )
+            return AgentRunResponse(
+                output_text="Error: Project knowledge retrieval (RAG) is unavailable. Grounded BRD generation cannot proceed without access to project documentation.",
+                context=effective_ctx,
+                state=self._state,
+                success=False,
+                error="RAG capability unavailable for grounded BRD generation",
+            )
+
+        is_section_resume = False
+        if is_consolidated_resume:
+            log_trace_event(
+                logger,
+                agent_run_id=agent_run_id,
+                actor=TraceActor.APPLICATION,
+                event_name="WORKFLOW_RESUMING_FROM_CONSOLIDATED_CLARIFICATION",
+            )
+            if input_prompt:
+                self.receive_user_clarification(
+                    answer=input_prompt,
+                    context=effective_ctx,
+                )
+            unresolved_gaps = self._state.metadata.pop("unresolved_section_gaps", {})
+            for sec in unresolved_gaps:
+                existing = self._state.get_section_content(sec)
+                update_res = await self.update_section_async(
+                    section=sec,
+                    rework_feedback=f"Incorporate user clarification: {input_prompt}",
+                    existing_content=existing,
+                    context=effective_ctx,
+                )
+                if update_res.content:
+                    self._state.set_section_content(sec, update_res.content)
+                val_res = await self.validate_section_async(
+                    section=sec,
+                    section_content=update_res.content or existing or "",
+                    context=effective_ctx,
+                )
+                self._state.update_section_status(sec, BRDSectionStatus.COMPLETED)
+            self._state.unresolved_information.clear()
+            self._state.clear_waiting_for_user()
+        elif is_resuming:
+            # Resuming controlled BRD workflow after user clarification
+            pending_q = self._state.pending_clarification
+            pending_sec = self._state.metadata.pop("pending_clarification_section", None)
+            log_trace_event(
+                logger,
+                agent_run_id=agent_run_id,
+                actor=TraceActor.APPLICATION,
+                event_name="WORKFLOW_RESUMING_FROM_CLARIFICATION",
+                resolved_item=pending_q,
+                section=pending_sec,
+            )
+            if input_prompt:
+                self.receive_user_clarification(
+                    answer=input_prompt,
+                    resolved_item=pending_q,
+                    context=effective_ctx,
+                )
+            if pending_sec:
+                self._state.set_current_section(pending_sec)
+                is_section_resume = True
+            elif self._state.current_section and not self.is_section_processing_complete:
+                is_section_resume = True
+
+        if is_section_resume:
+            log_trace_event(
+                logger,
+                agent_run_id=agent_run_id,
+                actor=TraceActor.APPLICATION,
+                event_name="WORKFLOW_RESUMED_AT_SECTION",
+                section=self._state.current_section,
+                objective=effective_obj,
+            )
+        else:
+            if not is_resuming:
+                # Phase 1: Initial Context & Objective
+                log_trace_event(
+                    logger,
+                    agent_run_id=agent_run_id,
+                    actor=TraceActor.APPLICATION,
+                    event_name="WORKFLOW_PHASE_STARTED",
+                    phase="1_INITIAL_CONTEXT",
+                    objective=effective_obj,
+                )
+
+                # Phase 2: Action Decision (Lead Agent Intelligence)
+                log_trace_event(
+                    logger,
+                    agent_run_id=agent_run_id,
+                    actor=TraceActor.APPLICATION,
+                    event_name="WORKFLOW_PHASE_STARTED",
+                    phase="2_ACTION_DECISION",
+                )
+                action_decision = await self.decide_action_async(
+                    objective=effective_obj,
+                    context=effective_ctx,
+                    input_text=input_prompt,
+                )
+
+                # Phase 3: Action Execution (Application executes selected action)
+                log_trace_event(
+                    logger,
+                    agent_run_id=agent_run_id,
+                    actor=TraceActor.APPLICATION,
+                    event_name="WORKFLOW_PHASE_STARTED",
+                    phase="3_ACTION_EXECUTION",
+                    action_type=action_decision.action_type.value,
+                )
+                if action_decision.action_type == ActionType.RAG and self.has_rag_capability:
+                    log_trace_event(
+                        logger,
+                        agent_run_id=agent_run_id,
+                        actor=TraceActor.TOOL,
+                        event_name="RAG_SEARCH_STARTED",
+                        query=action_decision.query,
+                    )
+                    rag_resp, _ = self.retry_with_rag(
+                        query=action_decision.query,
+                        context=effective_ctx,
+                        evaluate_after=False,
+                    )
+                    log_trace_event(
+                        logger,
+                        agent_run_id=agent_run_id,
+                        actor=TraceActor.TOOL,
+                        event_name="RAG_SEARCH_COMPLETED",
+                        success=rag_resp.success,
+                    )
+                elif action_decision.action_type == ActionType.DELEGATION:
+                    log_trace_event(
+                        logger,
+                        agent_run_id=agent_run_id,
+                        actor=TraceActor.APPLICATION,
+                        event_name="DELEGATION_STARTED",
+                    )
+                    await self.delegate_async(
+                        tasks=action_decision.delegated_tasks or effective_obj,
+                        context=effective_ctx,
+                        objective=effective_obj,
+                    )
+                    log_trace_event(
+                        logger,
+                        agent_run_id=agent_run_id,
+                        actor=TraceActor.APPLICATION,
+                        event_name="DELEGATION_COMPLETED",
+                    )
+                else:
+                    await self.perform_direct_work_async(
+                        objective=action_decision.direct_work_objective or effective_obj,
+                        instructions=action_decision.direct_work_instructions,
+                        context=effective_ctx,
+                    )
+
+            # Phase 4: Evidence Evaluation & Lead Agent Interpretation
+            log_trace_event(
+                logger,
+                agent_run_id=agent_run_id,
+                actor=TraceActor.APPLICATION,
+                event_name="WORKFLOW_PHASE_STARTED",
+                phase="4_EVIDENCE_EVALUATION",
+            )
+            eval_result = await self.evaluate_async(context=effective_ctx)
+            log_trace_event(
+                logger,
+                agent_run_id=agent_run_id,
+                actor=TraceActor.SPECIALIZED_AGENT,
+                event_name="EVALUATION_COMPLETED",
+                outcome=eval_result.outcome.value,
+                gaps_count=len(eval_result.missing_information) + len(eval_result.unresolved_information),
+            )
+
+            gap_decision = await self.interpret_evaluation_async(
+                evaluation_result=eval_result,
+                objective=effective_obj,
+                context=effective_ctx,
+            )
+            log_trace_event(
+                logger,
+                agent_run_id=agent_run_id,
+                actor=TraceActor.LEAD_AGENT,
+                event_name="EVALUATION_INTERPRETED",
+                action=gap_decision.action.value,
+                reasoning=gap_decision.reasoning,
+            )
+
+            if gap_decision.action == GapResolutionAction.RAG and self.has_rag_capability:
+                log_trace_event(
+                    logger,
+                    agent_run_id=agent_run_id,
+                    actor=TraceActor.APPLICATION,
+                    event_name="RAG_GAP_RECOVERY_STARTED",
+                    query=gap_decision.query,
+                )
+                rag_resp, eval_result2 = self.retry_with_rag(
+                    query=gap_decision.query,
+                    context=effective_ctx,
+                    evaluate_after=True,
+                )
+                if eval_result2:
+                    log_trace_event(
+                        logger,
+                        agent_run_id=agent_run_id,
+                        actor=TraceActor.SPECIALIZED_AGENT,
+                        event_name="REEVALUATION_COMPLETED",
+                        outcome=eval_result2.outcome.value,
+                    )
+                    if eval_result2.outcome != EvaluationOutcome.SUFFICIENT:
+                        for gap in list(eval_result2.missing_information) + list(eval_result2.unresolved_information):
+                            if is_substantive_business_clarification_item(gap):
+                                self._state.add_unresolved(gap)
+                        gap_decision = GapResolutionDecision(
+                            action=GapResolutionAction.PROCEED_TO_SECTION_GENERATION,
+                            reasoning="Proceeding to section generation with available evidence; unresolved items recorded.",
+                            identified_gaps=list(eval_result2.missing_information) + list(eval_result2.unresolved_information),
+                        )
+
+            if gap_decision.action == GapResolutionAction.ASK_USER:
+                question = gap_decision.clarification_question or "Clarification required from user."
+                log_trace_event(
+                    logger,
+                    agent_run_id=agent_run_id,
+                    actor=TraceActor.APPLICATION,
+                    event_name="USER_CLARIFICATION_REQUIRED",
+                    question=question,
+                )
+                self._state.set_waiting_for_user(question)
+                return AgentRunResponse(
+                    output_text=question,
+                    context=effective_ctx,
+                    state=self._state,
+                    success=True,
+                )
+
+        # Phase 5: Section Iteration Loop (Sequential Processing across Template Sections)
+        log_trace_event(
+            logger,
+            agent_run_id=agent_run_id,
+            actor=TraceActor.APPLICATION,
+            event_name="WORKFLOW_PHASE_STARTED",
+            phase="5_SECTION_ITERATION",
+        )
+        if not self._state.current_section and not self.is_section_processing_complete:
+            self.initialize_section_progression(context=effective_ctx)
+
+        while not self.is_section_processing_complete and self._state.current_section:
+            cur_sec = self._state.current_section
+            log_trace_event(
+                logger,
+                agent_run_id=agent_run_id,
+                actor=TraceActor.APPLICATION,
+                event_name="SECTION_PROCESSING_STARTED",
+                section=cur_sec,
+            )
+
+            # DEF-008: Retrieve section-specific project evidence prior to generation
+            if self.has_rag_capability:
+                await self.retrieve_section_evidence_async(
+                    section=cur_sec,
+                    context=effective_ctx,
+                )
+
+            gen_res = await self.generate_section_async(section=cur_sec, context=effective_ctx)
+            log_trace_event(
+                logger,
+                agent_run_id=agent_run_id,
+                actor=TraceActor.SPECIALIZED_AGENT,
+                event_name="SECTION_GENERATED",
+                section=cur_sec,
+            )
+
+            val_res = await self.validate_section_async(
+                section=cur_sec,
+                section_content=gen_res.content,
+                context=effective_ctx,
+            )
+            log_trace_event(
+                logger,
+                agent_run_id=agent_run_id,
+                actor=TraceActor.SPECIALIZED_AGENT,
+                event_name="SECTION_VALIDATED",
+                section=cur_sec,
+                outcome=val_res.outcome.value,
+            )
+
+            rework_strategy = await self.interpret_section_validation_async(
+                validation_result=val_res,
+                section_name=cur_sec,
+                context=effective_ctx,
+            )
+            log_trace_event(
+                logger,
+                agent_run_id=agent_run_id,
+                actor=TraceActor.LEAD_AGENT,
+                event_name="SECTION_VALIDATION_INTERPRETED",
+                section=cur_sec,
+                requires_rework=rework_strategy.requires_rework,
+                failure_category=rework_strategy.failure_category.value if rework_strategy.failure_category else None,
+            )
+
+            if rework_strategy.requires_rework:
+                for attempt in range(1, max_section_rework_attempts + 1):
+                    log_trace_event(
+                        logger,
+                        agent_run_id=agent_run_id,
+                        actor=TraceActor.APPLICATION,
+                        event_name="SECTION_REWORK_STARTED",
+                        section=cur_sec,
+                        attempt=attempt,
+                        max_attempts=max_section_rework_attempts,
+                    )
+                    # DEF-010: If rework requires additional evidence, retrieve it via RAG before regenerating
+                    if rework_strategy.requires_retrieval and self.has_rag_capability and rework_strategy.retrieval_query:
+                        log_trace_event(
+                            logger,
+                            agent_run_id=agent_run_id,
+                            actor=TraceActor.APPLICATION,
+                            event_name="SECTION_REWORK_RAG_RETRIEVAL_STARTED",
+                            section=cur_sec,
+                            query=rework_strategy.retrieval_query,
+                            attempt=attempt,
+                        )
+                        await self.retrieve_section_evidence_async(
+                            section=cur_sec,
+                            query=rework_strategy.retrieval_query,
+                            context=effective_ctx,
+                        )
+
+                    gen_res = await self.update_section_async(
+                        section=cur_sec,
+                        rework_feedback=rework_strategy.rework_guidance,
+                        existing_content=gen_res.content,
+                        context=effective_ctx,
+                    )
+                    log_trace_event(
+                        logger,
+                        agent_run_id=agent_run_id,
+                        actor=TraceActor.SPECIALIZED_AGENT,
+                        event_name="SECTION_UPDATED",
+                        section=cur_sec,
+                        attempt=attempt,
+                    )
+                    val_res = await self.validate_section_async(
+                        section=cur_sec,
+                        section_content=gen_res.content,
+                        context=effective_ctx,
+                    )
+                    log_trace_event(
+                        logger,
+                        agent_run_id=agent_run_id,
+                        actor=TraceActor.SPECIALIZED_AGENT,
+                        event_name="SECTION_REVALIDATED",
+                        section=cur_sec,
+                        attempt=attempt,
+                        outcome=val_res.outcome.value,
+                    )
+                    rework_strategy = await self.interpret_section_validation_async(
+                        validation_result=val_res,
+                        section_name=cur_sec,
+                        context=effective_ctx,
+                    )
+                    log_trace_event(
+                        logger,
+                        agent_run_id=agent_run_id,
+                        actor=TraceActor.LEAD_AGENT,
+                        event_name="SECTION_VALIDATION_INTERPRETED",
+                        section=cur_sec,
+                        attempt=attempt,
+                        requires_rework=rework_strategy.requires_rework,
+                        failure_category=rework_strategy.failure_category.value if rework_strategy.failure_category else None,
+                    )
+                    if not rework_strategy.requires_rework:
+                        break
+
+            # Progression Gate: advance only if VALID
+            if val_res.is_valid:
+                self._state.update_section_status(cur_sec, BRDSectionStatus.COMPLETED)
+                prog_res = self.progress_section(context=effective_ctx)
+                log_trace_event(
+                    logger,
+                    agent_run_id=agent_run_id,
+                    actor=TraceActor.APPLICATION,
+                    event_name="SECTION_PROGRESSED",
+                    section=cur_sec,
+                    next_section=self._state.current_section,
+                )
+            else:
+                log_trace_event(
+                    logger,
+                    agent_run_id=agent_run_id,
+                    actor=TraceActor.APPLICATION,
+                    event_name="SECTION_PROGRESSION_BLOCKED",
+                    section=cur_sec,
+                    reason="rework_limit_exhausted",
+                    failure_category=(
+                        rework_strategy.failure_category.value
+                        if isinstance(rework_strategy.failure_category, SectionFailureCategory)
+                        else rework_strategy.failure_category
+                    ),
+                )
+                # DEF-011: Differentiated Failure Handling After Section Rework Exhaustion
+                if rework_strategy.failure_category == SectionFailureCategory.EVIDENCE_GAP:
+                    clarification_counts = self._state.metadata.setdefault("section_clarification_counts", {})
+                    sec_clarification_count = clarification_counts.get(cur_sec, 0)
+                    if sec_clarification_count >= 1:
+                        # Bounded loop: clarification already attempted for this section, terminate with diagnostic
+                        pass
+                    elif effective_consolidate:
+                        sections = list(self._state.template_sections or extract_brd_sections(load_brd_template()))
+                        cur_idx = -1
+                        for i, s in enumerate(sections):
+                            if s == cur_sec or s.lower() == cur_sec.lower():
+                                cur_idx = i
+                                break
+                        next_sec = sections[cur_idx + 1] if (cur_idx >= 0 and cur_idx + 1 < len(sections)) else None
+
+                        # Record genuine substantive gap, preserve draft
+                        substantive_items = [
+                            item for item in rework_strategy.missing_evidence_items
+                            if is_substantive_business_clarification_item(item)
+                        ]
+                        for item in substantive_items:
+                            self._state.add_unresolved(item)
+                        if substantive_items:
+                            self._state.metadata.setdefault("unresolved_section_gaps", {}).setdefault(cur_sec, []).extend(substantive_items)
+                        if gen_res.content:
+                            self._state.set_section_content(cur_sec, gen_res.content)
+                        self._state.update_section_status(cur_sec, BRDSectionStatus.COMPLETED)
+
+                        if next_sec is not None:
+                            self._state.set_current_section(next_sec, auto_in_progress=True)
+                            log_trace_event(
+                                logger,
+                                agent_run_id=agent_run_id,
+                                actor=TraceActor.APPLICATION,
+                                event_name="SECTION_DRAFTED_WITH_UNRESOLVED_GAPS",
+                                section=cur_sec,
+                                next_section=next_sec,
+                                unresolved_count=len(substantive_items),
+                            )
+                            continue
+                        else:
+                            # Last section of drafting pass reached; stop section loop to enter consolidation gate
+                            break
+                    else:
+                        clarification_counts[cur_sec] = sec_clarification_count + 1
+                        clarification_q = (
+                            rework_strategy.clarification_question
+                            or self.construct_section_clarification_question(
+                                section_name=cur_sec,
+                                validation_result=val_res,
+                                missing_items=rework_strategy.missing_evidence_items,
+                            )
+                        )
+                        self._state.set_waiting_for_user(clarification_q)
+                        self._state.metadata["pending_clarification_section"] = cur_sec
+                        self._state.update_section_status(cur_sec, BRDSectionStatus.NEEDS_REVISION)
+
+                        log_trace_event(
+                            logger,
+                            agent_run_id=agent_run_id,
+                            actor=TraceActor.APPLICATION,
+                            event_name="USER_CLARIFICATION_REQUIRED",
+                            section=cur_sec,
+                            question=clarification_q,
+                        )
+                        return AgentRunResponse(
+                            output_text=clarification_q,
+                            context=effective_ctx,
+                            state=self._state,
+                            success=True,
+                        )
+
+                # For GENERATION_QUALITY, TEMPLATE_CONFIGURATION, or exhausted clarification:
+                diagnostics, diag_text = self._format_section_failure_diagnostic(
+                    section_name=cur_sec,
+                    failure_category=rework_strategy.failure_category or SectionFailureCategory.GENERATION_QUALITY,
+                    validation_result=val_res,
+                )
+                self._state.metadata["failure_diagnostics"] = diagnostics
+                self._state.update_section_status(cur_sec, BRDSectionStatus.NEEDS_REVISION)
+
+                return AgentRunResponse(
+                    output_text=diag_text,
+                    success=False,
+                    error=f"Section rework exhausted for '{cur_sec}' due to {diagnostics['failure_category']}",
+                    context=effective_ctx,
+                    state=self._state,
+                    diagnostics=diagnostics,
+                )
+
+        # Phase 6: Document Assembly Gate
+        log_trace_event(
+            logger,
+            agent_run_id=agent_run_id,
+            actor=TraceActor.APPLICATION,
+            event_name="WORKFLOW_PHASE_STARTED",
+            phase="6_DOCUMENT_ASSEMBLY",
+        )
+        if not self.is_section_processing_complete:
+            log_trace_event(
+                logger,
+                agent_run_id=agent_run_id,
+                actor=TraceActor.APPLICATION,
+                event_name="DOCUMENT_ASSEMBLY_BLOCKED",
+                reason="sections_incomplete",
+                remaining_sections=len(self.get_remaining_sections()),
+            )
+            return AgentRunResponse(
+                output_text="BRD workflow paused: not all template sections could be completed.",
+                success=False,
+                context=effective_ctx,
+                state=self._state,
+            )
+
+        assembly_res = await self.assemble_brd_async(context=effective_ctx)
+        if getattr(assembly_res, "assembled_document", None):
+            self._state.set_assembled_brd(assembly_res.assembled_document)
+        log_trace_event(
+            logger,
+            agent_run_id=agent_run_id,
+            actor=TraceActor.APPLICATION,
+            event_name="DOCUMENT_ASSEMBLED",
+            success=getattr(assembly_res, "assembly_complete", getattr(assembly_res, "is_complete", True)),
+        )
+
+        # Phase 7: Final Validation
+        log_trace_event(
+            logger,
+            agent_run_id=agent_run_id,
+            actor=TraceActor.APPLICATION,
+            event_name="WORKFLOW_PHASE_STARTED",
+            phase="7_FINAL_VALIDATION",
+        )
+        final_val_res = await self.validate_final_brd_async(context=effective_ctx, auto_recover=False)
+        log_trace_event(
+            logger,
+            agent_run_id=agent_run_id,
+            actor=TraceActor.SPECIALIZED_AGENT,
+            event_name="FINAL_VALIDATION_COMPLETED",
+            outcome=final_val_res.outcome.value,
+        )
+
+        # Phase 8: Final Validation Interpretation & Bounded Recovery Loop
+        log_trace_event(
+            logger,
+            agent_run_id=agent_run_id,
+            actor=TraceActor.APPLICATION,
+            event_name="WORKFLOW_PHASE_STARTED",
+            phase="8_FINAL_RECOVERY",
+        )
+        cycle = 0
+        while not final_val_res.is_valid and cycle < max_recovery_cycles:
+            recovery_strategy = await self.interpret_final_validation_async(
+                final_validation_result=final_val_res,
+                context=effective_ctx,
+            )
+            log_trace_event(
+                logger,
+                agent_run_id=agent_run_id,
+                actor=TraceActor.LEAD_AGENT,
+                event_name="FINAL_VALIDATION_INTERPRETED",
+                cycle=cycle + 1,
+                requires_recovery=recovery_strategy.requires_recovery,
+                affected_sections=recovery_strategy.affected_sections,
+            )
+            if not recovery_strategy.requires_recovery or not recovery_strategy.affected_sections:
+                break
+
+            cycle += 1
+            self._state.increment_final_validation_recovery_cycle()
+            log_trace_event(
+                logger,
+                agent_run_id=agent_run_id,
+                actor=TraceActor.APPLICATION,
+                event_name="FINAL_RECOVERY_CYCLE_STARTED",
+                cycle=cycle,
+                max_cycles=max_recovery_cycles,
+            )
+
+            for sec in recovery_strategy.affected_sections:
+                sec_guidance = recovery_strategy.section_guidance.get(sec, "")
+                gen_res = await self.update_section_async(
+                    section=sec,
+                    rework_feedback=sec_guidance,
+                    existing_content=self._state.get_section_content(sec),
+                    context=effective_ctx,
+                )
+                val_res = await self.validate_section_async(
+                    section=sec,
+                    section_content=gen_res.content,
+                    context=effective_ctx,
+                )
+                if not val_res.is_valid:
+                    for attempt in range(1, max_section_rework_attempts + 1):
+                        gen_res = await self.update_section_async(
+                            section=sec,
+                            rework_feedback=val_res.rework_feedback,
+                            existing_content=gen_res.content,
+                            context=effective_ctx,
+                        )
+                        val_res = await self.validate_section_async(
+                            section=sec,
+                            section_content=gen_res.content,
+                            context=effective_ctx,
+                        )
+                        if val_res.is_valid:
+                            break
+
+            await self.assemble_brd_async(context=effective_ctx)
+            final_val_res = await self.validate_final_brd_async(context=effective_ctx, auto_recover=False)
+            log_trace_event(
+                logger,
+                agent_run_id=agent_run_id,
+                actor=TraceActor.SPECIALIZED_AGENT,
+                event_name="FINAL_REVALIDATION_COMPLETED",
+                cycle=cycle,
+                outcome=final_val_res.outcome.value,
+            )
+
+        if not final_val_res.is_valid and cycle >= max_recovery_cycles:
+            self._state.final_validation_recovery_exhausted = True
+            log_trace_event(
+                logger,
+                agent_run_id=agent_run_id,
+                actor=TraceActor.APPLICATION,
+                event_name="FINAL_RECOVERY_EXHAUSTED",
+                cycles=cycle,
+            )
+
+        # Phase 9: Completion
+        log_trace_event(
+            logger,
+            agent_run_id=agent_run_id,
+            actor=TraceActor.APPLICATION,
+            event_name="WORKFLOW_PHASE_STARTED",
+            phase="9_COMPLETION",
+        )
+        final_doc = self._state.assembled_brd or "BRD generation completed."
+        final_output = final_doc
+
+        # Continuation mechanism: if substantive unresolved information exists, ask consolidated clarification after delivering BRD V1
+        substantive_unresolved = [
+            u for u in self._state.unresolved_information
+            if is_substantive_business_clarification_item(u)
+        ]
+        if substantive_unresolved and not self._state.metadata.get("clarification_gate_completed"):
+            self._state.metadata["clarification_gate_completed"] = True
+            clarification_q = self.construct_consolidated_clarification_question(substantive_unresolved)
+            self._state.set_waiting_for_user(clarification_q)
+            self._state.metadata["pending_consolidated_clarification"] = True
+            log_trace_event(
+                logger,
+                agent_run_id=agent_run_id,
+                actor=TraceActor.APPLICATION,
+                event_name="USER_CONSOLIDATED_CLARIFICATION_REQUIRED",
+                question=clarification_q,
+                unresolved_items=substantive_unresolved,
+            )
+            final_output = f"{final_doc}\n\n---\n\n{clarification_q}"
+
+        log_trace_event(
+            logger,
+            agent_run_id=agent_run_id,
+            actor=TraceActor.APPLICATION,
+            event_name="WORKFLOW_COMPLETED",
+            success=True,
+            is_valid=final_val_res.is_valid,
+        )
+
+        return AgentRunResponse(
+            output_text=final_output,
+            context=effective_ctx,
+            model=getattr(self.model, "model_name", str(self.model)),
+            success=True,
+            state=self._state,
+        )
+
+    def run_workflow(
+        self,
+        request: Optional[AgentRunRequest | str] = None,
+        context: Optional[AgentContext] = None,
+        objective: Optional[str] = None,
+        current_task: Optional[str] = None,
+        max_section_rework_attempts: int = 2,
+        max_recovery_cycles: int = MAX_FINAL_VALIDATION_RECOVERY_CYCLES,
+        initial_state: Optional[BRDAgentState] = None,
+        prior_messages: Optional[Sequence[Any]] = None,
+        consolidate_clarification: bool = False,
+    ) -> AgentRunResponse:
+        """Execute the Application-Owned BRD Workflow lifecycle synchronously."""
+        import asyncio
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+
+        if loop.is_running():
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor() as pool:
+                future = pool.submit(
+                    asyncio.run,
+                    self.run_workflow_async(
+                        request=request,
+                        context=context,
+                        objective=objective,
+                        current_task=current_task,
+                        max_section_rework_attempts=max_section_rework_attempts,
+                        max_recovery_cycles=max_recovery_cycles,
+                        initial_state=initial_state,
+                        prior_messages=prior_messages,
+                        consolidate_clarification=consolidate_clarification,
+                    ),
+                )
+                return future.result()
+        else:
+            return loop.run_until_complete(
+                self.run_workflow_async(
+                    request=request,
+                    context=context,
+                    objective=objective,
+                    current_task=current_task,
+                    max_section_rework_attempts=max_section_rework_attempts,
+                    max_recovery_cycles=max_recovery_cycles,
+                    initial_state=initial_state,
+                    prior_messages=prior_messages,
+                    consolidate_clarification=consolidate_clarification,
+                )
+            )
+
+    async def stream_workflow_async(
+        self,
+        request: Optional[AgentRunRequest | str] = None,
+        context: Optional[AgentContext] = None,
+        objective: Optional[str] = None,
+        current_task: Optional[str] = None,
+        max_section_rework_attempts: int = 2,
+        max_recovery_cycles: int = MAX_FINAL_VALIDATION_RECOVERY_CYCLES,
+        initial_state: Optional[BRDAgentState] = None,
+        prior_messages: Optional[Sequence[Any]] = None,
+        consolidate_clarification: bool = False,
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Stream progress events and document content throughout the BRD workflow lifecycle."""
+        effective_ctx = request.context if isinstance(request, AgentRunRequest) else context
+        if effective_ctx is None:
+            effective_ctx = AgentContext(project_id=self.project_id)
+        elif not effective_ctx.project_id and self.project_id:
+            effective_ctx = AgentContext(
+                project_id=self.project_id,
+                conversation_id=effective_ctx.conversation_id,
+                user_id=effective_ctx.user_id,
+                project_name=getattr(effective_ctx, "project_name", None),
+                project_description=getattr(effective_ctx, "project_description", None),
+                available_documents=list(getattr(effective_ctx, "available_documents", [])),
+                metadata=effective_ctx.metadata,
+            )
+
+        if initial_state is not None:
+            self._state = initial_state
+        elif isinstance(request, AgentRunRequest) and request.state is not None:
+            if isinstance(request.state, BRDAgentState):
+                self._state = request.state
+            elif isinstance(request.state, dict):
+                self._state = BRDAgentState.from_dict(request.state)
+        elif (
+            effective_ctx and (
+                (self._state.metadata.get("conversation_id") and effective_ctx.conversation_id and self._state.metadata.get("conversation_id") != effective_ctx.conversation_id)
+                or (self._state.metadata.get("project_id") and effective_ctx.project_id and self._state.metadata.get("project_id") != effective_ctx.project_id)
+            )
+        ):
+            # Guard against cross-conversation and cross-project state pollution if an agent instance is reused
+            self._state = BRDAgentState.initialize_from_template(sections=self.sections)
+
+        agent_run_id = (effective_ctx.metadata.get("agent_run_id") if effective_ctx.metadata else None) or str(uuid.uuid4())
+        if effective_ctx.metadata is not None:
+            effective_ctx.metadata["agent_run_id"] = agent_run_id
+        if effective_ctx.project_id:
+            self._state.metadata["project_id"] = effective_ctx.project_id
+        if effective_ctx.conversation_id:
+            self._state.metadata["conversation_id"] = effective_ctx.conversation_id
+        if getattr(effective_ctx, "project_name", None):
+            self._state.metadata["project_name"] = effective_ctx.project_name
+        if getattr(effective_ctx, "project_description", None):
+            self._state.metadata["project_description"] = effective_ctx.project_description
+        if getattr(effective_ctx, "available_documents", None):
+            self._state.metadata["available_documents"] = list(effective_ctx.available_documents)
+
+        input_prompt = request.input_text if isinstance(request, AgentRunRequest) else (str(request) if request is not None else None)
+        self._ingest_user_conversation_evidence(input_prompt=input_prompt, prior_messages=prior_messages)
+
+        effective_consolidate = consolidate_clarification or bool(self._state.metadata.get("consolidate_clarification", False))
+        is_consolidated_resume = bool(self._state.metadata.pop("pending_consolidated_clarification", None))
+        is_resuming = (
+            self._state.is_waiting_for_user
+            or bool(self._state.pending_clarification)
+            or bool(self._state.metadata.get("pending_clarification_section"))
+            or is_consolidated_resume
+        )
+        if (is_resuming or (self._state.current_section and not self.is_section_processing_complete)) and self._state.objective:
+            effective_obj = objective or self._state.objective
+        else:
+            effective_obj = objective or input_prompt or self._state.objective or "Generate Business Requirements Document"
+        self._state.objective = effective_obj
+
+        if current_task is not None:
+            self._state.current_task = current_task
+
+        # DEF-013: Fail explicitly if RAG capability is unavailable for grounded BRD generation
+        if not self.has_rag_capability:
+            logger.error("BRD workflow aborted: RAG capability is unavailable.")
+            yield {
+                "type": "progress",
+                "phase": "1_INITIAL_CONTEXT",
+                "actor": TraceActor.APPLICATION,
+                "message": "Error: RAG capability is unavailable. Grounded BRD generation cannot proceed.",
+            }
+            yield {
+                "type": "content",
+                "content": "Error: Project knowledge retrieval (RAG) is unavailable. Grounded BRD generation cannot proceed without access to project documentation.",
+            }
+            return
+
+        is_section_resume = False
+        if is_consolidated_resume:
+            yield {
+                "type": "progress",
+                "phase": "5_SECTION_ITERATION",
+                "actor": TraceActor.APPLICATION,
+                "message": "Incorporating user clarification and updating affected sections...",
+            }
+            if input_prompt:
+                self.receive_user_clarification(
+                    answer=input_prompt,
+                    context=effective_ctx,
+                )
+            unresolved_gaps = self._state.metadata.pop("unresolved_section_gaps", {})
+            for sec in unresolved_gaps:
+                yield {
+                    "type": "progress",
+                    "phase": "5_SECTION_ITERATION",
+                    "actor": TraceActor.APPLICATION,
+                    "section": sec,
+                    "message": f"Updating section with user clarification: {sec}",
+                }
+                existing = self._state.get_section_content(sec)
+                update_res = await self.update_section_async(
+                    section=sec,
+                    rework_feedback=f"Incorporate user clarification: {input_prompt}",
+                    existing_content=existing,
+                    context=effective_ctx,
+                )
+                if update_res.content:
+                    self._state.set_section_content(sec, update_res.content)
+                val_res = await self.validate_section_async(
+                    section=sec,
+                    section_content=update_res.content or existing or "",
+                    context=effective_ctx,
+                )
+                self._state.update_section_status(sec, BRDSectionStatus.COMPLETED)
+            self._state.unresolved_information.clear()
+            self._state.clear_waiting_for_user()
+        elif is_resuming:
+            pending_q = self._state.pending_clarification
+            pending_sec = self._state.metadata.pop("pending_clarification_section", None)
+            if input_prompt:
+                self.receive_user_clarification(
+                    answer=input_prompt,
+                    resolved_item=pending_q,
+                    context=effective_ctx,
+                )
+            if pending_sec:
+                self._state.set_current_section(pending_sec)
+                is_section_resume = True
+            elif self._state.current_section and not self.is_section_processing_complete:
+                is_section_resume = True
+
+        if is_section_resume:
+            yield {
+                "type": "progress",
+                "phase": "5_SECTION_ITERATION",
+                "actor": TraceActor.APPLICATION,
+                "section": self._state.current_section,
+                "message": f"Resuming workflow at section: {self._state.current_section} with user clarification",
+            }
+        else:
+            if is_resuming:
+                yield {
+                    "type": "progress",
+                    "phase": "4_EVIDENCE_EVALUATION",
+                    "actor": TraceActor.APPLICATION,
+                    "message": "Incorporating user clarification and re-evaluating evidence sufficiency...",
+                }
+            else:
+                yield {
+                    "type": "progress",
+                    "phase": "1_INITIAL_CONTEXT",
+                    "actor": TraceActor.APPLICATION,
+                    "message": f"Starting BRD workflow for objective: {effective_obj}",
+                }
+
+                yield {
+                    "type": "progress",
+                    "phase": "2_ACTION_DECISION",
+                    "actor": TraceActor.LEAD_AGENT,
+                    "message": "Analyzing objective and determining action strategy...",
+                }
+                action_decision = await self.decide_action_async(objective=effective_obj, context=effective_ctx, input_text=input_prompt)
+
+                yield {
+                    "type": "progress",
+                    "phase": "3_ACTION_EXECUTION",
+                    "actor": TraceActor.APPLICATION,
+                    "message": f"Executing action: {action_decision.action_type.value}",
+                }
+                if action_decision.action_type == ActionType.RAG and self.has_rag_capability:
+                    self.retry_with_rag(query=action_decision.query, context=effective_ctx, evaluate_after=False)
+                elif action_decision.action_type == ActionType.DELEGATION:
+                    await self.delegate_async(tasks=action_decision.delegated_tasks or effective_obj, context=effective_ctx)
+                else:
+                    await self.perform_direct_work_async(objective=action_decision.direct_work_objective or effective_obj, context=effective_ctx)
+
+            yield {
+                "type": "progress",
+                "phase": "4_EVIDENCE_EVALUATION",
+                "actor": TraceActor.SPECIALIZED_AGENT,
+                "message": "Evaluating evidence sufficiency for BRD requirements...",
+            }
+            eval_result = await self.evaluate_async(context=effective_ctx)
+            gap_decision = await self.interpret_evaluation_async(evaluation_result=eval_result, objective=effective_obj, context=effective_ctx)
+
+            if gap_decision.action == GapResolutionAction.RAG and self.has_rag_capability:
+                yield {
+                    "type": "progress",
+                    "phase": "4_EVIDENCE_EVALUATION",
+                    "actor": TraceActor.APPLICATION,
+                    "message": "Retrieving missing specifications via project knowledge base...",
+                }
+                _, eval_result2 = self.retry_with_rag(query=gap_decision.query, context=effective_ctx, evaluate_after=True)
+                if eval_result2 and eval_result2.outcome != EvaluationOutcome.SUFFICIENT:
+                    for gap in list(eval_result2.missing_information) + list(eval_result2.unresolved_information):
+                        if is_substantive_business_clarification_item(gap):
+                            self._state.add_unresolved(gap)
+                    gap_decision = GapResolutionDecision(
+                        action=GapResolutionAction.PROCEED_TO_SECTION_GENERATION,
+                        reasoning="Proceeding to section generation with available evidence; unresolved items recorded.",
+                        identified_gaps=list(eval_result2.missing_information) + list(eval_result2.unresolved_information),
+                    )
+
+            if gap_decision.action == GapResolutionAction.ASK_USER:
+                question = gap_decision.clarification_question or "Clarification required from user."
+                self._state.set_waiting_for_user(question)
+                yield {
+                    "type": "progress",
+                    "phase": "4_EVIDENCE_EVALUATION",
+                    "actor": TraceActor.APPLICATION,
+                    "message": f"Clarification requested: {question}",
+                }
+                yield {
+                    "type": "content",
+                    "content": question,
+                }
+                return
+
+        # Phase 5: Section Iteration Loop
+        if not self._state.current_section and not self.is_section_processing_complete:
+            self.initialize_section_progression(context=effective_ctx)
+
+        while not self.is_section_processing_complete and self._state.current_section:
+            cur_sec = self._state.current_section
+            yield {
+                "type": "progress",
+                "phase": "5_SECTION_ITERATION",
+                "actor": TraceActor.APPLICATION,
+                "section": cur_sec,
+                "message": f"Drafting section: {cur_sec}",
+            }
+
+            # DEF-008: Retrieve section-specific project evidence prior to generation
+            if self.has_rag_capability:
+                yield {
+                    "type": "progress",
+                    "phase": "5_SECTION_ITERATION",
+                    "actor": TraceActor.APPLICATION,
+                    "section": cur_sec,
+                    "message": f"Retrieving project knowledge for section: {cur_sec}",
+                }
+                await self.retrieve_section_evidence_async(
+                    section=cur_sec,
+                    context=effective_ctx,
+                )
+
+            gen_res = await self.generate_section_async(section=cur_sec, context=effective_ctx)
+            val_res = await self.validate_section_async(section=cur_sec, section_content=gen_res.content, context=effective_ctx)
+            rework_strategy = await self.interpret_section_validation_async(validation_result=val_res, section_name=cur_sec, context=effective_ctx)
+
+            if rework_strategy.requires_rework:
+                for attempt in range(1, max_section_rework_attempts + 1):
+                    yield {
+                        "type": "progress",
+                        "phase": "5_SECTION_ITERATION",
+                        "actor": TraceActor.APPLICATION,
+                        "section": cur_sec,
+                        "message": f"Reworking section: {cur_sec} (attempt {attempt}/{max_section_rework_attempts})",
+                    }
+                    # DEF-010: Retrieve additional evidence if required
+                    if rework_strategy.requires_retrieval and self.has_rag_capability and rework_strategy.retrieval_query:
+                        yield {
+                            "type": "progress",
+                            "phase": "5_SECTION_ITERATION",
+                            "actor": TraceActor.APPLICATION,
+                            "section": cur_sec,
+                            "message": f"Retrieving additional project knowledge for section rework: {cur_sec}...",
+                        }
+                        await self.retrieve_section_evidence_async(
+                            section=cur_sec,
+                            query=rework_strategy.retrieval_query,
+                            context=effective_ctx,
+                        )
+
+                    gen_res = await self.update_section_async(section=cur_sec, rework_feedback=rework_strategy.rework_guidance, existing_content=gen_res.content, context=effective_ctx)
+                    val_res = await self.validate_section_async(section=cur_sec, section_content=gen_res.content, context=effective_ctx)
+                    rework_strategy = await self.interpret_section_validation_async(validation_result=val_res, section_name=cur_sec, context=effective_ctx)
+                    if not rework_strategy.requires_rework:
+                        break
+
+            if val_res.is_valid:
+                self._state.update_section_status(cur_sec, BRDSectionStatus.COMPLETED)
+                self.progress_section(context=effective_ctx)
+                yield {
+                    "type": "progress",
+                    "phase": "5_SECTION_ITERATION",
+                    "actor": TraceActor.APPLICATION,
+                    "section": cur_sec,
+                    "message": f"Section completed: {cur_sec}",
+                }
+            else:
+                # DEF-011: Differentiated Failure Handling After Section Rework Exhaustion
+                if rework_strategy.failure_category == SectionFailureCategory.EVIDENCE_GAP:
+                    clarification_counts = self._state.metadata.setdefault("section_clarification_counts", {})
+                    sec_clarification_count = clarification_counts.get(cur_sec, 0)
+                    if sec_clarification_count >= 1:
+                        # Bounded loop: clarification already attempted for this section, terminate with diagnostic
+                        pass
+                    elif effective_consolidate:
+                        sections = list(self._state.template_sections or extract_brd_sections(load_brd_template()))
+                        cur_idx = -1
+                        for i, s in enumerate(sections):
+                            if s == cur_sec or s.lower() == cur_sec.lower():
+                                cur_idx = i
+                                break
+                        next_sec = sections[cur_idx + 1] if (cur_idx >= 0 and cur_idx + 1 < len(sections)) else None
+
+                        # Record genuine substantive gap, preserve draft
+                        substantive_items = [
+                            item for item in rework_strategy.missing_evidence_items
+                            if is_substantive_business_clarification_item(item)
+                        ]
+                        for item in substantive_items:
+                            self._state.add_unresolved(item)
+                        if substantive_items:
+                            self._state.metadata.setdefault("unresolved_section_gaps", {}).setdefault(cur_sec, []).extend(substantive_items)
+                        if gen_res.content:
+                            self._state.set_section_content(cur_sec, gen_res.content)
+                        self._state.update_section_status(cur_sec, BRDSectionStatus.COMPLETED)
+
+                        if next_sec is not None:
+                            self._state.set_current_section(next_sec, auto_in_progress=True)
+                            yield {
+                                "type": "progress",
+                                "phase": "5_SECTION_ITERATION",
+                                "actor": TraceActor.APPLICATION,
+                                "section": cur_sec,
+                                "message": f"Section drafted with unresolved business gaps deferred to consolidation: {cur_sec}",
+                            }
+                            continue
+                        else:
+                            # Last section of drafting pass reached; continue to assembly
+                            break
+                    else:
+                        clarification_counts[cur_sec] = sec_clarification_count + 1
+                        clarification_q = (
+                            rework_strategy.clarification_question
+                            or self.construct_section_clarification_question(
+                                section_name=cur_sec,
+                                validation_result=val_res,
+                                missing_items=rework_strategy.missing_evidence_items,
+                            )
+                        )
+                        self._state.set_waiting_for_user(clarification_q)
+                        self._state.metadata["pending_clarification_section"] = cur_sec
+                        self._state.update_section_status(cur_sec, BRDSectionStatus.NEEDS_REVISION)
+
+                        yield {
+                            "type": "progress",
+                            "phase": "5_SECTION_ITERATION",
+                            "actor": TraceActor.APPLICATION,
+                            "section": cur_sec,
+                            "message": f"Clarification requested for section '{cur_sec}': {clarification_q}",
+                        }
+                        yield {"type": "content", "content": clarification_q}
+                        return
+
+                diagnostics, diag_text = self._format_section_failure_diagnostic(
+                    section_name=cur_sec,
+                    failure_category=rework_strategy.failure_category or SectionFailureCategory.GENERATION_QUALITY,
+                    validation_result=val_res,
+                )
+                self._state.metadata["failure_diagnostics"] = diagnostics
+                self._state.update_section_status(cur_sec, BRDSectionStatus.NEEDS_REVISION)
+
+                yield {
+                    "type": "progress",
+                    "phase": "5_SECTION_ITERATION",
+                    "actor": TraceActor.APPLICATION,
+                    "section": cur_sec,
+                    "message": f"Section progression halted for '{cur_sec}': {diagnostics['failure_category']}",
+                }
+                yield {"type": "content", "content": diag_text}
+                return
+
+        yield {
+            "type": "progress",
+            "phase": "6_DOCUMENT_ASSEMBLY",
+            "actor": TraceActor.APPLICATION,
+            "message": "Assembling complete Business Requirements Document...",
+        }
+        assembly_res = await self.assemble_brd_async(context=effective_ctx)
+        if getattr(assembly_res, "assembled_document", None):
+            self._state.set_assembled_brd(assembly_res.assembled_document)
+
+        yield {
+            "type": "progress",
+            "phase": "7_FINAL_VALIDATION",
+            "actor": TraceActor.SPECIALIZED_AGENT,
+            "message": "Executing document-level final validation...",
+        }
+        final_val_res = await self.validate_final_brd_async(context=effective_ctx, auto_recover=False)
+
+        cycle = 0
+        while not final_val_res.is_valid and cycle < max_recovery_cycles:
+            recovery_strategy = await self.interpret_final_validation_async(final_validation_result=final_val_res, context=effective_ctx)
+            if not recovery_strategy.requires_recovery or not recovery_strategy.affected_sections:
+                break
+            cycle += 1
+            self._state.increment_final_validation_recovery_cycle()
+            yield {
+                "type": "progress",
+                "phase": "8_FINAL_RECOVERY",
+                "actor": TraceActor.APPLICATION,
+                "message": f"Executing recovery cycle {cycle}/{max_recovery_cycles} for sections: {', '.join(recovery_strategy.affected_sections)}",
+            }
+            for sec in recovery_strategy.affected_sections:
+                guidance = recovery_strategy.section_guidance.get(sec, "")
+                gen_res = await self.update_section_async(section=sec, rework_feedback=guidance, existing_content=self._state.get_section_content(sec), context=effective_ctx)
+                val_res = await self.validate_section_async(section=sec, section_content=gen_res.content, context=effective_ctx)
+            await self.assemble_brd_async(context=effective_ctx)
+            final_val_res = await self.validate_final_brd_async(context=effective_ctx, auto_recover=False)
+
+        yield {
+            "type": "progress",
+            "phase": "9_COMPLETION",
+            "actor": TraceActor.APPLICATION,
+            "message": "BRD workflow complete.",
+        }
+        final_doc = self._state.assembled_brd or "BRD generation completed."
+        yield {"type": "content", "content": final_doc}
+
+        substantive_unresolved = [
+            u for u in self._state.unresolved_information
+            if is_substantive_business_clarification_item(u)
+        ]
+        if substantive_unresolved and not self._state.metadata.get("clarification_gate_completed"):
+            self._state.metadata["clarification_gate_completed"] = True
+            clarification_q = self.construct_consolidated_clarification_question(substantive_unresolved)
+            self._state.set_waiting_for_user(clarification_q)
+            self._state.metadata["pending_consolidated_clarification"] = True
+            log_trace_event(
+                logger,
+                agent_run_id=agent_run_id,
+                actor=TraceActor.APPLICATION,
+                event_name="USER_CONSOLIDATED_CLARIFICATION_REQUIRED",
+                question=clarification_q,
+                unresolved_items=substantive_unresolved,
+            )
+            yield {
+                "type": "progress",
+                "phase": "9_COMPLETION",
+                "actor": TraceActor.APPLICATION,
+                "message": f"Consolidated clarification requested for continuation: {clarification_q}",
+            }
+            yield {"type": "content", "content": f"\n\n---\n\n{clarification_q}"}
 
 
 def create_brd_lead_agent(

@@ -86,6 +86,10 @@ class ConversationService:
         )
         return conversation
 
+    async def get_project_context(self, project_id: str) -> dict[str, Any]:
+        """Retrieve project metadata and available source document inventory for agent context."""
+        return await self._project_service.get_project_context(project_id)
+
     async def get_conversation(
         self,
         project_id: str,

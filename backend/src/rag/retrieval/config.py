@@ -206,20 +206,24 @@ class RerankingConfig:
 
     Attributes:
         enabled: Whether reranking stage is active.
-        model: Target cross-encoder reranking model name (default: 'rerank-2.5').
+        provider: Target cross-encoder provider name (default: 'jina').
+        model: Target cross-encoder reranking model name (default: 'jina-reranker-v3.5').
         candidate_limit: Maximum number of candidate chunks forwarded to reranker.
         result_limit: Maximum number of final reranked candidates to retain.
         timeout_seconds: Timeout in seconds for reranker provider API calls.
     """
 
     enabled: bool = True
-    model: str = "rerank-2.5"
+    provider: str = "jina"
+    model: str = "jina-reranker-v3.5"
     candidate_limit: int = 50
     result_limit: int = 10
-    timeout_seconds: float = 10.0
+    timeout_seconds: float = 15.0
 
     def __post_init__(self) -> None:
         """Validate reranking configuration parameters."""
+        if not self.provider or not self.provider.strip():
+            raise ValueError("provider must be a non-empty string.")
         if not self.model or not self.model.strip():
             raise ValueError("model must be a non-empty string.")
         if not isinstance(self.candidate_limit, int) or self.candidate_limit <= 0:
@@ -235,10 +239,11 @@ class RerankingConfig:
         resolved = settings or get_settings()
         return cls(
             enabled=getattr(resolved, "RERANKING_ENABLED", True),
-            model=getattr(resolved, "RERANKER_MODEL", "rerank-2.5"),
+            provider=getattr(resolved, "RERANKER_PROVIDER", "jina"),
+            model=getattr(resolved, "RERANKER_MODEL", "jina-reranker-v3.5"),
             candidate_limit=getattr(resolved, "RERANKER_CANDIDATE_LIMIT", 50),
             result_limit=getattr(resolved, "RERANKER_RESULT_LIMIT", 10),
-            timeout_seconds=getattr(resolved, "RERANKER_TIMEOUT", 10.0),
+            timeout_seconds=getattr(resolved, "RERANKER_TIMEOUT", 15.0),
         )
 
 
