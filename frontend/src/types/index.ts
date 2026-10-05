@@ -80,7 +80,7 @@ export interface Message {
   conversation_id: string;              // UUID
   role: MessageRole;
   content: string;
-  metadata: TelemetryMetadata;
+  metadata?: TelemetryMetadata;
   created_at: string;                   // ISO-8601
 }
 
@@ -94,6 +94,34 @@ export interface Conversation {
   messages_count: number;
   messages: Message[];
 }
+
+export type ConversationDetail = Conversation;
+export type ProjectCreatePayload = CreateProjectPayload;
+
+export interface WorkflowProgressEvent {
+  type?: string;
+  stage?: string;
+  step?: string;
+  message?: string;
+  section?: string;
+  [key: string]: unknown;
+}
+
+export function getMessageWorkflowStatus(message?: Message): string {
+  const ws = (message?.metadata?.workflow_state as Record<string, any>) || null;
+  if (!ws) return 'NORMAL';
+  if (ws.waiting_for_user) return 'WAITING_FOR_CLARIFICATION';
+  if (ws.failure_diagnostics) return 'HALTED';
+  if (ws.section_progress) {
+    const values = Object.values(ws.section_progress);
+    if (values.length > 0 && values.every((v) => v === 'Completed')) {
+      return 'COMPLETED';
+    }
+  }
+  return 'NORMAL';
+}
+
+
 
 /** Payload for creating a new conversation. */
 export interface CreateConversationPayload {
@@ -202,3 +230,44 @@ export interface PaginatedResponse<T> {
 export interface ApiError {
   detail: string | { msg: string; type: string }[];
 }
+
+// ---------------------------------------------------------------------------
+// Authentication & User Schemas
+// ---------------------------------------------------------------------------
+
+/** Authenticated user profile schema. */
+export interface User {
+  id: string;
+  email: string;
+  is_active: boolean;
+  created_at?: string | null;
+  updated_at?: string | null;
+}
+
+export type UserResponse = User;
+
+/** Request payload for user registration. */
+export interface UserSignupRequest {
+  email: string;
+  password: string;
+}
+
+/** Request payload for user authentication. */
+export interface UserLoginRequest {
+  email: string;
+  password: string;
+}
+
+/** Request payload for token refresh and session revocation. */
+export interface RefreshTokenRequest {
+  refresh_token: string;
+}
+
+/** Authentication token response from /auth/login and /auth/refresh. */
+export interface TokenResponse {
+  access_token: string;
+  refresh_token: string;
+  token_type: string;
+  expires_in: number;
+}
+

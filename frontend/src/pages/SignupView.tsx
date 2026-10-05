@@ -1,16 +1,21 @@
 import React, { useState } from 'react';
-import { Link } from 'react-router-dom';
-import { AlertCircle, CheckCircle2 } from 'lucide-react';
+import { Link, useNavigate } from 'react-router-dom';
+import { AlertCircle, Loader2 } from 'lucide-react';
+import { useAuth } from '../context/AuthContext';
 
 export const SignupView: React.FC = () => {
+  const { signup } = useAuth();
+  const navigate = useNavigate();
+
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   
   const [emailError, setEmailError] = useState('');
   const [passwordError, setPasswordError] = useState('');
+  const [serverError, setServerError] = useState<string | null>(null);
   
   const [hasSubmitted, setHasSubmitted] = useState(false);
-  const [isSuccess, setIsSuccess] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   const validateEmail = (val: string) => {
     if (!val.trim()) return 'Email is required';
@@ -24,9 +29,10 @@ export const SignupView: React.FC = () => {
     return '';
   };
 
-  const handleSignup = (e: React.FormEvent) => {
+  const handleSignup = async (e: React.FormEvent) => {
     e.preventDefault();
     setHasSubmitted(true);
+    setServerError(null);
     
     const eError = validateEmail(email);
     const pError = validatePassword(password);
@@ -34,20 +40,39 @@ export const SignupView: React.FC = () => {
     setEmailError(eError);
     setPasswordError(pError);
     
-    if (!eError && !pError) {
-      setIsSuccess(true);
-    } else {
-      setIsSuccess(false);
+    if (eError || pError) {
+      return;
+    }
+
+    try {
+      setIsSubmitting(true);
+      await signup({
+        email: email.trim(),
+        password,
+      });
+
+      // Redirect to login page with registered status and pre-filled email
+      navigate('/login', {
+        replace: true,
+        state: { registered: true, email: email.trim() },
+      });
+    } catch (err: unknown) {
+      const errorMsg = err instanceof Error ? err.message : 'Registration failed. Please try again.';
+      setServerError(errorMsg);
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
   const handleEmailChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setEmail(e.target.value);
+    setServerError(null);
     if (hasSubmitted) setEmailError(validateEmail(e.target.value));
   };
 
   const handlePasswordChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setPassword(e.target.value);
+    setServerError(null);
     if (hasSubmitted) setPasswordError(validatePassword(e.target.value));
   };
 
@@ -78,7 +103,6 @@ export const SignupView: React.FC = () => {
     e.target.style.background = hasError ? 'rgba(239,68,68,0.02)' : '#141414';
     e.target.style.boxShadow = 'none';
     
-    // Validate on blur if not submitted yet
     if (!hasSubmitted) {
       if (e.target.id === 'email') setEmailError(validateEmail(email));
       if (e.target.id === 'password') setPasswordError(validatePassword(password));
@@ -101,12 +125,11 @@ export const SignupView: React.FC = () => {
           <p className="text-[14px] text-zinc-400">Sign up to get started with your workspace</p>
         </div>
 
-        {isSuccess && (
-          <div className="mb-6 p-4 rounded-xl bg-indigo-500/10 border border-indigo-500/20 flex items-start gap-3">
-            <CheckCircle2 className="w-5 h-5 text-indigo-400 shrink-0 mt-0.5" />
-            <div>
-              <p className="text-[13.5px] font-medium text-indigo-300 mb-1">Validation passed</p>
-              <p className="text-[12.5px] text-indigo-400/80">Client-side validation successful. Backend integration pending for next phase.</p>
+        {serverError && (
+          <div className="mb-6 p-4 rounded-xl bg-red-500/10 border border-red-500/20 flex items-start gap-3">
+            <AlertCircle className="w-5 h-5 text-red-400 shrink-0 mt-0.5" />
+            <div className="text-[13px] text-red-300">
+              {serverError}
             </div>
           </div>
         )}
@@ -121,6 +144,7 @@ export const SignupView: React.FC = () => {
               name="email"
               type="email"
               value={email}
+              disabled={isSubmitting}
               onChange={handleEmailChange}
               onFocus={(e) => handleFocus(e, !!emailError)}
               onBlur={(e) => handleBlur(e, !!emailError)}
@@ -146,11 +170,12 @@ export const SignupView: React.FC = () => {
               name="password"
               type="password"
               value={password}
+              disabled={isSubmitting}
               onChange={handlePasswordChange}
               onFocus={(e) => handleFocus(e, !!passwordError)}
               onBlur={(e) => handleBlur(e, !!passwordError)}
               style={getInputStyle(!!passwordError)}
-              placeholder="••••••••"
+              placeholder="Minimum 8 characters"
               aria-invalid={!!passwordError}
               aria-describedby={passwordError ? "password-error" : undefined}
             />
@@ -164,9 +189,17 @@ export const SignupView: React.FC = () => {
 
           <button
             type="submit"
-            className="w-full mt-2 inline-flex items-center justify-center px-4 py-2.5 rounded-xl text-[14px] font-semibold tracking-tight transition-all duration-200 bg-gradient-to-tr from-indigo-600 to-indigo-500 text-white shadow-lg shadow-indigo-500/30 hover:shadow-indigo-500/50 hover:-translate-y-0.5 active:scale-[0.98]"
+            disabled={isSubmitting}
+            className="w-full mt-2 inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-[14px] font-semibold tracking-tight transition-all duration-200 bg-gradient-to-tr from-indigo-600 to-indigo-500 text-white shadow-lg shadow-indigo-500/30 hover:shadow-indigo-500/50 hover:-translate-y-0.5 active:scale-[0.98] disabled:opacity-50 disabled:pointer-events-none"
           >
-            Sign Up
+            {isSubmitting ? (
+              <>
+                <Loader2 className="w-4 h-4 animate-spin" />
+                <span>Creating account...</span>
+              </>
+            ) : (
+              'Sign Up'
+            )}
           </button>
         </form>
 

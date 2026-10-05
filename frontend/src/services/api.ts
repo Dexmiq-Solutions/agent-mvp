@@ -1,42 +1,108 @@
 // =============================================================================
-// Axios Base Client — Dexmiq API
+// Axios Base Client — Dexmiq API with Authenticated Session & Auto-Refresh
 // =============================================================================
 
-import axios from 'axios';
+import axios, { AxiosError, type InternalAxiosRequestConfig } from 'axios';
+import { tokenService } from './tokenService.ts';
+import { refreshTokens } from './authService.ts';
 
 /**
  * Pre-configured Axios instance pointing at the Dexmiq backend.
  *
  * Base URL resolution order:
  *   1. VITE_API_BASE_URL environment variable (set in .env or .env.local)
- *   2. Falls back to localhost:8000 for local development
+ *   2. Falls back to '/api' which Vite proxies to http://127.0.0.1:8000
  */
+const env = typeof import.meta !== 'undefined' && 'env' in import.meta ? (import.meta as { env?: Record<string, string> }).env : undefined;
 const apiClient = axios.create({
-  // In dev, requests go to /api/* which Vite proxies to http://localhost:8000
-  // In production, set VITE_API_BASE_URL to the real backend URL
-  baseURL: import.meta.env.VITE_API_BASE_URL || '/api',
+  baseURL: env?.VITE_API_BASE_URL || '/api',
   headers: {
     'Content-Type': 'application/json',
   },
-  timeout: 30_000, // 30 seconds — generous for synchronous LLM calls
+  timeout: 30_000, // 30 seconds
 });
 
 // ---------------------------------------------------------------------------
-// Response Interceptor — normalise errors into a consistent shape
+// Request Interceptor — attach JWT Bearer token
 // ---------------------------------------------------------------------------
+apiClient.interceptors.request.use(
+  (config: InternalAxiosRequestConfig) => {
+    const token = tokenService.getAccessToken();
+    if (token && !config.headers.Authorization) {
+      config.headers.Authorization = `Bearer ${token}`;
+    }
+    return config;
+  },
+  (error) => Promise.reject(error)
+);
+
+// ---------------------------------------------------------------------------
+// Error Normalization Helper
+// ---------------------------------------------------------------------------
+function extractErrorMessage(error: unknown): string {
+  if (axios.isAxiosError(error)) {
+    const axiosErr = error as AxiosError<{ detail?: unknown }>;
+    const detail = axiosErr.response?.data?.detail;
+    if (detail) {
+      if (typeof detail === 'string') return detail;
+      if (Array.isArray(detail)) {
+        return detail
+          .map((item) => (typeof item === 'object' && item && 'msg' in item ? (item as any).msg : JSON.stringify(item)))
+          .join('; ');
+      }
+      return JSON.stringify(detail);
+    }
+    if (axiosErr.response?.status === 429) {
+      const retryAfter = axiosErr.response.headers?.['retry-after'];
+      return retryAfter
+        ? `Rate limit exceeded. Please retry after ${retryAfter} seconds.`
+        : 'Rate limit exceeded. Please try again shortly.';
+    }
+    if (axiosErr.message) {
+      return axiosErr.message;
+    }
+  }
+  return error instanceof Error ? error.message : String(error);
+}
+
+// ---------------------------------------------------------------------------
+// Response Interceptor — automatic token refresh & error normalization
+// ---------------------------------------------------------------------------
+interface CustomRequestConfig extends InternalAxiosRequestConfig {
+  _retry?: boolean;
+}
+
 apiClient.interceptors.response.use(
   (response) => response,
-  (error) => {
-    // Surface the backend's `detail` field when available
-    if (axios.isAxiosError(error) && error.response?.data?.detail) {
-      const detail = error.response.data.detail;
-      const message = typeof detail === 'string'
-        ? detail
-        : JSON.stringify(detail);
-      return Promise.reject(new Error(message));
+  async (error: unknown) => {
+    if (axios.isAxiosError(error) && error.response?.status === 401) {
+      const originalRequest = error.config as CustomRequestConfig;
+
+      // Do NOT attempt refresh for /auth/ endpoints (login, signup, refresh itself)
+      const url = originalRequest?.url || '';
+      const isAuthEndpoint =
+        url.includes('/auth/login') ||
+        url.includes('/auth/signup') ||
+        url.includes('/auth/refresh');
+
+      if (!isAuthEndpoint && originalRequest && !originalRequest._retry) {
+        originalRequest._retry = true;
+
+        try {
+          // Attempt token refresh via rotated refresh token
+          const tokens = await refreshTokens();
+          // Update original request with new access token and retry
+          originalRequest.headers = originalRequest.headers || {};
+          originalRequest.headers.Authorization = `Bearer ${tokens.access_token}`;
+          return apiClient(originalRequest);
+        } catch (refreshErr) {
+          return Promise.reject(new Error(extractErrorMessage(refreshErr)));
+        }
+      }
     }
-    return Promise.reject(error);
-  },
+
+    return Promise.reject(new Error(extractErrorMessage(error)));
+  }
 );
 
 // ---------------------------------------------------------------------------

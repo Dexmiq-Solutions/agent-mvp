@@ -1,5 +1,5 @@
 import React, { useState, useRef } from 'react';
-import { SourceDocument } from '../types';
+import type { SourceDocument } from '../types';
 
 interface SourceListProps {
   sources: SourceDocument[];

@@ -2,7 +2,9 @@
 // Chat Service — CRUD operations for conversations and messages
 // =============================================================================
 
-import apiClient from './api';
+import apiClient from './api.ts';
+import { tokenService } from './tokenService.ts';
+import { refreshTokens } from './authService.ts';
 import type {
   Conversation,
   CreateConversationPayload,
@@ -10,7 +12,7 @@ import type {
   Message,
   SendMessagePayload,
   PaginatedResponse,
-} from '../types';
+} from '../types/index.ts';
 
 function base(projectId: string) {
   return `projects/${projectId}/conversations`;
@@ -105,16 +107,42 @@ export async function streamMessage(
   payload: SendMessagePayload,
   handlers: StreamHandlers
 ): Promise<void> {
-  // Use absolute or relative URL based on Vite's proxy/env
-  const baseURL = import.meta.env.VITE_API_BASE_URL || '/api';
-  const url = `${baseURL}/projects/${projectId}/conversations/${conversationId}/messages?stream=true`;
+  const env = typeof import.meta !== 'undefined' && 'env' in import.meta ? (import.meta as { env?: Record<string, string> }).env : undefined;
+  const baseURL = env?.VITE_API_BASE_URL || '/api';
+  const url = `${baseURL.replace(/\/$/, '')}/projects/${projectId}/conversations/${conversationId}/messages?stream=true`;
   
+  const getHeaders = (token: string | null) => {
+    const h: Record<string, string> = {
+      'Content-Type': 'application/json',
+    };
+    if (token) {
+      h.Authorization = `Bearer ${token}`;
+    }
+    return h;
+  };
+
   try {
-    const response = await fetch(url, {
+    let token = tokenService.getAccessToken();
+    let response = await fetch(url, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: getHeaders(token),
       body: JSON.stringify(payload),
     });
+
+    // Handle expired token with automatic refresh retry
+    if (response.status === 401) {
+      try {
+        const newTokens = await refreshTokens();
+        token = newTokens.access_token;
+        response = await fetch(url, {
+          method: 'POST',
+          headers: getHeaders(token),
+          body: JSON.stringify(payload),
+        });
+      } catch (refreshErr) {
+        throw new Error('Authentication expired. Please log in again.');
+      }
+    }
 
     if (!response.ok) {
       const text = await response.text();

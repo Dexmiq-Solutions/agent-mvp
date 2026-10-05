@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Conversation, Message, WorkflowProgressEvent, getMessageWorkflowStatus } from '../types';
+import { type Conversation, type Message, type WorkflowProgressEvent, getMessageWorkflowStatus } from '../types';
 import { sendMessageStream } from '../api/conversations';
 
 interface ChatViewProps {

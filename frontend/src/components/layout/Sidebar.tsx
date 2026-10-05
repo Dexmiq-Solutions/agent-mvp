@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
-import { NavLink, useLocation } from 'react-router-dom';
-import { LayoutGrid, Hexagon, Menu, X, Folder } from 'lucide-react';
+import { NavLink, useLocation, useNavigate } from 'react-router-dom';
+import { LayoutGrid, Hexagon, Menu, X, Folder, LogOut } from 'lucide-react';
+import { useAuth } from '../../context/AuthContext';
 import * as projectService from '../../services/projectService';
 import { listConversations } from '../../services/chatService';
 import type { Project, Conversation } from '../../types';
@@ -8,9 +9,17 @@ import type { Project, Conversation } from '../../types';
 export const Sidebar: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [mobileOpen, setMobileOpen] = useState(false);
   const location = useLocation();
+  const navigate = useNavigate();
+  const { user, logout } = useAuth();
   const [currentProject, setCurrentProject] = useState<Project | null>(null);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [isLoadingConversations, setIsLoadingConversations] = useState(false);
+
+  const handleLogout = async () => {
+    await logout();
+    navigate('/login', { replace: true });
+  };
+
 
   React.useEffect(() => {
     const match = location.pathname.match(/^\/projects\/([a-zA-Z0-9-]+)/);
@@ -263,6 +272,30 @@ export const Sidebar: React.FC<{ children: React.ReactNode }> = ({ children }) =
 
         {/* Bottom spacer — future nav items can go here */}
         <div style={{ marginTop: 'auto' }} />
+
+        {/* User Profile & Sign Out */}
+        {user && (
+          <div style={{ padding: '8px 12px', borderTop: '1px solid #1a1a1a', flexShrink: 0 }}>
+            <div className="flex items-center justify-between gap-2 p-2 rounded-lg bg-white/[0.02] border border-white/[0.04]">
+              <div className="flex items-center gap-2.5 min-w-0">
+                <div className="w-6 h-6 rounded-md bg-indigo-500/20 border border-indigo-500/30 flex items-center justify-center shrink-0 text-indigo-300 text-[11px] font-semibold">
+                  {user.email.charAt(0).toUpperCase()}
+                </div>
+                <span className="text-[12px] text-zinc-300 truncate" title={user.email}>
+                  {user.email}
+                </span>
+              </div>
+              <button
+                onClick={handleLogout}
+                title="Sign out"
+                aria-label="Sign out"
+                className="p-1 rounded-md text-zinc-400 hover:text-red-400 hover:bg-red-500/10 transition-colors shrink-0"
+              >
+                <LogOut size={14} />
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* Version badge */}
         <div style={{ padding: '12px 16px', borderTop: '1px solid #1a1a1a', flexShrink: 0 }}>
