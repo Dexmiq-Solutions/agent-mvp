@@ -4,6 +4,8 @@ import { Sidebar } from './components/layout/Sidebar';
 import { ProjectsHubView } from './pages/ProjectsHubView';
 import { ProjectHomeView } from './pages/ProjectHomeView';
 import { ConversationView } from './pages/ConversationView';
+import { LoginView } from './pages/LoginView';
+import { SignupView } from './pages/SignupView';
 import { checkHealth } from './services/api';
 
 function App() {
@@ -20,6 +22,10 @@ function App() {
         <Routes>
           {/* Redirect root to projects */}
           <Route path="/" element={<Navigate to="/projects" replace />} />
+
+          {/* Auth Routes */}
+          <Route path="/login" element={<LoginView />} />
+          <Route path="/signup" element={<SignupView />} />
 
           {/* Main App Routes wrapped in Sidebar Layout */}
           <Route
