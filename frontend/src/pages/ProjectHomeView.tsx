@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { AlertCircle, RotateCcw, FolderOpen } from 'lucide-react';
-import { mockProjectService } from '../services/mockData';
+import * as projectService from '../services/projectService';
 import { createConversation } from '../services/chatService';
 import type { Project } from '../types';
 import { ProjectHeader } from '../components/workspace/ProjectHeader';
@@ -237,7 +237,7 @@ export const ProjectHomeView: React.FC = () => {
     try {
       setLoadState('loading');
       setErrorMsg(null);
-      const p = await mockProjectService.getProject(projectId);
+      const p = await projectService.getProject(projectId);
       setProject(p);
       setLoadState('loaded');
     } catch (err: unknown) {
@@ -270,7 +270,7 @@ export const ProjectHomeView: React.FC = () => {
     if (!project) return;
     try {
       setDeleting(true);
-      await mockProjectService.deleteProject(project.id);
+      await projectService.deleteProject(project.id);
       navigate('/projects');
     } catch (err: unknown) {
       alert(err instanceof Error ? err.message : 'Failed to delete workspace.');

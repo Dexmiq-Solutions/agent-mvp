@@ -1,5 +1,7 @@
 """FastAPI dependency injection providers for application services."""
 
+from typing import Optional
+
 from fastapi import Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -9,6 +11,19 @@ from services.document_processing_service import DocumentProcessingService
 from services.document_service import DocumentService
 from services.project_service import ProjectService
 from storage.object import BaseObjectStorage, get_object_storage
+from storage.vector import BaseVectorStore
+from observability.logging import get_logger
+
+logger = get_logger(__name__)
+
+
+def get_vector_store_dependency() -> Optional[BaseVectorStore]:
+    """Dependency provider returning default BaseVectorStore instance."""
+    try:
+        from storage.vector import get_vector_store
+        return get_vector_store()
+    except Exception:
+        return None
 
 
 def get_storage() -> BaseObjectStorage:
@@ -19,17 +34,19 @@ def get_storage() -> BaseObjectStorage:
 def get_project_service(
     session: AsyncSession = Depends(get_db_session),
     storage: BaseObjectStorage = Depends(get_storage),
+    vector_store: Optional[BaseVectorStore] = Depends(get_vector_store_dependency),
 ) -> ProjectService:
     """Dependency provider for ProjectService.
     
     Args:
         session: Injected asynchronous SQLAlchemy session.
         storage: Injected BaseObjectStorage client.
+        vector_store: Injected BaseVectorStore instance.
         
     Returns:
         Configured ProjectService instance.
     """
-    return ProjectService(session=session, storage=storage)
+    return ProjectService(session=session, storage=storage, vector_store=vector_store)
 
 
 def get_conversation_service(
@@ -70,6 +87,7 @@ def get_document_service(
     session: AsyncSession = Depends(get_db_session),
     storage: BaseObjectStorage = Depends(get_storage),
     processing_service: DocumentProcessingService = Depends(get_document_processing_service),
+    vector_store: Optional[BaseVectorStore] = Depends(get_vector_store_dependency),
 ) -> DocumentService:
     """Dependency provider for DocumentService.
     
@@ -77,6 +95,7 @@ def get_document_service(
         session: Injected asynchronous SQLAlchemy session.
         storage: Injected BaseObjectStorage client.
         processing_service: Injected DocumentProcessingService instance.
+        vector_store: Injected BaseVectorStore instance.
         
     Returns:
         Configured DocumentService instance.
@@ -87,6 +106,7 @@ def get_document_service(
         storage=storage,
         processing_service=processing_service,
         auto_process=settings.AUTO_PROCESS_DOCUMENTS,
+        vector_store=vector_store,
     )
 
 
@@ -95,6 +115,43 @@ def get_rag_service_dependency() -> "RAGService":
     from services.rag_service import get_rag_service
 
     return get_rag_service()
+
+
+def get_brd_lead_agent() -> "BRDLeadAgent":
+    """Dependency provider returning a fresh BRDLeadAgent instance.
+
+    To eliminate cross-request and cross-tenant mutable state leakage (DEF-005),
+    this provider does not store a global process-level agent singleton. Each
+    request receives its own agent instance, while durable workflow state is
+    conversation-scoped and reconstructed per execution turn (DEF-012).
+    """
+    from agents.brd.agent import BRDLeadAgent
+    from tools.diagnostic import echo_diagnostic_tool
+    from tools.rag import create_search_project_knowledge_tool
+
+    from exceptions.retrieval import RetrievalError
+
+    try:
+        rag_service = get_rag_service_dependency()
+        tools = [
+            echo_diagnostic_tool,
+            create_search_project_knowledge_tool(rag_service=rag_service),
+        ]
+    except Exception as exc:
+        logger.error(
+            "Failed to initialize RAG service for BRDLeadAgent: %s. "
+            "RAG capability cannot be equipped.",
+            exc,
+            exc_info=True,
+        )
+        raise RetrievalError(
+            f"RAG service initialization failed: {exc}. "
+            "Cannot construct BRDLeadAgent with required project retrieval capability.",
+            original_error=exc,
+        ) from exc
+
+    return BRDLeadAgent(tools=tools)
+
 
 
 

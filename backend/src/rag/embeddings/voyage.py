@@ -55,6 +55,11 @@ class VoyageEmbeddingProvider(BaseEmbeddingProvider):
         """Return the active embedding model name."""
         return self._model
 
+    @property
+    def provider_name(self) -> str:
+        """Return the provider identifier."""
+        return "voyage"
+
     # --------------------------------------------------------------------------
     # Synchronous Input Validation
     # --------------------------------------------------------------------------

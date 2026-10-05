@@ -1,13 +1,22 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { useEffect } from 'react';
 import { Sidebar } from './components/layout/Sidebar';
 import { ProjectsHubView } from './pages/ProjectsHubView';
 import { ProjectHomeView } from './pages/ProjectHomeView';
 import { ConversationView } from './pages/ConversationView';
+import { checkHealth } from './services/api';
 
 function App() {
+  useEffect(() => {
+    // Phase 1: Basic backend connectivity test on load
+    checkHealth().then((isHealthy) => {
+      console.log(`Backend connectivity test: ${isHealthy ? 'SUCCESS' : 'FAILED'}`);
+    });
+  }, []);
+
   return (
     <BrowserRouter>
-      <div className="min-h-screen bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-zinc-900 via-zinc-950 to-black text-[#FAFAFA] font-sans">
+      <div className="fixed inset-0 overflow-hidden bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-zinc-900 via-zinc-950 to-black text-[#FAFAFA] font-sans">
         <Routes>
           {/* Redirect root to projects */}
           <Route path="/" element={<Navigate to="/projects" replace />} />

@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { X, Loader2, TriangleAlert } from 'lucide-react';
-import { mockProjectService } from '../../services/mockData';
+import * as projectService from '../../services/projectService';
 import type { Project } from '../../types';
 
 interface DeleteProjectModalProps {
@@ -32,7 +32,7 @@ export const DeleteProjectModal: React.FC<DeleteProjectModalProps> = ({
     try {
       setLoading(true);
       setError(null);
-      await mockProjectService.deleteProject(project.id);
+      await projectService.deleteProject(project.id);
       onSuccess(project.id);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Failed to delete project.');

@@ -17,10 +17,19 @@ export async function listProjects(
   limit = 20,
   offset = 0,
 ): Promise<PaginatedResponse<Project>> {
-  const { data } = await apiClient.get<PaginatedResponse<Project>>(BASE, {
+  // The backend GET /projects returns a plain Project[] array,
+  // not a paginated wrapper. We receive the raw array and wrap it
+  // into the PaginatedResponse shape consumed by the UI.
+  const { data } = await apiClient.get<Project[]>(BASE, {
     params: { limit, offset },
   });
-  return data;
+  const items = Array.isArray(data) ? data : [];
+  return {
+    items,
+    total: items.length,
+    limit,
+    offset,
+  };
 }
 
 /** Retrieve a single project by ID. */

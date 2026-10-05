@@ -4,7 +4,7 @@ import {
   AlertTriangle, Pencil, Trash2, Upload, Plus,
 } from 'lucide-react';
 import { formatDistanceToNow } from 'date-fns';
-import { mockSourceService } from '../../services/mockData';
+import * as sourceService from '../../services/sourceService';
 import type { SourceDocument, DocumentVersionStatus } from '../../types';
 import { AddSourceModal } from './AddSourceModal';
 
@@ -72,7 +72,7 @@ export const SourcesTab: React.FC<SourcesTabProps> = ({ projectId }) => {
   const fetchSources = useCallback(async (silent = false) => {
     try {
       if (!silent) { setError(null); setLoading(true); }
-      const res = await mockSourceService.listSources(projectId, 50, 0);
+      const res = await sourceService.listSources(projectId, 50, 0);
       setSources(res.items);
     } catch (err: unknown) {
       if (!silent) setError(err instanceof Error ? err.message : 'Failed to load sources.');
@@ -112,7 +112,7 @@ export const SourcesTab: React.FC<SourcesTabProps> = ({ projectId }) => {
   const handleDelete = async (source: SourceDocument) => {
     if (!window.confirm(`Delete "${source.name}"? This cannot be undone.`)) return;
     try {
-      await mockSourceService.deleteSource(projectId, source.id);
+      await sourceService.deleteSource(projectId, source.id);
       setSources((prev) => prev.filter((s) => s.id !== source.id));
     } catch (err: unknown) {
       alert(err instanceof Error ? err.message : 'Failed to delete source.');
@@ -123,7 +123,7 @@ export const SourcesTab: React.FC<SourcesTabProps> = ({ projectId }) => {
   const handleRename = async (source: SourceDocument, newName: string) => {
     if (!newName.trim() || newName.trim() === source.name) return;
     try {
-      const updated = await mockSourceService.updateSource(projectId, source.id, { name: newName.trim() });
+      const updated = await sourceService.updateSource(projectId, source.id, { name: newName.trim() });
       setSources((prev) => prev.map((s) => (s.id === updated.id ? updated : s)));
     } catch (err: unknown) {
       alert(err instanceof Error ? err.message : 'Failed to rename source.');
@@ -133,7 +133,7 @@ export const SourcesTab: React.FC<SourcesTabProps> = ({ projectId }) => {
 
   const handleUploadVersion = async (source: SourceDocument, file: File) => {
     try {
-      await mockSourceService.uploadSourceVersion(projectId, source.id, file);
+      await sourceService.uploadSourceVersion(projectId, source.id, file);
       await fetchSources(true);
     } catch (err: unknown) {
       alert(err instanceof Error ? err.message : 'Failed to upload new version.');
@@ -209,7 +209,7 @@ export const SourcesTab: React.FC<SourcesTabProps> = ({ projectId }) => {
               <div className="absolute inset-0 bg-indigo-500/20 blur-xl rounded-full" />
               <FileText size={26} strokeWidth={1.5} className="text-zinc-400 relative z-10" />
             </div>
-            <p className="text-[15px] font-semibold text-white mb-2">No knowledge base documents yet</p>
+            <p className="text-[15px] font-semibold text-white mb-2">No sources uploaded yet</p>
             <p className="text-[13.5px] text-zinc-400 max-w-[300px] leading-relaxed mb-6">
               Add documents to ground your AI assistant in this project.
             </p>

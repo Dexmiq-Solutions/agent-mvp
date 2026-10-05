@@ -36,7 +36,20 @@ def make_mock_storage() -> AsyncMock:
             etag="etag-api-test",
         )
 
+    async def fake_get_metadata(path):
+        filename = path.split("/")[-1]
+        return StorageObjectMetadata(
+            name=filename,
+            path=path,
+            bucket="documents",
+            size_bytes=1024,
+            content_type="application/pdf",
+            etag="etag-api-test",
+        )
+
     storage.upload = AsyncMock(side_effect=fake_upload)
+    storage.get_metadata = AsyncMock(side_effect=fake_get_metadata)
+    storage.download = AsyncMock(return_value=b"%PDF-1.4 dummy pdf content for testing")
     storage.delete = AsyncMock(return_value=True)
     storage.delete_many = AsyncMock(side_effect=lambda paths: paths)
     storage.list_objects = AsyncMock(return_value=[])
@@ -44,8 +57,10 @@ def make_mock_storage() -> AsyncMock:
 
 
 @pytest.fixture
-async def api_client():
+async def api_client(monkeypatch):
     """Configure test database, overrides, and an AsyncClient for FastAPI testing."""
+    from core.config import get_settings
+    monkeypatch.setattr(get_settings(), "AUTO_PROCESS_DOCUMENTS", False)
     engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)

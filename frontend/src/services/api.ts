@@ -39,4 +39,17 @@ apiClient.interceptors.response.use(
   },
 );
 
+// ---------------------------------------------------------------------------
+// Health Check (Phase 1 Connectivity Test)
+// ---------------------------------------------------------------------------
+export async function checkHealth(): Promise<boolean> {
+  try {
+    const response = await apiClient.get('/health');
+    return response.data?.status === 'ok';
+  } catch (error) {
+    console.error('Backend health check failed:', error);
+    return false;
+  }
+}
+
 export default apiClient;

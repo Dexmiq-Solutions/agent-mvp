@@ -181,6 +181,11 @@ class QueryEmbeddingService:
             queries_to_embed.append(transformed_query)
 
         model = self._provider.model_name
+        provider_name = getattr(
+            self._provider,
+            "provider_name",
+            getattr(self._settings, "EMBEDDING_PROVIDER", "cohere"),
+        )
         cached_vectors: dict[str, list[float]] = {}
         uncached_queries: list[str] = []
 
@@ -190,7 +195,7 @@ class QueryEmbeddingService:
                 generate_embedding_cache_key(
                     text=q,
                     model=model,
-                    provider="voyage",
+                    provider=provider_name,
                     input_type="query",
                 )
                 for q in queries_to_embed
@@ -215,7 +220,7 @@ class QueryEmbeddingService:
                         generate_embedding_cache_key(
                             text=q,
                             model=model,
-                            provider="voyage",
+                            provider=provider_name,
                             input_type="query",
                         ),
                         vec,

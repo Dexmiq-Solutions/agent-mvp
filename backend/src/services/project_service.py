@@ -1,6 +1,4 @@
-"""Application service for Project lifecycle management."""
-
-from typing import Optional
+from typing import Any, TYPE_CHECKING, Optional
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -9,6 +7,9 @@ from observability.logging import get_logger
 from exceptions.project import InvalidProjectDataError, ProjectNotFoundError
 from models.project import ProjectModel
 from storage.object.base import BaseObjectStorage
+
+if TYPE_CHECKING:
+    from storage.vector.base import BaseVectorStore
 
 logger = get_logger(__name__)
 
@@ -20,15 +21,25 @@ class ProjectService:
         self,
         session: AsyncSession,
         storage: Optional[BaseObjectStorage] = None,
+        vector_store: Optional["BaseVectorStore"] = None,
     ) -> None:
-        """Initialize the ProjectService with a database session and optional storage.
+        """Initialize the ProjectService with a database session, optional storage, and vector store.
         
         Args:
             session: Active asynchronous SQLAlchemy session.
             storage: Optional BaseObjectStorage implementation for cleaning up project files.
+            vector_store: Optional BaseVectorStore instance for cleaning up project vector embeddings.
         """
         self._session = session
         self._storage = storage
+        if vector_store is not None:
+            self._vector_store = vector_store
+        else:
+            try:
+                from storage.vector import get_vector_store
+                self._vector_store = get_vector_store()
+            except Exception:
+                self._vector_store = None
 
     async def create_project(
         self,
@@ -86,6 +97,40 @@ class ProjectService:
     async def get_project_by_id(self, project_id: str) -> ProjectModel:
         """Alias for get_project to maintain naming compatibility across callers."""
         return await self.get_project(project_id)
+
+    async def get_project_context(self, project_id: str) -> dict[str, Any]:
+        """Retrieve project metadata and source document inventory under project boundary isolation.
+
+        Provides authoritative project context (name, description, and available document names)
+        derived directly from the database without duplicating data across systems or stuffing full
+        document contents into the prompt.
+
+        Args:
+            project_id: Authoritative project identifier.
+
+        Returns:
+            dict containing project_id, project_name, project_description, and available_documents.
+
+        Raises:
+            ProjectNotFoundError: If project does not exist.
+        """
+        project = await self.get_project(project_id)
+        from models.document import DocumentModel
+
+        stmt = (
+            select(DocumentModel.name)
+            .where(DocumentModel.project_id == project_id)
+            .order_by(DocumentModel.name)
+        )
+        result = await self._session.execute(stmt)
+        document_names = list(result.scalars().all())
+
+        return {
+            "project_id": project.id,
+            "project_name": project.name,
+            "project_description": project.description,
+            "available_documents": document_names,
+        }
 
     async def list_projects(
         self,
@@ -180,6 +225,18 @@ class ProjectService:
             except Exception as exc:
                 logger.warning(
                     "Best-effort storage cleanup failed during deletion of project %s: %s",
+                    project_id,
+                    exc,
+                )
+
+        # Clean up vector embeddings in Qdrant for this project
+        if self._vector_store is not None:
+            try:
+                await self._vector_store.delete_by_filter(project_id=project_id)
+                logger.info("Deleted vector points in Qdrant for project '%s'", project_id)
+            except Exception as exc:
+                logger.warning(
+                    "Vector store cleanup failed during deletion of project %s: %s",
                     project_id,
                     exc,
                 )

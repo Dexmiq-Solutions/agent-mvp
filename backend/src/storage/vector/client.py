@@ -39,8 +39,10 @@ def get_async_qdrant_client(settings: Optional[Settings] = None) -> AsyncQdrantC
         current_loop = None
 
     if _qdrant_async_client is not None:
-        if _qdrant_client_loop is not None and not _qdrant_client_loop.is_closed():
-            if current_loop is None or current_loop is _qdrant_client_loop:
+        if _qdrant_client_loop is None or not _qdrant_client_loop.is_closed():
+            if current_loop is None or _qdrant_client_loop is None or current_loop is _qdrant_client_loop:
+                if _qdrant_client_loop is None and current_loop is not None:
+                    _qdrant_client_loop = current_loop
                 return _qdrant_async_client
 
         logger.info(

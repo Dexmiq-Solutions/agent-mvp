@@ -26,7 +26,7 @@ import {
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { Components } from 'react-markdown';
-import { getConversation, sendMessage, updateConversation, deleteConversation } from '../services/chatService';
+import { getConversation, streamMessage, updateConversation, deleteConversation } from '../services/chatService';
 import type { Conversation, ChatStatus, UIMessage } from '../types';
 import { TelemetryView } from '../components/chat/TelemetryView';
 
@@ -259,7 +259,7 @@ const markdownComponents: Components = {
 
 // ─── ThinkingIndicator ────────────────────────────────────────────────────────
 
-function ThinkingIndicator() {
+function ThinkingIndicator({ message }: { message?: string }) {
   return (
     <div className="flex w-full justify-start slide-up">
       <div
@@ -281,7 +281,9 @@ function ThinkingIndicator() {
         <span className="dot-pulse-dot w-1.5 h-1.5 rounded-full" style={{ background: 'rgba(129,140,248,0.7)', display: 'inline-block' }} />
         <span className="dot-pulse-dot w-1.5 h-1.5 rounded-full" style={{ background: 'rgba(129,140,248,0.7)', display: 'inline-block' }} />
         <span className="dot-pulse-dot w-1.5 h-1.5 rounded-full" style={{ background: 'rgba(129,140,248,0.7)', display: 'inline-block' }} />
-        <span className="text-[12px] ml-1.5" style={{ color: 'rgba(129,140,248,0.6)' }}>Thinking…</span>
+        <span className="text-[12px] ml-1.5" style={{ color: 'rgba(129,140,248,0.6)' }}>
+          {message || 'Agent is working…'}
+        </span>
       </div>
     </div>
   );
@@ -402,7 +404,7 @@ function MessageTurn({ msg, generationActive, onRetry }: MessageTurnProps) {
       </div>
       <div style={{ maxWidth: 'min(85%, 760px)', marginRight: '0.5rem', minWidth: 0 }}>
         <div
-          className="chat-prose"
+          className="chat-prose overflow-x-auto max-w-full"
           style={{ fontSize: '14px', lineHeight: '1.7', color: '#d4d4d8' }}
         >
           <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
@@ -437,6 +439,7 @@ export const ConversationView: React.FC = () => {
 
   // ── Chat state machine
   const [chatStatus, setChatStatus] = useState<ChatStatus>('idle');
+  const [progressMessage, setProgressMessage] = useState<string | null>(null);
   /**
    * retryText — original user text of the last failed turn.
    * Stored so retry doesn't duplicate the user bubble.
@@ -566,24 +569,53 @@ export const ConversationView: React.FC = () => {
     retryTextRef.current = trimmed;
 
     try {
-      const assistantMsg = await sendMessage(
-        projectId,
-        conversationId,
-        { content: trimmed },
-        true,
-      );
-
+      const assistantId = `ast-${crypto.randomUUID()}`;
+      const placeholderMsg: UIMessage = {
+        id: assistantId,
+        conversation_id: conversationId,
+        role: 'assistant',
+        content: '',
+        created_at: new Date().toISOString(),
+        metadata: {},
+      };
+      
       setMessages((prev) => {
-        // Confirm optimistic user message (keep it, just remove flag)
         const confirmed = prev.map((m) =>
           m.id === tempId ? { ...m, _optimistic: false } : m
         );
-        // Append real assistant response
-        return [...confirmed, assistantMsg as UIMessage];
+        return [...confirmed, placeholderMsg];
       });
 
-      setChatStatus('idle');
-      retryTextRef.current = null;
+      setProgressMessage(null);
+      await streamMessage(
+        projectId,
+        conversationId,
+        { content: trimmed },
+        {
+          onProgress: (data) => {
+            if (data?.message) {
+              setProgressMessage(data.message);
+            }
+          },
+          onMessage: (content) => {
+            setMessages((prev) => 
+              prev.map(m => m.id === assistantId ? { ...m, content: m.content + content } : m)
+            );
+          },
+          onDone: (msg) => {
+            setMessages((prev) => 
+              prev.map(m => m.id === assistantId ? { ...(msg as UIMessage), _optimistic: false } : m)
+            );
+            setChatStatus('idle');
+            setProgressMessage(null);
+            retryTextRef.current = null;
+          },
+          onError: (err) => {
+             setProgressMessage(null);
+             throw err;
+          }
+        }
+      );
     } catch (err: unknown) {
       const errText = classifyError(err);
 
@@ -632,16 +664,48 @@ export const ConversationView: React.FC = () => {
     retryTextRef.current = originalText;
 
     try {
-      const assistantMsg = await sendMessage(
+      const assistantId = `ast-${crypto.randomUUID()}`;
+      const placeholderMsg: UIMessage = {
+        id: assistantId,
+        conversation_id: conversationId,
+        role: 'assistant',
+        content: '',
+        created_at: new Date().toISOString(),
+        metadata: {},
+      };
+
+      setMessages((prev) => [...prev, placeholderMsg]);
+
+      setProgressMessage(null);
+      await streamMessage(
         projectId,
         conversationId,
         { content: originalText },
-        true,
+        {
+          onProgress: (data) => {
+            if (data?.message) {
+              setProgressMessage(data.message);
+            }
+          },
+          onMessage: (content) => {
+            setMessages((prev) => 
+              prev.map(m => m.id === assistantId ? { ...m, content: m.content + content } : m)
+            );
+          },
+          onDone: (msg) => {
+            setMessages((prev) => 
+              prev.map(m => m.id === assistantId ? { ...(msg as UIMessage) } : m)
+            );
+            setChatStatus('idle');
+            setProgressMessage(null);
+            retryTextRef.current = null;
+          },
+          onError: (err) => {
+            setProgressMessage(null);
+            throw err;
+          }
+        }
       );
-
-      setMessages((prev) => [...prev, assistantMsg as UIMessage]);
-      setChatStatus('idle');
-      retryTextRef.current = null;
     } catch (err: unknown) {
       const errText = classifyError(err);
 
@@ -787,9 +851,10 @@ export const ConversationView: React.FC = () => {
           <div
             className="flex items-center gap-2 flex-1 min-w-0 group cursor-pointer"
             onClick={() => setEditingTitle(true)}
+            title="Edit title"
           >
             <h1 className="text-[13.5px] font-medium text-white tracking-tight truncate">
-              {conversation.title}
+              {conversation.title || 'New Conversation'}
             </h1>
             <Edit2 size={12} className="text-[#8E8E93] opacity-0 group-hover:opacity-100 transition-opacity" />
           </div>
@@ -849,7 +914,7 @@ export const ConversationView: React.FC = () => {
           ))}
 
           {/* AI thinking indicator */}
-          {generationActive && <ThinkingIndicator />}
+          {generationActive && <ThinkingIndicator message={progressMessage || undefined} />}
 
           <div ref={messagesEndRef} />
         </div>

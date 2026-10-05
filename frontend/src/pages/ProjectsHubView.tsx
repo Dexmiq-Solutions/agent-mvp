@@ -1,13 +1,13 @@
 import React, { useEffect, useState, useMemo, useRef, useCallback } from 'react';
 import { Search, Plus, FolderOpen, AlertCircle, RotateCcw, X as XIcon } from 'lucide-react';
-import { mockProjectService } from '../services/mockData';
+import * as projectService from '../services/projectService';
 import type { Project } from '../types';
 import { ProjectCard } from '../components/projects/ProjectCard';
 import { CreateProjectModal } from '../components/projects/CreateProjectModal';
 import { DeleteProjectModal } from '../components/projects/DeleteProjectModal';
 
-// ─── Toggle: swap to real services when backend is live ─────────────────────
-const api = mockProjectService;
+// ─── Phase 2 API Integration ─────────────────────
+const api = projectService;
 
 export const ProjectsHubView: React.FC = () => {
   const [projects, setProjects] = useState<Project[]>([]);

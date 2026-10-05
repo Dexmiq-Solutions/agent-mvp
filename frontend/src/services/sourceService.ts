@@ -20,11 +20,19 @@ export async function listSources(
   limit = 50,
   offset = 0,
 ): Promise<PaginatedResponse<SourceDocument>> {
-  const { data } = await apiClient.get<PaginatedResponse<SourceDocument>>(
+  // The backend GET /projects/{id}/sources returns a plain array,
+  // not a paginated wrapper. Wrap it into the expected shape.
+  const { data } = await apiClient.get<SourceDocument[]>(
     base(projectId),
     { params: { limit, offset } },
   );
-  return data;
+  const items = Array.isArray(data) ? data : [];
+  return {
+    items,
+    total: items.length,
+    limit,
+    offset,
+  };
 }
 
 /** Retrieve a single source document by ID. */

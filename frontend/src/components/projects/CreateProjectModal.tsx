@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { X, Loader2 } from 'lucide-react';
-import { mockProjectService } from '../../services/mockData';
+import * as projectService from '../../services/projectService';
 import type { Project } from '../../types';
 
 interface CreateProjectModalProps {
@@ -44,7 +44,7 @@ export const CreateProjectModal: React.FC<CreateProjectModalProps> = ({
     try {
       setLoading(true);
       setError(null);
-      const project = await mockProjectService.createProject({
+      const project = await projectService.createProject({
         name: name.trim(),
         description: description.trim() || null,
       });

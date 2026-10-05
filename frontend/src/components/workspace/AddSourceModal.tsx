@@ -1,6 +1,6 @@
 import React, { useState, useRef, useCallback, useEffect } from 'react';
 import { X, Upload, FileText, AlertCircle } from 'lucide-react';
-import { mockSourceService } from '../../services/mockData';
+import * as sourceService from '../../services/sourceService';
 
 interface AddSourceModalProps {
   isOpen: boolean;
@@ -122,7 +122,7 @@ export const AddSourceModal: React.FC<AddSourceModalProps> = ({
         return next;
       });
       try {
-        await mockSourceService.uploadSource(projectId, files[i].file);
+        await sourceService.uploadSource(projectId, files[i].file);
         setFiles((prev) => {
           const next = [...prev];
           next[i] = { ...next[i], status: 'done' };

@@ -1116,40 +1116,47 @@ curl -X DELETE "http://localhost:8000/projects/b7e6c5a1-4321-4def-9876-543210abc
 
 ---
 
-## Messages API (Multi-turn History)
+## Messages API (Multi-turn History & Agent Streaming)
 
-The Messages API powers multi-turn dialogue within a conversation by persisting and listing message turns (`user` or `assistant`).
+The Messages API powers multi-turn dialogue within a conversation. Sending a `user` message invokes the **BRD Lead Agent** runtime under strict project boundary isolation, streams the agent response in real time via Server-Sent Events (SSE), and automatically persists both user and assistant message turns.
 
-> **Architectural Boundary Notice (Phase 1 — RAG Generation Layer Retired)**:
-> In earlier versions, `POST .../messages` supported a query parameter `generate=true` that ran an end-to-end RAG retrieval + LLM synthesis + groundedness evaluation pipeline within RAG. In Phase 1 of the BRD Agent architecture, this RAG-owned generation layer has been retired. RAG is strictly responsible for document processing, indexing, and retrieval (`POST /projects/{project_id}/retrieval`), returning a clean `RetrievalResult`. Multi-turn dialogue generation, evaluation, reasoning, and document synthesis will be owned by the future BRD Agent.
+> **Agent-Driven Dialogue Architecture**:
+> `POST /projects/{project_id}/conversations/{conversation_id}/messages` is the single application boundary for chat.
+> - The application establishes and enforces `project_id` isolation before invoking the agent runtime; the agent never selects the project.
+> - The existing `conversation_id` is mapped directly to the agent's execution thread identity (`thread_id=conversation_id`), preserving multi-turn memory and execution state across turns.
+> - Responses are streamed incrementally over HTTP SSE (`text/event-stream`), filtering out internal tool calls while delivering real-time tokens to the frontend.
 
 ---
 
-### Create Message Turn
+### Create Message Turn / Invoke Agent
 
-- **Purpose**: Appends and persists a single message turn (`user` or `assistant`) into the conversation history. Returns the created `MessageResponse`.
+- **Purpose**: Persists a message turn and, for user messages, invokes the `BRDLeadAgent` to stream the assistant's response.
 - **HTTP Method**: `POST`
 - **Endpoint**: `/projects/{project_id}/conversations/{conversation_id}/messages`
 - **Required Path Parameters**:
   | Parameter | Type | Description |
   | :--- | :--- | :--- |
-  | `project_id` | string (UUID) | Owning project identifier |
-  | `conversation_id` | string (UUID) | Target conversation identifier |
-- **Query Parameters**: None
+  | `project_id` | string (UUID) | Owning project identifier (tenant boundary) |
+  | `conversation_id` | string (UUID) | Target conversation identifier (agent `thread_id`) |
+- **Query Parameters**:
+  | Parameter | Type | Default | Description |
+  | :--- | :--- | :--- | :--- |
+  | `stream` | boolean | `true` | When `true` (default) and `role="user"`, returns a `text/event-stream` SSE response streaming the agent's output. When `false` and `role="user"`, executes the full 9-phase BRD workflow synchronously and returns the generated assistant message as HTTP `201 Created` (`MessageResponse`). |
 - **Required Headers**: `Content-Type: application/json`
 - **Authentication**: None
-- **Prerequisites**: Obtain `project_id` and `conversation_id`.
+- **Prerequisites**: Obtain `project_id` from [Create Project](#create-project) and `conversation_id` from [Create Conversation](#create-conversation).
 
 #### Request Body Structure
 | Field | Type | Required | Description |
 | :--- | :--- | :--- | :--- |
 | `content` | string | **Yes** | Message text (non-empty) |
 | `role` | string | No | Message sender role: `"user"` or `"assistant"` (default: `"user"`) |
+| `stream` | boolean | No | Optional override for streaming behavior (takes precedence over query param) |
 | `metadata` | object | No | Optional arbitrary key-value JSON metadata |
 
 ```json
 {
-  "content": "What is the maximum liability cap specified in the agreement?",
+  "content": "Draft the Executive Summary section for the BRD based on the uploaded RFP.",
   "role": "user",
   "metadata": {
     "client_session": "web-client-v1"
@@ -1157,46 +1164,156 @@ The Messages API powers multi-turn dialogue within a conversation by persisting 
 }
 ```
 
-#### Response Structure (201 Created)
+#### Streaming Response Behavior (`stream=true`, `role="user"`)
+Returns HTTP `200 OK` with `Content-Type: text/event-stream; charset=utf-8` and headers `Cache-Control: no-cache`, `X-Accel-Buffering: no`.
+
+The stream emits standard SSE events:
+
+1. **Content Chunks (`event: message`)**:
+   Emitted incrementally as the agent generates tokens.
+   ```text
+   event: message
+   data: {"type": "content", "content": "The Executive Summary "}
+
+   event: message
+   data: {"type": "content", "content": "outlines the key business objectives..."}
+   ```
+
+2. **Completion Event (`event: done`)**:
+   Emitted when the agent finishes execution and the final assistant response has been persisted to the database. The `data` payload contains the persisted `MessageResponse`.
+   ```text
+   event: done
+   data: {"id": "77777777-8888-9999-aaaa-bbbbbbbbbbbb", "conversation_id": "c3d2e1f0-1234-5678-9abc-def012345678", "role": "assistant", "content": "The Executive Summary outlines the key business objectives...", "metadata": {"agent_run_id": "88888888-7777-6666-5555-444444444444", "user_message_id": "66666666-5555-4444-3333-222222222222", "workflow_state": {...}}, "created_at": "2026-09-14T12:12:05.000000Z"}
+   ```
+
+3. **Error Event (`event: error`)**:
+   Emitted if an execution, LLM provider, or persistence error occurs during streaming.
+   ```text
+   event: error
+   data: {"error": "LLM provider timeout during inference"}
+   ```
+
+#### Non-Streaming Agent Execution (`stream=false`, `role="user"`)
+When `stream=false` (via query parameter or body payload) and `role="user"`, the endpoint executes the exact same 9-phase BRD workflow synchronously via `BRDLeadAgent.run_workflow_async`.
+It persists both the incoming user message and the generated assistant response to the conversation database, returning HTTP `201 Created` with the **assistant** `MessageResponse` JSON including durable `workflow_state` metadata:
+
 ```json
 {
-  "id": "66666666-5555-4444-3333-222222222222",
+  "id": "77777777-8888-9999-aaaa-bbbbbbbbbbbb",
   "conversation_id": "c3d2e1f0-1234-5678-9abc-def012345678",
-  "role": "user",
-  "content": "What is the maximum liability cap specified in the agreement?",
+  "role": "assistant",
+  "content": "## 1.0 Executive Summary\n\nThis Business Requirements Document defines the core payment gateway architecture...",
   "metadata": {
-    "client_session": "web-client-v1"
+    "user_message_id": "66666666-5555-4444-3333-222222222222",
+    "agent_run_id": "88888888-7777-6666-5555-444444444444",
+    "conversation_id": "c3d2e1f0-1234-5678-9abc-def012345678",
+    "project_id": "b7e6c5a1-4321-4def-9876-543210abcdef",
+    "duration_seconds": 3.42,
+    "workflow_state": {
+      "objective": "Produce an evidence-grounded Business Requirements Document",
+      "section_progress": {
+        "1.0 Executive Summary": "Completed"
+      },
+      "waiting_for_user": false,
+      "pending_clarification": null
+    }
   },
-  "created_at": "2026-09-14T12:12:00.000000Z"
+  "created_at": "2026-09-14T12:12:05.000000Z"
 }
 ```
 
-#### cURL (Message Persistence)
+#### Direct Message Seeding (`role="assistant"`)
+When `role="assistant"` is provided (e.g. for historical seeding or manual transcription), the endpoint persists the assistant message directly to the conversation history and returns HTTP `201 Created` without invoking the BRD agent.
+
+#### cURL (Non-Streaming Execution)
 ```bash
-curl -X POST "http://localhost:8000/projects/b7e6c5a1-4321-4def-9876-543210abcdef/conversations/c3d2e1f0-1234-5678-9abc-def012345678/messages" \
+curl -X POST "http://localhost:8000/projects/b7e6c5a1-4321-4def-9876-543210abcdef/conversations/c3d2e1f0-1234-5678-9abc-def012345678/messages?stream=false" \
   -H "Content-Type: application/json" \
   -d '{
-    "content": "What is the maximum liability cap specified in the agreement?",
+    "content": "Draft the Executive Summary section for the BRD based on the uploaded RFP.",
     "role": "user"
   }'
 ```
 
+#### cURL (Streaming)
+```bash
+curl -N -X POST "http://localhost:8000/projects/b7e6c5a1-4321-4def-9876-543210abcdef/conversations/c3d2e1f0-1234-5678-9abc-def012345678/messages?stream=true" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "content": "What are the key functional requirements?",
+    "role": "user"
+  }'
+```
+
+#### Example Frontend / Client Usage (JavaScript `fetch` + `ReadableStream`)
+```javascript
+async function sendMessageToAgent(projectId, conversationId, userText, onChunk, onComplete, onError) {
+  const response = await fetch(
+    `/projects/${projectId}/conversations/${conversationId}/messages?stream=true`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content: userText, role: 'user' })
+    }
+  );
+
+  if (!response.ok) {
+    const errorBody = await response.json().catch(() => ({ detail: 'Network error' }));
+    throw new Error(errorBody.detail || `Request failed with status ${response.status}`);
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder('utf-8');
+  let buffer = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop(); // keep partial line
+
+    let currentEvent = 'message';
+    for (const line of lines) {
+      if (line.startsWith('event: ')) {
+        currentEvent = line.slice(7).trim();
+      } else if (line.startsWith('data: ')) {
+        const dataStr = line.slice(6).trim();
+        if (!dataStr) continue;
+        const parsed = JSON.parse(dataStr);
+
+        if (currentEvent === 'message' && parsed.content) {
+          onChunk(parsed.content);
+        } else if (currentEvent === 'done') {
+          onComplete(parsed); // Persisted MessageResponse
+        } else if (currentEvent === 'error') {
+          onError(parsed.error);
+        }
+      }
+    }
+  }
+}
+```
+
 #### Postman
 - **Method**: `POST`
-- **URL**: `http://localhost:8000/projects/:project_id/conversations/:conversation_id/messages`
+- **URL**: `http://localhost:8000/projects/:project_id/conversations/:conversation_id/messages?stream=true`
 - **Params**:
   - `project_id`: `b7e6c5a1-4321-4def-9876-543210abcdef`
   - `conversation_id`: `c3d2e1f0-1234-5678-9abc-def012345678`
+  - `stream`: `true`
 - **Headers**:
   - `Content-Type`: `application/json`
 - **Body** (`raw` - `JSON`):
   ```json
   {
-    "content": "What is the maximum liability cap specified in the agreement?",
+    "content": "Draft the Executive Summary section for the BRD based on the uploaded RFP.",
     "role": "user"
   }
   ```
 - **Authentication**: No Auth
+- *Note: Postman will stream the SSE chunks in real time under the Response view.*
 
 ---
 

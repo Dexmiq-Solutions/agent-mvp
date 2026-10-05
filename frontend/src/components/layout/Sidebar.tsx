@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { NavLink, useLocation } from 'react-router-dom';
 import { LayoutGrid, Hexagon, Menu, X, Folder } from 'lucide-react';
-import { mockProjectService } from '../../services/mockData';
+import * as projectService from '../../services/projectService';
 import { listConversations } from '../../services/chatService';
 import type { Project, Conversation } from '../../types';
 
@@ -18,7 +18,7 @@ export const Sidebar: React.FC<{ children: React.ReactNode }> = ({ children }) =
       const projectId = match[1];
       // Only fetch if it's a new project ID or we don't have one
       if (currentProject?.id !== projectId) {
-        mockProjectService.getProject(projectId).then(setCurrentProject).catch(() => setCurrentProject(null));
+        projectService.getProject(projectId).then(setCurrentProject).catch(() => setCurrentProject(null));
       }
     } else {
       setCurrentProject(null);
@@ -38,7 +38,7 @@ export const Sidebar: React.FC<{ children: React.ReactNode }> = ({ children }) =
   }, [currentProject?.id, location.pathname]);
 
   return (
-    <div className="flex h-screen w-full overflow-hidden" style={{ background: '#0A0A0A' }}>
+    <div className="flex h-full w-full overflow-hidden" style={{ background: '#0A0A0A' }}>
 
       {/* ─── Mobile hamburger ──────────────────────────────────────────────── */}
       <button
@@ -159,7 +159,7 @@ export const Sidebar: React.FC<{ children: React.ReactNode }> = ({ children }) =
 
         {/* Current Project Context */}
         {currentProject && (
-          <div className="fade-in flex flex-col flex-1 overflow-hidden" style={{ animation: 'fade-in 0.2s ease forwards' }}>
+          <div className="fade-in flex flex-col flex-1 overflow-hidden" style={{ animation: 'fade-in 0.2s ease forwards', minHeight: 0 }}>
             <div style={{ height: '1px', background: '#1a1a1a', margin: '16px' }} />
 
             {/* Section label */}
@@ -176,6 +176,7 @@ export const Sidebar: React.FC<{ children: React.ReactNode }> = ({ children }) =
                 flex: 1,
                 overflow: 'hidden',
                 padding: '0 8px',
+                minHeight: 0,
               }}
             >
               {/* Project Title */}
@@ -234,11 +235,11 @@ export const Sidebar: React.FC<{ children: React.ReactNode }> = ({ children }) =
                         key={conv.id}
                         to={`/projects/${currentProject.id}/c/${conv.id}`}
                         onClick={() => setMobileOpen(false)}
-                        className={`group truncate transition-all duration-200 ${isActive ? 'bg-white/10 text-white shadow-sm' : 'hover:bg-white/5 text-zinc-400 hover:text-zinc-200'}`}
-                        title={conv.title}
+                        className={`group truncate shrink-0 transition-all duration-200 ${isActive ? 'bg-white/10 text-white shadow-sm' : 'hover:bg-white/5 text-zinc-400 hover:text-zinc-200'}`}
+                        title={conv.title || 'New Conversation'}
                         style={{
                           display: 'block',
-                          padding: '10px 12px',
+                          padding: '8px 12px',
                           borderRadius: '8px',
                           fontSize: '13px',
                           fontWeight: isActive ? 500 : 400,
@@ -246,10 +247,11 @@ export const Sidebar: React.FC<{ children: React.ReactNode }> = ({ children }) =
                           whiteSpace: 'nowrap',
                           overflow: 'hidden',
                           textOverflow: 'ellipsis',
-                          lineHeight: '1.5'
+                          lineHeight: '1.4',
+                          minWidth: 0
                         }}
                       >
-                        {conv.title}
+                        {conv.title || 'New Conversation'}
                       </NavLink>
                     );
                   })
@@ -260,7 +262,7 @@ export const Sidebar: React.FC<{ children: React.ReactNode }> = ({ children }) =
         )}
 
         {/* Bottom spacer — future nav items can go here */}
-        <div style={{ flex: 1 }} />
+        <div style={{ marginTop: 'auto' }} />
 
         {/* Version badge */}
         <div style={{ padding: '12px 16px', borderTop: '1px solid #1a1a1a', flexShrink: 0 }}>

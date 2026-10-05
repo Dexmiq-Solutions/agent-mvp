@@ -13,11 +13,62 @@ from exceptions.retrieval import (
 from rag.retrieval.config import RerankingConfig
 from rag.retrieval.models import FusedCandidate, ProcessedQuery, RerankedCandidate, RetrievalQuerySet
 from rag.retrieval.reranking.base import BaseReranker, ScoredDocument
+from rag.retrieval.reranking.jina import JinaReranker
 from rag.retrieval.reranking.voyage import VoyageReranker
 
 logger = get_logger(__name__)
 
 _reranking_service: Optional["RerankingService"] = None
+
+
+def get_reranker_provider(
+    provider: Optional[str] = None,
+    model: Optional[str] = None,
+    timeout_seconds: Optional[float] = None,
+    api_key: Optional[str] = None,
+    settings: Optional[Settings] = None,
+    client: Optional[Any] = None,
+) -> BaseReranker:
+    """Resolve and instantiate a concrete BaseReranker provider.
+
+    Args:
+        provider: Provider name override ('jina' or 'voyage'). Defaults to settings.RERANKER_PROVIDER or 'jina'.
+        model: Model name override.
+        timeout_seconds: Network call timeout override.
+        api_key: Optional API key override.
+        settings: Application Settings override.
+        client: Optional pre-configured client override.
+
+    Returns:
+        BaseReranker: Configured cross-encoder reranker instance.
+
+    Raises:
+        RerankingConfigurationError: If provider name is unsupported or configuration invalid.
+    """
+    app_settings = settings or get_settings()
+    provider_name = (
+        provider or getattr(app_settings, "RERANKER_PROVIDER", "jina") or "jina"
+    ).strip().lower()
+
+    if provider_name == "jina":
+        return JinaReranker(
+            model=model,
+            api_key=api_key,
+            timeout_seconds=timeout_seconds,
+            client=client,
+            settings=app_settings,
+        )
+    elif provider_name == "voyage":
+        return VoyageReranker(
+            model=model,
+            timeout_seconds=timeout_seconds,
+            client=client,
+            settings=app_settings,
+        )
+    else:
+        raise RerankingConfigurationError(
+            f"Unsupported reranker provider: '{provider_name}'. Supported providers: 'jina', 'voyage'."
+        )
 
 
 def resolve_candidate_text(
@@ -86,17 +137,21 @@ class RerankingService:
         """Initialize RerankingService.
 
         Args:
-            reranker: BaseReranker instance. Defaults to configured VoyageReranker.
+            reranker: BaseReranker instance. Defaults to active provider (JinaReranker).
             config: RerankingConfig instance. Defaults to config from Settings.
             settings: Application Settings instance. Defaults to cached app settings.
         """
         self._settings = settings or get_settings()
         self._config = config or RerankingConfig.from_settings(self._settings)
-        self._reranker = reranker or VoyageReranker(
-            model=self._config.model,
-            timeout_seconds=self._config.timeout_seconds,
-            settings=self._settings,
-        )
+        if reranker is not None:
+            self._reranker = reranker
+        else:
+            self._reranker = get_reranker_provider(
+                provider=self._config.provider,
+                model=self._config.model,
+                timeout_seconds=self._config.timeout_seconds,
+                settings=self._settings,
+            )
 
     @property
     def config(self) -> RerankingConfig:
