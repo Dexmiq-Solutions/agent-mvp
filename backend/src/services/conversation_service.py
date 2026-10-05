@@ -148,7 +148,7 @@ class ConversationService:
         project_id: str,
         limit: int = 100,
         offset: int = 0,
-    ) -> list[ConversationModel]:
+    ) -> list[tuple[ConversationModel, int]]:
         """List all conversations belonging to a project, ordered by last update descending.
 
         Args:
@@ -157,7 +157,7 @@ class ConversationService:
             offset: Number of records to skip.
 
         Returns:
-            List of ConversationModel instances scoped strictly to the project.
+            List of tuples (ConversationModel, messages_count) scoped strictly to the project.
 
         Raises:
             ProjectNotFoundError: If project does not exist.
@@ -168,9 +168,13 @@ class ConversationService:
         offset = max(0, offset)
 
         stmt = (
-            select(ConversationModel)
-            .options(selectinload(ConversationModel.messages))
+            select(
+                ConversationModel,
+                func.count(MessageModel.id).label("messages_count")
+            )
+            .outerjoin(MessageModel, MessageModel.conversation_id == ConversationModel.id)
             .where(ConversationModel.project_id == project_id)
+            .group_by(ConversationModel.id)
             .order_by(
                 ConversationModel.updated_at.desc().nullslast(),
                 ConversationModel.created_at.desc().nullslast(),
@@ -180,7 +184,7 @@ class ConversationService:
         )
 
         result = await self._session.execute(stmt)
-        return list(result.scalars().all())
+        return list(result.all())
 
     async def update_conversation(
         self,

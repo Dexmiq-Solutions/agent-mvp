@@ -565,7 +565,15 @@ class BRDFinalValidationAgent:
                 loaded from system_instruction.md.
         """
         self._system_instruction = system_instruction or load_final_validation_system_instruction()
-        self._model = model or create_agent_model(config or AgentConfig.from_settings())
+        if model:
+            self._model = model
+        else:
+            import dataclasses
+            cfg = config or AgentConfig.from_settings()
+            # Validation responses are small JSONs; strictly bound max_tokens to prevent TPM exhaustion
+            if cfg.max_tokens is None or cfg.max_tokens > 800:
+                cfg = dataclasses.replace(cfg, max_tokens=800)
+            self._model = create_agent_model(cfg)
 
         # Strict boundary: Sub-Agent has NO tools
         self._tools: list[Any] = []

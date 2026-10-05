@@ -83,9 +83,9 @@ async def list_conversations(
             title=c.title,
             created_at=c.created_at,
             updated_at=c.updated_at,
-            messages_count=len(c.messages) if c.messages else 0,
+            messages_count=msg_count,
         )
-        for c in conversations
+        for c, msg_count in conversations
     ]
 
 

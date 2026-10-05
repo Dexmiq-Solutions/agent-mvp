@@ -1,37 +1,32 @@
-# Frontend Architecture & Technical Specification
+# React + TypeScript + Vite
 
-Please refer to the authoritative specification document at [FRONTEND_SPECIFICATION.md](../FRONTEND_SPECIFICATION.md).
+This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
 
-## Dexmiq AI Agent Frontend (Demo UI)
+Currently, two official plugins are available:
 
-A lightweight, minimal frontend designed to manually demonstrate end-to-end integration between the FastAPI backend, RAG pipeline, Conversations, Sources, and the BRD Agent.
+- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
+- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
 
-### Features
-- **Project Hub**: List existing projects, create new projects, and select a project workspace.
-- **Project Workspace**: Scoped by authoritative `project_id` to guarantee project boundary isolation.
-- **Conversations**: Create new conversation threads, switch between threads, and view complete message histories.
-- **Sources**: Upload project knowledge base documents (PDF, Word `.docx`, Markdown `.md`, Text `.txt`), view indexing status (`ready`, `indexing`, `pending`, `failed`), and auto-refresh after upload.
-- **BRD Agent Chat**: Live streaming Server-Sent Events (SSE) chat interface connected to the backend BRD Agent.
+## React Compiler
 
-### Quick Start
+The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
 
-#### 1. Install Dependencies
-```bash
-npm install
+## Expanding the Oxlint configuration
+
+If you are developing a production application, we recommend enabling type-aware lint rules by installing `oxlint-tsgolint` and editing `.oxlintrc.json`:
+
+```json
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": ["react", "typescript", "oxc"],
+  "options": {
+    "typeAware": true
+  },
+  "rules": {
+    "react/rules-of-hooks": "error",
+    "react/only-export-components": ["warn", { "allowConstantExport": true }]
+  }
+}
 ```
 
-#### 2. Start Dev Server
-```bash
-npm run dev
-```
-The Vite development server runs on `http://localhost:5173` and proxies API requests to `http://127.0.0.1:8000`.
-
-#### 3. Run Tests
-```bash
-npm test
-```
-
-#### 4. Build for Production
-```bash
-npm run build
-```
+See the [Oxlint rules documentation](https://oxc.rs/docs/guide/usage/linter/rules) for the full list of rules and categories.

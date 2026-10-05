@@ -1,78 +1,48 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import { Project, ProjectCreatePayload } from './types';
-import { listProjects, createProject } from './api/projects';
-import { ProjectList } from './components/ProjectList';
-import { ProjectWorkspace } from './components/ProjectWorkspace';
+import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { useEffect } from 'react';
+import { Sidebar } from './components/layout/Sidebar';
+import { ProjectsHubView } from './pages/ProjectsHubView';
+import { ProjectHomeView } from './pages/ProjectHomeView';
+import { ConversationView } from './pages/ConversationView';
+import { checkHealth } from './services/api';
 
-export const App: React.FC = () => {
-  const [projects, setProjects] = useState<Project[]>([]);
-  const [selectedProject, setSelectedProject] = useState<Project | null>(null);
-  const [loading, setLoading] = useState<boolean>(true);
-  const [error, setError] = useState<string | null>(null);
-
-  const fetchProjects = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const data = await listProjects();
-      setProjects(data);
-    } catch (err) {
-      setError(
-        err instanceof Error
-          ? err.message
-          : 'Unable to connect to backend server. Make sure the FastAPI backend is running.'
-      );
-    } finally {
-      setLoading(false);
-    }
+function App() {
+  useEffect(() => {
+    // Phase 1: Basic backend connectivity test on load
+    checkHealth().then((isHealthy) => {
+      console.log(`Backend connectivity test: ${isHealthy ? 'SUCCESS' : 'FAILED'}`);
+    });
   }, []);
 
-  useEffect(() => {
-    fetchProjects();
-  }, [fetchProjects]);
-
-  const handleCreateProject = async (payload: ProjectCreatePayload) => {
-    const newProject = await createProject(payload);
-    setProjects((prev) => [newProject, ...prev]);
-    setSelectedProject(newProject);
-  };
-
   return (
-    <div className="app-root">
-      <header className="app-navbar" id="app-navbar">
-        <div className="nav-brand" onClick={() => setSelectedProject(null)} role="button" tabIndex={0}>
-          <span className="brand-icon">🤖</span>
-          <span className="brand-name">Dexmiq AI Agent</span>
-          <span className="brand-badge">BRD Demo</span>
-        </div>
+    <BrowserRouter>
+      <div className="fixed inset-0 overflow-hidden bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-zinc-900 via-zinc-950 to-black text-[#FAFAFA] font-sans">
+        <Routes>
+          {/* Redirect root to projects */}
+          <Route path="/" element={<Navigate to="/projects" replace />} />
 
-        {selectedProject && (
-          <div className="nav-project-crumb">
-            <span className="crumb-sep">/</span>
-            <span className="crumb-name">{selectedProject.name}</span>
-          </div>
-        )}
-      </header>
+          {/* Main App Routes wrapped in Sidebar Layout */}
+          <Route
+            path="/*"
+            element={
+              <Sidebar>
+                <Routes>
+                  {/* Projects Hub */}
+                  <Route path="/projects" element={<ProjectsHubView />} />
 
-      <div className="app-main-content">
-        {!selectedProject ? (
-          <ProjectList
-            projects={projects}
-            loading={loading}
-            error={error}
-            onSelectProject={(project) => setSelectedProject(project)}
-            onCreateProject={handleCreateProject}
-            onRefresh={fetchProjects}
+                  {/* Project Home (Tabs: chats | sources) */}
+                  <Route path="/projects/:projectId" element={<ProjectHomeView />} />
+
+                  {/* Conversation View */}
+                  <Route path="/projects/:projectId/c/:conversationId" element={<ConversationView />} />
+                </Routes>
+              </Sidebar>
+            }
           />
-        ) : (
-          <ProjectWorkspace
-            project={selectedProject}
-            onBackToProjects={() => setSelectedProject(null)}
-          />
-        )}
+        </Routes>
       </div>
-    </div>
+    </BrowserRouter>
   );
-};
+}
 
 export default App;

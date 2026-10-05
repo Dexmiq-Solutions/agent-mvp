@@ -1,20 +1,21 @@
-import { defineConfig } from 'vite';
-import react from '@vitejs/plugin-react';
+import react from '@vitejs/plugin-react'
+import tailwindcss from '@tailwindcss/vite'
+import { defineConfig } from 'vite'
 
-// https://vitejs.dev/config/
+// https://vite.dev/config/
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react(), tailwindcss()],
   server: {
     port: 5173,
+    // Proxy all /api/* requests to the FastAPI backend.
+    // This avoids CORS issues since the backend does not yet have CORSMiddleware.
+    // The frontend code should call /api/... and the proxy rewrites to http://localhost:8000/...
     proxy: {
-      '/projects': {
+      '/api': {
         target: 'http://127.0.0.1:8000',
         changeOrigin: true,
-      },
-      '/health': {
-        target: 'http://127.0.0.1:8000',
-        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api/, ''),
       },
     },
   },
-});
+})
