@@ -168,6 +168,16 @@ class Settings(BaseSettings):
     # Document Processing Lifecycle Configuration
     AUTO_PROCESS_DOCUMENTS: bool = True
 
+    # Authentication & Security
+    JWT_SECRET_KEY: str = "insecure-default-change-in-production-env-32-bytes"
+    JWT_ALGORITHM: str = "HS256"
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 15
+    REFRESH_TOKEN_EXPIRE_DAYS: int = 7
+
+    # Login Rate Limiting
+    LOGIN_RATE_LIMIT_MAX_ATTEMPTS: int = 5
+    LOGIN_RATE_LIMIT_WINDOW_SECONDS: int = 60
+
 
     @field_validator("LOG_LEVEL", mode="before")
     @classmethod

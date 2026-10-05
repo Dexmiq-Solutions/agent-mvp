@@ -1,5 +1,15 @@
 """Application domain exceptions."""
 
+from exceptions.auth import (
+    AuthError,
+    InvalidCredentialsError,
+    InvalidTokenError,
+    RateLimitExceededError,
+    TokenRevokedError,
+    UserAlreadyExistsError,
+    UserInactiveError,
+    UserNotFoundError,
+)
 from exceptions.acquisition import (
     AcquisitionConfigurationError,
     AcquisitionError,
@@ -308,5 +318,14 @@ __all__ = [
     "ConversationMessageMismatchError",
     "InvalidMessageDataError",
     "InvalidMessageRoleError",
+    # Authentication & Authorization Exceptions
+    "AuthError",
+    "InvalidCredentialsError",
+    "UserAlreadyExistsError",
+    "UserNotFoundError",
+    "UserInactiveError",
+    "InvalidTokenError",
+    "TokenRevokedError",
+    "RateLimitExceededError",
 ]
 

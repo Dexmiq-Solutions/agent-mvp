@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Optional
 import uuid
 
-from sqlalchemy import DateTime, String, Text
+from sqlalchemy import DateTime, ForeignKey, Index, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from db.base import Base
@@ -15,6 +15,7 @@ from db.base import Base
 if TYPE_CHECKING:
     from models.conversation import ConversationModel
     from models.document import DocumentModel
+    from models.user import UserModel
 
 
 class ProjectModel(Base):
@@ -27,6 +28,13 @@ class ProjectModel(Base):
         String(255),
         primary_key=True,
         default=lambda: str(uuid.uuid4()),
+    )
+    user_id: Mapped[Optional[str]] = mapped_column(
+        String(255),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=True,
+        default=None,
+        index=True,
     )
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
@@ -42,6 +50,16 @@ class ProjectModel(Base):
         nullable=True,
         default=lambda: datetime.now(timezone.utc),
         onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+    __table_args__ = (
+        Index("ix_projects_user_id_created_at", "user_id", "created_at"),
+    )
+
+    # Relational Parent
+    user: Mapped["UserModel"] = relationship(
+        "UserModel",
+        back_populates="projects",
     )
 
     # Relational Children (Ownership Boundary)
@@ -62,6 +80,7 @@ class ProjectModel(Base):
         """Serialize project model to a dictionary."""
         return {
             "id": self.id,
+            "user_id": self.user_id,
             "name": self.name,
             "description": self.description,
             "created_at": self.created_at.isoformat() if self.created_at else None,

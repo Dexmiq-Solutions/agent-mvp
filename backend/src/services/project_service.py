@@ -45,12 +45,14 @@ class ProjectService:
         self,
         name: str,
         description: Optional[str] = None,
+        user_id: Optional[str] = None,
     ) -> ProjectModel:
         """Create and persist a new project entity.
         
         Args:
             name: Project display name.
             description: Optional project description.
+            user_id: Optional owning user identifier.
             
         Returns:
             Newly created ProjectModel instance.
@@ -65,40 +67,57 @@ class ProjectService:
         project = ProjectModel(
             name=clean_name,
             description=description,
+            user_id=user_id,
         )
         self._session.add(project)
         await self._session.flush()
 
-        logger.info("Created project '%s' (id: %s)", project.name, project.id)
+        logger.info("Created project '%s' (id: %s, user_id: %s)", project.name, project.id, user_id)
         return project
 
-    async def get_project(self, project_id: str) -> ProjectModel:
-        """Retrieve a project by its primary key identifier.
+    async def get_project(
+        self,
+        project_id: str,
+        user_id: Optional[str] = None,
+    ) -> ProjectModel:
+        """Retrieve a project by its primary key identifier, optionally scoped to an owning user.
         
         Args:
             project_id: Project identifier.
+            user_id: Optional owning user identifier.
             
         Returns:
             ProjectModel instance.
             
         Raises:
-            ProjectNotFoundError: If project does not exist.
+            ProjectNotFoundError: If project does not exist or does not belong to user.
         """
         stmt = select(ProjectModel).where(ProjectModel.id == project_id)
+        if user_id is not None:
+            stmt = stmt.where(ProjectModel.user_id == user_id)
+
         result = await self._session.execute(stmt)
         project = result.scalar_one_or_none()
 
         if project is None:
-            logger.warning("Project '%s' not found", project_id)
+            logger.warning("Project '%s' not found (user_id: %s)", project_id, user_id)
             raise ProjectNotFoundError(project_id)
 
         return project
 
-    async def get_project_by_id(self, project_id: str) -> ProjectModel:
+    async def get_project_by_id(
+        self,
+        project_id: str,
+        user_id: Optional[str] = None,
+    ) -> ProjectModel:
         """Alias for get_project to maintain naming compatibility across callers."""
-        return await self.get_project(project_id)
+        return await self.get_project(project_id, user_id=user_id)
 
-    async def get_project_context(self, project_id: str) -> dict[str, Any]:
+    async def get_project_context(
+        self,
+        project_id: str,
+        user_id: Optional[str] = None,
+    ) -> dict[str, Any]:
         """Retrieve project metadata and source document inventory under project boundary isolation.
 
         Provides authoritative project context (name, description, and available document names)
@@ -107,6 +126,7 @@ class ProjectService:
 
         Args:
             project_id: Authoritative project identifier.
+            user_id: Optional owning user identifier.
 
         Returns:
             dict containing project_id, project_name, project_description, and available_documents.
@@ -114,7 +134,7 @@ class ProjectService:
         Raises:
             ProjectNotFoundError: If project does not exist.
         """
-        project = await self.get_project(project_id)
+        project = await self.get_project(project_id, user_id=user_id)
         from models.document import DocumentModel
 
         stmt = (
@@ -134,12 +154,14 @@ class ProjectService:
 
     async def list_projects(
         self,
+        user_id: Optional[str] = None,
         limit: int = 100,
         offset: int = 0,
     ) -> list[ProjectModel]:
-        """List all projects ordered by creation date descending.
+        """List all projects ordered by creation date descending, optionally filtered by owning user.
         
         Args:
+            user_id: Optional owning user identifier.
             limit: Maximum number of projects to return (1..100).
             offset: Number of records to skip.
             
@@ -149,8 +171,12 @@ class ProjectService:
         limit = max(1, min(limit, 100))
         offset = max(0, offset)
 
+        stmt = select(ProjectModel)
+        if user_id is not None:
+            stmt = stmt.where(ProjectModel.user_id == user_id)
+
         stmt = (
-            select(ProjectModel)
+            stmt
             .order_by(ProjectModel.created_at.desc())
             .limit(limit)
             .offset(offset)
@@ -161,13 +187,15 @@ class ProjectService:
     async def update_project(
         self,
         project_id: str,
+        user_id: Optional[str] = None,
         name: Optional[str] = None,
         description: Optional[str] = None,
     ) -> ProjectModel:
-        """Update mutable fields of an existing project.
+        """Update mutable fields of an existing project with optional user ownership enforcement.
         
         Args:
             project_id: Project identifier.
+            user_id: Optional owning user identifier.
             name: Optional new project name.
             description: Optional new project description.
             
@@ -178,7 +206,7 @@ class ProjectService:
             ProjectNotFoundError: If project does not exist.
             InvalidProjectDataError: If updated name is empty or invalid.
         """
-        project = await self.get_project(project_id)
+        project = await self.get_project(project_id, user_id=user_id)
 
         if name is not None:
             clean_name = name.strip()
@@ -193,7 +221,11 @@ class ProjectService:
         logger.info("Updated project id: %s", project_id)
         return project
 
-    async def delete_project(self, project_id: str) -> None:
+    async def delete_project(
+        self,
+        project_id: str,
+        user_id: Optional[str] = None,
+    ) -> None:
         """Delete a project and cascade deletion to all related child entities.
         
         PostgreSQL foreign keys handle cascading deletes to documents, versions, chunks,
@@ -202,11 +234,12 @@ class ProjectService:
         
         Args:
             project_id: Project identifier.
+            user_id: Optional owning user identifier.
             
         Raises:
             ProjectNotFoundError: If project does not exist.
         """
-        project = await self.get_project(project_id)
+        project = await self.get_project(project_id, user_id=user_id)
 
         # Best-effort cleanup of project objects in Supabase Storage
         if self._storage is not None:

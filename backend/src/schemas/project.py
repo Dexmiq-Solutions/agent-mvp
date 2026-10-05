@@ -48,6 +48,7 @@ class ProjectResponse(ProjectBase):
     """Schema for project responses."""
 
     id: str = Field(..., description="Unique project identifier")
+    user_id: Optional[str] = Field(None, description="Owning user identifier")
     created_at: Optional[datetime] = Field(None, description="Creation timestamp with timezone")
     updated_at: Optional[datetime] = Field(None, description="Last modification timestamp with timezone")
 

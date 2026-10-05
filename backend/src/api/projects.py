@@ -2,7 +2,8 @@
 
 from fastapi import APIRouter, Depends, Query, Response, status
 
-from api.dependencies import get_project_service
+from api.dependencies import get_current_user, get_project_service
+from models.user import UserModel
 from schemas.project import ProjectCreate, ProjectResponse, ProjectUpdate
 from services.project_service import ProjectService
 
@@ -17,12 +18,14 @@ router = APIRouter(prefix="/projects", tags=["Projects"])
 )
 async def create_project(
     payload: ProjectCreate,
+    current_user: UserModel = Depends(get_current_user),
     service: ProjectService = Depends(get_project_service),
 ) -> ProjectResponse:
-    """Create a new root tenant Project."""
+    """Create a new root tenant Project owned by the authenticated user."""
     project = await service.create_project(
         name=payload.name,
         description=payload.description,
+        user_id=current_user.id,
     )
     return ProjectResponse.model_validate(project)
 
@@ -36,10 +39,15 @@ async def create_project(
 async def list_projects(
     limit: int = Query(100, ge=1, le=100, description="Maximum number of projects to return"),
     offset: int = Query(0, ge=0, description="Number of projects to skip"),
+    current_user: UserModel = Depends(get_current_user),
     service: ProjectService = Depends(get_project_service),
 ) -> list[ProjectResponse]:
-    """List all projects ordered by creation date descending."""
-    projects = await service.list_projects(limit=limit, offset=offset)
+    """List all projects owned by the authenticated user ordered by creation date descending."""
+    projects = await service.list_projects(
+        user_id=current_user.id,
+        limit=limit,
+        offset=offset,
+    )
     return [ProjectResponse.model_validate(p) for p in projects]
 
 
@@ -51,10 +59,14 @@ async def list_projects(
 )
 async def get_project(
     project_id: str,
+    current_user: UserModel = Depends(get_current_user),
     service: ProjectService = Depends(get_project_service),
 ) -> ProjectResponse:
-    """Retrieve details for a specific project."""
-    project = await service.get_project(project_id=project_id)
+    """Retrieve details for a specific project owned by the authenticated user."""
+    project = await service.get_project(
+        project_id=project_id,
+        user_id=current_user.id,
+    )
     return ProjectResponse.model_validate(project)
 
 
@@ -67,11 +79,13 @@ async def get_project(
 async def update_project(
     project_id: str,
     payload: ProjectUpdate,
+    current_user: UserModel = Depends(get_current_user),
     service: ProjectService = Depends(get_project_service),
 ) -> ProjectResponse:
-    """Update mutable fields of a project."""
+    """Update mutable fields of a project owned by the authenticated user."""
     project = await service.update_project(
         project_id=project_id,
+        user_id=current_user.id,
         name=payload.name,
         description=payload.description,
     )
@@ -85,8 +99,13 @@ async def update_project(
 )
 async def delete_project(
     project_id: str,
+    current_user: UserModel = Depends(get_current_user),
     service: ProjectService = Depends(get_project_service),
 ) -> Response:
     """Delete a project and cascade deletion to all related entities and storage files."""
-    await service.delete_project(project_id=project_id)
+    await service.delete_project(
+        project_id=project_id,
+        user_id=current_user.id,
+    )
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+

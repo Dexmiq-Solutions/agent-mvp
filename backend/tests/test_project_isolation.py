@@ -13,6 +13,7 @@ from exceptions.document import (
 )
 from models.base import Base
 from models.project import ProjectModel
+from models.user import UserModel
 from services.document_service import DocumentService
 from storage.object.base import BaseObjectStorage
 from storage.object.models import StorageObjectMetadata
@@ -71,8 +72,13 @@ async def seed_tenant_setup(session: AsyncSession, storage: BaseObjectStorage):
     """Seed two distinct projects (Tenant A and Tenant B) with their respective documents."""
     service = DocumentService(session=session, storage=storage)
 
-    proj_a = ProjectModel(name="Tenant Alpha")
-    proj_b = ProjectModel(name="Tenant Beta")
+    user_a = UserModel(email="tenant_a@example.com", hashed_password="dummy_hash_a")
+    user_b = UserModel(email="tenant_b@example.com", hashed_password="dummy_hash_b")
+    session.add_all([user_a, user_b])
+    await session.flush()
+
+    proj_a = ProjectModel(name="Tenant Alpha", user_id=user_a.id)
+    proj_b = ProjectModel(name="Tenant Beta", user_id=user_b.id)
     session.add_all([proj_a, proj_b])
     await session.flush()
 
