@@ -13,7 +13,7 @@ from fastapi import (
     status,
 )
 
-from api.dependencies import get_document_service
+from api.dependencies import get_current_project, get_document_service
 from models.document import DocumentModel
 from schemas.document import (
     DocumentDetailResponse,
@@ -23,7 +23,11 @@ from schemas.document import (
 )
 from services.document_service import DocumentService
 
-router = APIRouter(prefix="/projects/{project_id}/sources", tags=["Sources"])
+router = APIRouter(
+    prefix="/projects/{project_id}/sources",
+    tags=["Sources"],
+    dependencies=[Depends(get_current_project)],
+)
 
 
 def _to_document_response(doc: DocumentModel) -> DocumentResponse:

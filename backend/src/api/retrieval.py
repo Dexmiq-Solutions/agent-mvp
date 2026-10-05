@@ -3,7 +3,11 @@
 from fastapi import APIRouter, Depends, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from api.dependencies import get_project_service, get_rag_service_dependency
+from api.dependencies import (
+    get_current_project,
+    get_project_service,
+    get_rag_service_dependency,
+)
 from db.session import get_db_session
 from rag.retrieval.config import RetrievalConfig
 from rag.retrieval.service import RAGService
@@ -16,7 +20,11 @@ from schemas.retrieval import (
 )
 from services.project_service import ProjectService
 
-router = APIRouter(prefix="/projects/{project_id}/retrieval", tags=["retrieval"])
+router = APIRouter(
+    prefix="/projects/{project_id}/retrieval",
+    tags=["retrieval"],
+    dependencies=[Depends(get_current_project)],
+)
 
 
 @router.post(

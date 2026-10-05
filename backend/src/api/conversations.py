@@ -12,9 +12,15 @@ from langchain_core.messages import AIMessage, HumanMessage
 from agents.brd.agent import BRDLeadAgent
 from agents.brd.context import AgentContext
 from agents.brd.state import BRDAgentState
-from api.dependencies import get_brd_lead_agent, get_conversation_service
+from api.dependencies import (
+    get_brd_lead_agent,
+    get_conversation_service,
+    get_current_project,
+    get_current_user,
+)
 from db.session import get_async_session_maker
 from models.message import MessageModel
+from models.user import UserModel
 from observability.logging import get_logger
 from schemas.conversation import (
     ConversationCreate,
@@ -29,7 +35,11 @@ from services.conversation_service import ConversationService
 logger = get_logger(__name__)
 
 
-router = APIRouter(prefix="/projects/{project_id}/conversations", tags=["Conversations"])
+router = APIRouter(
+    prefix="/projects/{project_id}/conversations",
+    tags=["Conversations"],
+    dependencies=[Depends(get_current_project)],
+)
 
 
 @router.post(
@@ -209,6 +219,7 @@ async def create_message(
     conversation_id: str,
     payload: MessageCreate,
     stream: bool = Query(default=True, description="Whether to stream the agent response for user messages"),
+    current_user: UserModel = Depends(get_current_user),
     service: ConversationService = Depends(get_conversation_service),
     agent: BRDLeadAgent = Depends(get_brd_lead_agent),
 ) -> Any:
@@ -285,7 +296,7 @@ async def create_message(
     agent_context = AgentContext(
         project_id=project_id,
         conversation_id=conversation_id,
-        user_id=payload.metadata.get("user_id") if payload.metadata else None,
+        user_id=current_user.id,
         project_name=project_ctx["project_name"],
         project_description=project_ctx["project_description"],
         available_documents=project_ctx["available_documents"],

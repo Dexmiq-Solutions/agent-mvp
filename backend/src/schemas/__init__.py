@@ -1,3 +1,10 @@
+from schemas.auth import (
+    RefreshTokenRequest,
+    TokenResponse,
+    UserLoginRequest,
+    UserResponse,
+    UserSignupRequest,
+)
 from schemas.conversation import (
     ConversationCreate,
     ConversationDetailResponse,
@@ -46,6 +53,11 @@ __all__ = [
     "RetrievalAttemptMetadataSchema",
     "RetrievalExecutionMetadataSchema",
     "RetrievalResponseSchema",
+    "UserSignupRequest",
+    "UserLoginRequest",
+    "RefreshTokenRequest",
+    "TokenResponse",
+    "UserResponse",
 ]
 
 

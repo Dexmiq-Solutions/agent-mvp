@@ -1,12 +1,15 @@
-"""FastAPI dependency injection providers for application services."""
-
 from typing import Optional
 
 from fastapi import Depends
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.config import get_settings
 from db.session import get_db_session
+from exceptions.auth import InvalidTokenError
+from models.project import ProjectModel
+from models.user import UserModel
+from services.auth_service import AuthService
 from services.document_processing_service import DocumentProcessingService
 from services.document_service import DocumentService
 from services.project_service import ProjectService
@@ -15,6 +18,30 @@ from storage.vector import BaseVectorStore
 from observability.logging import get_logger
 
 logger = get_logger(__name__)
+
+oauth2_bearer = HTTPBearer(auto_error=True)
+
+
+def get_auth_service(
+    session: AsyncSession = Depends(get_db_session),
+) -> AuthService:
+    """Dependency provider for AuthService."""
+    return AuthService(session=session)
+
+
+async def get_current_user(
+    credentials: HTTPAuthorizationCredentials = Depends(oauth2_bearer),
+    auth_service: AuthService = Depends(get_auth_service),
+) -> UserModel:
+    """Validate bearer token and resolve authenticated active user."""
+    from core.security import decode_access_token
+
+    token = credentials.credentials
+    payload = decode_access_token(token)
+    user_id = payload.get("sub")
+    if not user_id:
+        raise InvalidTokenError("Token missing subject identifier.")
+    return await auth_service.get_user_by_id(user_id)
 
 
 def get_vector_store_dependency() -> Optional[BaseVectorStore]:
@@ -47,6 +74,15 @@ def get_project_service(
         Configured ProjectService instance.
     """
     return ProjectService(session=session, storage=storage, vector_store=vector_store)
+
+
+async def get_current_project(
+    project_id: str,
+    current_user: UserModel = Depends(get_current_user),
+    project_service: ProjectService = Depends(get_project_service),
+) -> ProjectModel:
+    """Validate project existence and tenant ownership for the current authenticated user."""
+    return await project_service.get_project(project_id=project_id, user_id=current_user.id)
 
 
 def get_conversation_service(

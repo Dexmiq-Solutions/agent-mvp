@@ -81,9 +81,17 @@ async def api_client(monkeypatch):
             finally:
                 await session.close()
 
-    from api.dependencies import get_storage
+    from api.dependencies import get_current_user, get_storage
+    from models.user import UserModel
+
+    test_user = UserModel(id="test-user-id", email="test@example.com", hashed_password="dummy_hash")
+    async with session_factory() as session:
+        session.add(test_user)
+        await session.commit()
+
     app.dependency_overrides[get_db_session] = override_get_db_session
     app.dependency_overrides[get_storage] = lambda: mock_storage
+    app.dependency_overrides[get_current_user] = lambda: test_user
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:

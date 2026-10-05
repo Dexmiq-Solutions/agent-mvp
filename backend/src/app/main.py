@@ -9,6 +9,16 @@ from observability.logging import get_logger, setup_logging
 
 from api import api_router
 from db.session import dispose_engine
+from exceptions.auth import (
+    AuthError,
+    InvalidCredentialsError,
+    InvalidTokenError,
+    RateLimitExceededError,
+    TokenRevokedError,
+    UserAlreadyExistsError,
+    UserInactiveError,
+    UserNotFoundError,
+)
 from exceptions.database import DatabaseError
 from exceptions.document import (
     DocumentAlreadyProcessingError,
@@ -87,6 +97,51 @@ def create_application() -> FastAPI:
     # --------------------------------------------------------------------------
     # Exception Handlers
     # --------------------------------------------------------------------------
+    @application.exception_handler(InvalidCredentialsError)
+    async def invalid_credentials_handler(request: Request, exc: InvalidCredentialsError) -> JSONResponse:
+        return JSONResponse(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            content={"detail": exc.message},
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    @application.exception_handler(InvalidTokenError)
+    async def invalid_token_handler(request: Request, exc: InvalidTokenError) -> JSONResponse:
+        return JSONResponse(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            content={"detail": exc.message},
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    @application.exception_handler(UserAlreadyExistsError)
+    async def user_already_exists_handler(request: Request, exc: UserAlreadyExistsError) -> JSONResponse:
+        return JSONResponse(
+            status_code=status.HTTP_409_CONFLICT,
+            content={"detail": exc.message},
+        )
+
+    @application.exception_handler(UserNotFoundError)
+    async def user_not_found_handler(request: Request, exc: UserNotFoundError) -> JSONResponse:
+        return JSONResponse(
+            status_code=status.HTTP_404_NOT_FOUND,
+            content={"detail": exc.message},
+        )
+
+    @application.exception_handler(UserInactiveError)
+    async def user_inactive_handler(request: Request, exc: UserInactiveError) -> JSONResponse:
+        return JSONResponse(
+            status_code=status.HTTP_403_FORBIDDEN,
+            content={"detail": exc.message},
+        )
+
+    @application.exception_handler(RateLimitExceededError)
+    async def rate_limit_exceeded_handler(request: Request, exc: RateLimitExceededError) -> JSONResponse:
+        return JSONResponse(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            content={"detail": exc.message},
+            headers={"Retry-After": str(exc.retry_after)},
+        )
+
     @application.exception_handler(ProjectNotFoundError)
     async def project_not_found_handler(request: Request, exc: ProjectNotFoundError) -> JSONResponse:
         return JSONResponse(

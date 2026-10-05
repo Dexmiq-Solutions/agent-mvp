@@ -11,6 +11,11 @@ This document serves as the complete, authoritative guide to all currently avail
   - [Root Welcome Status](#root-welcome-status)
   - [Application Health Check](#application-health-check)
 - [Authentication](#authentication)
+  - [User Signup](#user-signup)
+  - [User Login](#user-login)
+  - [Refresh Access Token](#refresh-access-token)
+  - [User Logout](#user-logout)
+  - [Get Current Authenticated User](#get-current-authenticated-user)
 - [Projects](#projects)
   - [Create Project](#create-project)
   - [List Projects](#list-projects)
@@ -45,8 +50,11 @@ This document serves as the complete, authoritative guide to all currently avail
 - **Local Development**: `http://localhost:8000`
 - Configured via `HOST` (`0.0.0.0`) and `PORT` (`8000`) in application settings (`core/config.py`).
 
-### Project Isolation & Tenant Boundary
-The system enforces strict multi-tenancy anchored around the **Project** entity (`project_id`). All child resources (documents, document versions, conversations, messages, and vector/sparse embeddings) are scoped to a specific `project_id`. Attempting to access or link a resource with an mismatched `project_id` triggers an HTTP `404` or `400` boundary rejection.
+### User Ownership & Project Tenancy Boundary
+The system enforces strict multi-tenancy anchored around the **User** (`user_id`) and **Project** (`project_id`) entities:
+- **User → Projects**: Every project is owned by the user who created it (`user_id`). Users can only list, view, update, and delete their own projects.
+- **Projects → Child Resources**: All child resources (documents, document versions, conversations, messages, chunks, and vector/sparse embeddings) inherit tenancy from their parent project boundary.
+- **Strict Boundary Rejection**: Attempting to access, modify, or query a project or child resource that belongs to another user (or mismatched project) triggers an HTTP `404 Not Found` response. Returning `404` rather than `403` ensures that the existence of other tenants' resources is not leaked.
 
 ### Standard Response Formats
 - Successful responses return JSON with standard HTTP status codes (`200 OK`, `201 Created`, `204 No Content`).
@@ -61,23 +69,27 @@ The system enforces strict multi-tenancy anchored around the **Project** entity 
 | Status Code | Meaning | Typical Trigger |
 | :--- | :--- | :--- |
 | `200 OK` | Success | Successful GET, PATCH, or Retrieval request |
-| `201 Created` | Created | Successful POST entity creation |
+| `201 Created` | Created | Successful POST entity creation (User, Project, Document, Conversation, Message) |
 | `204 No Content` | No Content | Successful DELETE deletion |
 | `400 Bad Request` | Validation Failure | Empty names, invalid roles, malformed queries |
-| `404 Not Found` | Resource Not Found | Project, Document, Conversation, or Message ID not found |
-| `409 Conflict` | State Conflict | Invalid document processing state transition |
-| `422 Unprocessable`| Quality Gate Rejection | AI generation failed groundedness/safety checks |
-| `429 Too Many Requests`| Provider Rate Limit | Upstream LLM provider rate limit exceeded |
+| `401 Unauthorized` | Authentication Failure | Missing, invalid, or expired Bearer JWT access token, or invalid login credentials |
+| `404 Not Found` | Resource Not Found | Project, Document, Conversation, or Message ID not found, or resource belongs to another user |
+| `409 Conflict` | Conflict / Duplicate | Email already registered during signup, or invalid document state transition |
+| `422 Unprocessable`| Validation / Quality Rejection | Request body schema failure or AI generation failed groundedness checks |
+| `429 Too Many Requests`| Rate Limit Exceeded | Login rate limit exceeded (5 attempts / 5 min window) or upstream LLM provider limit |
 | `502 Bad Gateway` | Upstream Failure | Storage (Supabase) or LLM provider authentication error |
 | `504 Gateway Timeout`| Upstream Timeout | LLM inference or reranker provider timeout |
 
 ### Authentication Architecture
-- **Current State**: All endpoints are currently **open and unauthenticated** at the HTTP routing layer. There are no API tokens, cookies, or authorization headers required to make calls.
-- **Future Bearer Token Usage**: If authentication is activated, requests will require the standard HTTP Authorization header:
+- **Bearer Token Authentication**: All protected application endpoints (`/projects`, `/projects/{project_id}/*`, `/auth/me`) require a valid Bearer JWT access token passed in the HTTP `Authorization` header:
   ```http
   Authorization: Bearer <your_jwt_access_token>
   ```
   In Postman, select the **Authorization** tab, choose **Bearer Token**, and supply your token variable `{{accessToken}}`.
+- **JWT Access Tokens**: Short-lived (15-minute default) tokens containing standard claims (`sub` = user ID, `email`, `jti`, `exp`, `iat`) signed with HMAC-SHA256. Access tokens are decoded and validated statelessly on every protected request.
+- **Opaque Refresh Tokens**: Cryptographically random 32-byte URL-safe strings used to obtain new access tokens via `POST /auth/refresh`. Refresh tokens are persisted strictly as SHA-256 digests in the database (`refresh_tokens` table) with expiration and revocation tracking.
+- **Single-Use Rotation & Reuse Detection**: Each refresh token can only be used once. Upon refresh, the previous token is revoked and a new refresh token is issued. If an already-revoked refresh token is presented, the system detects potential token theft and immediately revokes **all** active refresh tokens for that user.
+- **Login Rate Limiting**: An in-memory sliding window rate limiter protects `POST /auth/login`. By default, 5 login attempts are allowed per 5-minute sliding window per client IP + email. Exceeding this threshold returns HTTP `429 Too Many Requests` with a standard `Retry-After` header.
 
 ---
 
@@ -153,28 +165,352 @@ curl -X GET "http://localhost:8000/health"
 
 ## Authentication
 
-> **Notice: No Authentication Endpoints Currently Implemented**  
-> There are currently **no public authentication endpoints** (`/auth/login`, `/auth/signup`, `/auth/logout`, or `/auth/refresh`) implemented in the backend application.  
-> 
-> All API operations are currently public and unauthenticated. User tenant isolation is maintained logically by specifying the target `project_id` in path parameters. See [Missing, Broken, or Inconsistent APIs](#missing-broken-or-inconsistent-apis) for further details.
+The authentication system provides secure user registration, credential verification, stateless JWT access token validation, and rotating refresh tokens with built-in reuse detection.
+
+- **Password Security**: Passwords are verified and hashed using **Argon2id** (`argon2-cffi`).
+- **Access Tokens**: Short-lived (15-minute default) HMAC-SHA256 JWTs providing stateless authorization on protected endpoints.
+- **Refresh Tokens**: Opaque 32-byte URL-safe strings stored strictly as SHA-256 hashes in the database.
+- **Single-Use Rotation**: Refreshing an access token automatically revokes the submitted refresh token and returns a newly generated pair.
+- **Reuse Detection**: Presenting a previously revoked refresh token triggers emergency mitigation: all active refresh tokens for that user account are revoked immediately.
+- **Rate Limiting**: `POST /auth/login` is guarded by an in-memory sliding window rate limiter (default: 5 attempts per 5 minutes per IP + email). Exceeding this returns HTTP `429 Too Many Requests` with a `Retry-After` header.
+
+---
+
+### User Signup
+
+- **Purpose**: Creates a new user account with an email address and strong password.
+- **HTTP Method**: `POST`
+- **Endpoint**: `/auth/signup`
+- **Required Path/Query Parameters**: None
+- **Required Headers**: `Content-Type: application/json`
+- **Authentication**: None
+- **Prerequisites**: Email must not already exist in the system.
+
+#### Request Body Structure
+| Field | Type | Required | Description |
+| :--- | :--- | :--- | :--- |
+| `email` | string | **Yes** | Valid email address |
+| `password` | string | **Yes** | Account password (minimum 8 characters) |
+
+```json
+{
+  "email": "analyst@enterprise.com",
+  "password": "CorrectHorseBatteryStaple123!"
+}
+```
+
+#### Response Structure (201 Created)
+```json
+{
+  "id": "u4f3e2d1-9876-4abc-def0-1234567890ab",
+  "email": "analyst@enterprise.com",
+  "is_active": true,
+  "created_at": "2026-10-05T06:00:00.000000Z",
+  "updated_at": "2026-10-05T06:00:00.000000Z"
+}
+```
+
+#### Error Responses
+- `400 Bad Request` / `422 Unprocessable Entity`: Password is less than 8 characters, or email is malformed.
+- `409 Conflict`: Email address is already registered:
+  ```json
+  {
+    "detail": "User with email 'analyst@enterprise.com' already exists."
+  }
+  ```
+
+#### cURL
+```bash
+curl -X POST "http://localhost:8000/auth/signup" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "email": "analyst@enterprise.com",
+    "password": "CorrectHorseBatteryStaple123!"
+  }'
+```
+
+#### Postman
+- **Method**: `POST`
+- **URL**: `http://localhost:8000/auth/signup`
+- **Headers**:
+  - `Content-Type`: `application/json`
+- **Body** (`raw` - `JSON`):
+  ```json
+  {
+    "email": "analyst@enterprise.com",
+    "password": "CorrectHorseBatteryStaple123!"
+  }
+  ```
+- **Authentication**: No Auth
+
+---
+
+### User Login
+
+- **Purpose**: Authenticates user credentials and issues a JWT access token and opaque rotating refresh token.
+- **HTTP Method**: `POST`
+- **Endpoint**: `/auth/login`
+- **Required Path/Query Parameters**: None
+- **Required Headers**: `Content-Type: application/json`
+- **Authentication**: None
+- **Rate Limit**: 5 attempts per 5-minute sliding window per client IP + email.
+
+#### Request Body Structure
+| Field | Type | Required | Description |
+| :--- | :--- | :--- | :--- |
+| `email` | string | **Yes** | Registered account email |
+| `password` | string | **Yes** | Account password |
+
+```json
+{
+  "email": "analyst@enterprise.com",
+  "password": "CorrectHorseBatteryStaple123!"
+}
+```
+
+#### Response Structure (200 OK)
+```json
+{
+  "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ1NGYzZTJkMS05ODc2LTRhYmMtZGVmMC0xMjM0NTY3ODkwYWIiLCJlbWFpbCI6ImFuYWx5c3RAZW50ZXJwcmlzZS5jb20iLCJqdGkiOiJmNGJhMzg1Ny1iMWUzLTRjMDMtYTk4MC05ODBiZDQ2MTQ4N2MiLCJleHAiOjE3NTk2NDQ5MDAsImlhdCI6MTc1OTY0NDAwMH0.sample_signature_jwt",
+  "refresh_token": "a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6q7r8s9t0u1v2w3x4y5z6a7b8c9d0e1f2",
+  "token_type": "bearer",
+  "expires_in": 900
+}
+```
+
+#### Error Responses
+- `401 Unauthorized`: Invalid email, incorrect password, or deactivated user account:
+  ```json
+  {
+    "detail": "Invalid email or password."
+  }
+  ```
+- `429 Too Many Requests`: Login rate limit exceeded. The response includes a `Retry-After` header indicating the number of seconds to wait:
+  ```json
+  {
+    "detail": "Too many failed login attempts. Please try again in 294 seconds."
+  }
+  ```
+
+#### cURL
+```bash
+curl -X POST "http://localhost:8000/auth/login" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "email": "analyst@enterprise.com",
+    "password": "CorrectHorseBatteryStaple123!"
+  }'
+```
+
+#### Postman
+- **Method**: `POST`
+- **URL**: `http://localhost:8000/auth/login`
+- **Headers**:
+  - `Content-Type`: `application/json`
+- **Body** (`raw` - `JSON`):
+  ```json
+  {
+    "email": "analyst@enterprise.com",
+    "password": "CorrectHorseBatteryStaple123!"
+  }
+  ```
+- **Authentication**: No Auth
+- **Postman Tests Script** (Save tokens automatically):
+  ```javascript
+  if (pm.response.code === 200) {
+    const data = pm.response.json();
+    pm.environment.set("accessToken", data.access_token);
+    pm.environment.set("refreshToken", data.refresh_token);
+  }
+  ```
+
+---
+
+### Refresh Access Token
+
+- **Purpose**: Obtains a fresh JWT access token and rotated refresh token by submitting an active refresh token.
+- **HTTP Method**: `POST`
+- **Endpoint**: `/auth/refresh`
+- **Required Path/Query Parameters**: None
+- **Required Headers**: `Content-Type: application/json`
+- **Authentication**: None (token provided in body)
+- **Rotation Behavior**: The submitted refresh token is permanently revoked upon success, and a newly generated refresh token is returned in the response.
+
+#### Request Body Structure
+| Field | Type | Required | Description |
+| :--- | :--- | :--- | :--- |
+| `refresh_token` | string | **Yes** | Opaque refresh token received from login or previous refresh |
+
+```json
+{
+  "refresh_token": "a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6q7r8s9t0u1v2w3x4y5z6a7b8c9d0e1f2"
+}
+```
+
+#### Response Structure (200 OK)
+```json
+{
+  "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ1NGYzZTJkMS05ODc2LTRhYmMtZGVmMC0xMjM0NTY3ODkwYWIiLCJlbWFpbCI6ImFuYWx5c3RAZW50ZXJwcmlzZS5jb20iLCJqdGkiOiJlMWMyYjNhNC1kNWU2LTRmNzgtYTk4MC05ODBiZDQ2MTQ4N2MiLCJleHAiOjE3NTk2NDU4MDAsImlhdCI6MTc1OTY0NDkwMH0.sample_new_signature_jwt",
+  "refresh_token": "b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6q7r8s9t0u1v2w3x4y5z6a7b8c9d0e1f2g3",
+  "token_type": "bearer",
+  "expires_in": 900
+}
+```
+
+#### Error Responses
+- `401 Unauthorized`: Token is malformed, expired, already revoked, or user is inactive.
+  ```json
+  {
+    "detail": "Invalid, expired, or revoked refresh token."
+  }
+  ```
+  > **Note on Token Theft Protection**: If a previously revoked token is reused, all active refresh tokens for the associated user account are immediately revoked.
+
+#### cURL
+```bash
+curl -X POST "http://localhost:8000/auth/refresh" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "refresh_token": "a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6q7r8s9t0u1v2w3x4y5z6a7b8c9d0e1f2"
+  }'
+```
+
+#### Postman
+- **Method**: `POST`
+- **URL**: `http://localhost:8000/auth/refresh`
+- **Headers**:
+  - `Content-Type`: `application/json`
+- **Body** (`raw` - `JSON`):
+  ```json
+  {
+    "refresh_token": "{{refreshToken}}"
+  }
+  ```
+- **Authentication**: No Auth
+- **Postman Tests Script**:
+  ```javascript
+  if (pm.response.code === 200) {
+    const data = pm.response.json();
+    pm.environment.set("accessToken", data.access_token);
+    pm.environment.set("refreshToken", data.refresh_token);
+  }
+  ```
+
+---
+
+### User Logout
+
+- **Purpose**: Explicitly revokes an active refresh token, preventing further token renewals.
+- **HTTP Method**: `POST`
+- **Endpoint**: `/auth/logout`
+- **Required Path/Query Parameters**: None
+- **Required Headers**: `Content-Type: application/json`
+- **Authentication**: None (token provided in body)
+
+#### Request Body Structure
+| Field | Type | Required | Description |
+| :--- | :--- | :--- | :--- |
+| `refresh_token` | string | **Yes** | Active refresh token to be revoked |
+
+```json
+{
+  "refresh_token": "b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6q7r8s9t0u1v2w3x4y5z6a7b8c9d0e1f2g3"
+}
+```
+
+#### Response Structure (200 OK)
+```json
+{
+  "message": "Logged out successfully."
+}
+```
+
+#### Error Responses
+- `400 Bad Request` / `422 Unprocessable Entity`: Missing `refresh_token` in request body.
+
+#### cURL
+```bash
+curl -X POST "http://localhost:8000/auth/logout" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "refresh_token": "b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6q7r8s9t0u1v2w3x4y5z6a7b8c9d0e1f2g3"
+  }'
+```
+
+#### Postman
+- **Method**: `POST`
+- **URL**: `http://localhost:8000/auth/logout`
+- **Headers**:
+  - `Content-Type`: `application/json`
+- **Body** (`raw` - `JSON`):
+  ```json
+  {
+    "refresh_token": "{{refreshToken}}"
+  }
+  ```
+- **Authentication**: No Auth
+
+---
+
+### Get Current Authenticated User
+
+- **Purpose**: Returns the profile and identity of the authenticated user resolved from the Bearer JWT access token.
+- **HTTP Method**: `GET`
+- **Endpoint**: `/auth/me`
+- **Required Path/Query Parameters**: None
+- **Required Headers**: `Authorization: Bearer <access_token>`
+- **Authentication**: Bearer Token (Required)
+
+#### Response Structure (200 OK)
+```json
+{
+  "id": "u4f3e2d1-9876-4abc-def0-1234567890ab",
+  "email": "analyst@enterprise.com",
+  "is_active": true,
+  "created_at": "2026-10-05T06:00:00.000000Z",
+  "updated_at": "2026-10-05T06:00:00.000000Z"
+}
+```
+
+#### Error Responses
+- `401 Unauthorized`: Token is missing, expired, invalid signature, or user is disabled:
+  ```json
+  {
+    "detail": "Could not validate credentials."
+  }
+  ```
+
+#### cURL
+```bash
+curl -X GET "http://localhost:8000/auth/me" \
+  -H "Authorization: Bearer <your_access_token>"
+```
+
+#### Postman
+- **Method**: `GET`
+- **URL**: `http://localhost:8000/auth/me`
+- **Headers**: None
+- **Authentication**: Bearer Token (`{{accessToken}}`)
 
 ---
 
 ## Projects
 
-Projects are the top-level tenant boundary. All documents, conversations, retrieval queries, and LLM responses must belong to an existing project.
+Projects are the top-level tenant boundary. Every project is strictly owned by the authenticated **User** who created it (`user_id`). All documents, conversations, retrieval queries, and LLM responses must belong to an existing project owned by the caller. Attempting to query, modify, or delete a project belonging to another user results in an HTTP `404 Not Found`.
 
 ---
 
 ### Create Project
 
-- **Purpose**: Creates a new project container. The returned `id` is required for all project-scoped operations.
+- **Purpose**: Creates a new project container owned by the authenticated user. The returned `id` is required for all project-scoped operations.
 - **HTTP Method**: `POST`
 - **Endpoint**: `/projects`
 - **Required Path/Query Parameters**: None
-- **Required Headers**: `Content-Type: application/json`
-- **Authentication**: None
-- **Prerequisites**: None
+- **Required Headers**:
+  - `Content-Type: application/json`
+  - `Authorization: Bearer <access_token>`
+- **Authentication**: Bearer Token (Required)
+- **Prerequisites**: Valid access token from [User Login](#user-login) or [User Signup](#user-signup).
 
 #### Request Body Structure
 | Field | Type | Required | Description |
@@ -193,6 +529,7 @@ Projects are the top-level tenant boundary. All documents, conversations, retrie
 ```json
 {
   "id": "b7e6c5a1-4321-4def-9876-543210abcdef",
+  "user_id": "u4f3e2d1-9876-4abc-def0-1234567890ab",
   "name": "Legal Intelligence Hub",
   "description": "Enterprise compliance analysis and contractual RAG pipeline",
   "created_at": "2026-09-14T12:00:00.000000Z",
@@ -204,6 +541,7 @@ Projects are the top-level tenant boundary. All documents, conversations, retrie
 ```bash
 curl -X POST "http://localhost:8000/projects" \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <your_access_token>" \
   -d '{
     "name": "Legal Intelligence Hub",
     "description": "Enterprise compliance analysis and contractual RAG pipeline"
@@ -222,13 +560,13 @@ curl -X POST "http://localhost:8000/projects" \
     "description": "Enterprise compliance analysis and contractual RAG pipeline"
   }
   ```
-- **Authentication**: No Auth
+- **Authentication**: Bearer Token (`{{accessToken}}`)
 
 ---
 
 ### List Projects
 
-- **Purpose**: Retrieves all projects ordered by creation date descending.
+- **Purpose**: Retrieves all projects owned by the currently authenticated user ordered by creation date descending.
 - **HTTP Method**: `GET`
 - **Endpoint**: `/projects`
 - **Required Path Parameters**: None
@@ -237,16 +575,17 @@ curl -X POST "http://localhost:8000/projects" \
   | :--- | :--- | :--- | :--- |
   | `limit` | integer | `100` | Maximum number of projects to return (`1` to `100`) |
   | `offset` | integer | `0` | Number of projects to skip (`>= 0`) |
-- **Required Headers**: None
+- **Required Headers**: `Authorization: Bearer <access_token>`
 - **Request Body**: None
-- **Authentication**: None
-- **Prerequisites**: None
+- **Authentication**: Bearer Token (Required)
+- **Prerequisites**: Valid access token.
 
 #### Response Structure (200 OK)
 ```json
 [
   {
     "id": "b7e6c5a1-4321-4def-9876-543210abcdef",
+    "user_id": "u4f3e2d1-9876-4abc-def0-1234567890ab",
     "name": "Legal Intelligence Hub",
     "description": "Enterprise compliance analysis and contractual RAG pipeline",
     "created_at": "2026-09-14T12:00:00.000000Z",
@@ -257,7 +596,8 @@ curl -X POST "http://localhost:8000/projects" \
 
 #### cURL
 ```bash
-curl -X GET "http://localhost:8000/projects?limit=20&offset=0"
+curl -X GET "http://localhost:8000/projects?limit=20&offset=0" \
+  -H "Authorization: Bearer <your_access_token>"
 ```
 
 #### Postman
@@ -268,7 +608,7 @@ curl -X GET "http://localhost:8000/projects?limit=20&offset=0"
   - `offset`: `0`
 - **Headers**: None
 - **Body**: None
-- **Authentication**: No Auth
+- **Authentication**: Bearer Token (`{{accessToken}}`)
 
 ---
 
@@ -282,15 +622,16 @@ curl -X GET "http://localhost:8000/projects?limit=20&offset=0"
   | :--- | :--- | :--- |
   | `project_id` | string (UUID) | Unique project identifier |
 - **Query Parameters**: None
-- **Required Headers**: None
+- **Required Headers**: `Authorization: Bearer <access_token>`
 - **Request Body**: None
-- **Authentication**: None
-- **Prerequisites**: Obtain `project_id` from [Create Project](#create-project) or [List Projects](#list-projects).
+- **Authentication**: Bearer Token (Required)
+- **Prerequisites**: Obtain `project_id` from [Create Project](#create-project) or [List Projects](#list-projects). Project must belong to caller.
 
 #### Response Structure (200 OK)
 ```json
 {
   "id": "b7e6c5a1-4321-4def-9876-543210abcdef",
+  "user_id": "u4f3e2d1-9876-4abc-def0-1234567890ab",
   "name": "Legal Intelligence Hub",
   "description": "Enterprise compliance analysis and contractual RAG pipeline",
   "created_at": "2026-09-14T12:00:00.000000Z",
@@ -298,9 +639,14 @@ curl -X GET "http://localhost:8000/projects?limit=20&offset=0"
 }
 ```
 
+#### Error Responses
+- `401 Unauthorized`: Missing or invalid Bearer access token.
+- `404 Not Found`: Project ID does not exist or belongs to another user.
+
 #### cURL
 ```bash
-curl -X GET "http://localhost:8000/projects/b7e6c5a1-4321-4def-9876-543210abcdef"
+curl -X GET "http://localhost:8000/projects/b7e6c5a1-4321-4def-9876-543210abcdef" \
+  -H "Authorization: Bearer <your_access_token>"
 ```
 
 #### Postman
@@ -310,13 +656,13 @@ curl -X GET "http://localhost:8000/projects/b7e6c5a1-4321-4def-9876-543210abcdef
   - `project_id`: `b7e6c5a1-4321-4def-9876-543210abcdef`
 - **Headers**: None
 - **Body**: None
-- **Authentication**: No Auth
+- **Authentication**: Bearer Token (`{{accessToken}}`)
 
 ---
 
 ### Update Project
 
-- **Purpose**: Updates the display name or description of an existing project.
+- **Purpose**: Updates the display name or description of an existing project owned by the authenticated user.
 - **HTTP Method**: `PATCH`
 - **Endpoint**: `/projects/{project_id}`
 - **Required Path Parameters**:
@@ -324,9 +670,11 @@ curl -X GET "http://localhost:8000/projects/b7e6c5a1-4321-4def-9876-543210abcdef
   | :--- | :--- | :--- |
   | `project_id` | string (UUID) | Unique project identifier |
 - **Query Parameters**: None
-- **Required Headers**: `Content-Type: application/json`
-- **Authentication**: None
-- **Prerequisites**: Obtain `project_id` from [Create Project](#create-project) or [List Projects](#list-projects).
+- **Required Headers**:
+  - `Content-Type: application/json`
+  - `Authorization: Bearer <access_token>`
+- **Authentication**: Bearer Token (Required)
+- **Prerequisites**: Project must belong to the authenticated caller.
 
 #### Request Body Structure
 | Field | Type | Required | Description |
@@ -345,6 +693,7 @@ curl -X GET "http://localhost:8000/projects/b7e6c5a1-4321-4def-9876-543210abcdef
 ```json
 {
   "id": "b7e6c5a1-4321-4def-9876-543210abcdef",
+  "user_id": "u4f3e2d1-9876-4abc-def0-1234567890ab",
   "name": "Legal & Compliance AI Hub",
   "description": "Updated enterprise compliance and legal retrieval knowledge base",
   "created_at": "2026-09-14T12:00:00.000000Z",
@@ -352,10 +701,15 @@ curl -X GET "http://localhost:8000/projects/b7e6c5a1-4321-4def-9876-543210abcdef
 }
 ```
 
+#### Error Responses
+- `401 Unauthorized`: Missing or invalid Bearer access token.
+- `404 Not Found`: Project ID does not exist or belongs to another user.
+
 #### cURL
 ```bash
 curl -X PATCH "http://localhost:8000/projects/b7e6c5a1-4321-4def-9876-543210abcdef" \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <your_access_token>" \
   -d '{
     "name": "Legal & Compliance AI Hub",
     "description": "Updated enterprise compliance and legal retrieval knowledge base"
@@ -376,13 +730,13 @@ curl -X PATCH "http://localhost:8000/projects/b7e6c5a1-4321-4def-9876-543210abcd
     "description": "Updated enterprise compliance and legal retrieval knowledge base"
   }
   ```
-- **Authentication**: No Auth
+- **Authentication**: Bearer Token (`{{accessToken}}`)
 
 ---
 
 ### Delete Project
 
-- **Purpose**: Permanently deletes a project, cascades deletion to all associated relational records (documents, versions, conversations, messages), and deletes all physical files in Supabase Object Storage.
+- **Purpose**: Permanently deletes a project, cascades deletion to all associated relational records (documents, versions, conversations, messages), and deletes all physical files in Supabase Object Storage and vector points in Qdrant.
 - **HTTP Method**: `DELETE`
 - **Endpoint**: `/projects/{project_id}`
 - **Required Path Parameters**:
@@ -390,18 +744,23 @@ curl -X PATCH "http://localhost:8000/projects/b7e6c5a1-4321-4def-9876-543210abcd
   | :--- | :--- | :--- |
   | `project_id` | string (UUID) | Unique project identifier |
 - **Query Parameters**: None
-- **Required Headers**: None
+- **Required Headers**: `Authorization: Bearer <access_token>`
 - **Request Body**: None
-- **Authentication**: None
-- **Prerequisites**: Obtain `project_id` from [Create Project](#create-project).
+- **Authentication**: Bearer Token (Required)
+- **Prerequisites**: Project must belong to the authenticated caller.
 
 #### Response Structure (204 No Content)
 - **Status**: `204 No Content`
 - **Body**: Empty
 
+#### Error Responses
+- `401 Unauthorized`: Missing or invalid Bearer access token.
+- `404 Not Found`: Project ID does not exist or belongs to another user.
+
 #### cURL
 ```bash
-curl -X DELETE "http://localhost:8000/projects/b7e6c5a1-4321-4def-9876-543210abcdef"
+curl -X DELETE "http://localhost:8000/projects/b7e6c5a1-4321-4def-9876-543210abcdef" \
+  -H "Authorization: Bearer <your_access_token>"
 ```
 
 #### Postman
@@ -411,13 +770,15 @@ curl -X DELETE "http://localhost:8000/projects/b7e6c5a1-4321-4def-9876-543210abc
   - `project_id`: `b7e6c5a1-4321-4def-9876-543210abcdef`
 - **Headers**: None
 - **Body**: None
-- **Authentication**: No Auth
+- **Authentication**: Bearer Token (`{{accessToken}}`)
 
 ---
 
 ## Sources / Documents
 
 The Sources API manages uploaded knowledge base files (PDF, Markdown, TXT, etc.). A **Document** represents the logical entity, while a **DocumentVersion** represents a physical file revision stored in Supabase Object Storage.
+
+All source operations require Bearer token authentication and verify that the target `project_id` belongs to the authenticated user. Operations on projects belonging to other users return HTTP `404 Not Found`.
 
 ---
 
@@ -431,9 +792,11 @@ The Sources API manages uploaded knowledge base files (PDF, Markdown, TXT, etc.)
   | :--- | :--- | :--- |
   | `project_id` | string (UUID) | Target project identifier |
 - **Query Parameters**: None
-- **Required Headers**: `Content-Type: multipart/form-data`
-- **Authentication**: None
-- **Prerequisites**: Obtain `project_id` from [Create Project](#create-project).
+- **Required Headers**:
+  - `Content-Type: multipart/form-data`
+  - `Authorization: Bearer <access_token>`
+- **Authentication**: Bearer Token (Required)
+- **Prerequisites**: Obtain `project_id` from [Create Project](#create-project). Target project must belong to caller.
 
 #### Request Body Structure (Multipart Form-Data)
 | Field | Type | Required | Description |
@@ -473,6 +836,7 @@ The Sources API manages uploaded knowledge base files (PDF, Markdown, TXT, etc.)
 #### cURL
 ```bash
 curl -X POST "http://localhost:8000/projects/b7e6c5a1-4321-4def-9876-543210abcdef/sources" \
+  -H "Authorization: Bearer <your_access_token>" \
   -F "file=@/path/to/contract.pdf" \
   -F "name=Master Services Agreement 2026"
 ```
@@ -488,7 +852,7 @@ curl -X POST "http://localhost:8000/projects/b7e6c5a1-4321-4def-9876-543210abcde
   | :--- | :--- | :--- |
   | `file` | File | Select local file `contract.pdf` |
   | `name` | Text | `Master Services Agreement 2026` |
-- **Authentication**: No Auth
+- **Authentication**: Bearer Token (`{{accessToken}}`)
 
 ---
 
@@ -506,10 +870,10 @@ curl -X POST "http://localhost:8000/projects/b7e6c5a1-4321-4def-9876-543210abcde
   | :--- | :--- | :--- | :--- |
   | `limit` | integer | `100` | Maximum number of documents to return (`1` to `100`) |
   | `offset` | integer | `0` | Number of documents to skip (`>= 0`) |
-- **Required Headers**: None
+- **Required Headers**: `Authorization: Bearer <access_token>`
 - **Request Body**: None
-- **Authentication**: None
-- **Prerequisites**: Obtain `project_id` from [Create Project](#create-project).
+- **Authentication**: Bearer Token (Required)
+- **Prerequisites**: Obtain `project_id` from [Create Project](#create-project). Project must belong to caller.
 
 #### Response Structure (200 OK)
 ```json
@@ -544,7 +908,8 @@ curl -X POST "http://localhost:8000/projects/b7e6c5a1-4321-4def-9876-543210abcde
 
 #### cURL
 ```bash
-curl -X GET "http://localhost:8000/projects/05e40750-acbb-436a-8169-9cd7022f7a91/sources?limit=25&offset=0"
+curl -X GET "http://localhost:8000/projects/b7e6c5a1-4321-4def-9876-543210abcdef/sources?limit=25&offset=0" \
+  -H "Authorization: Bearer <your_access_token>"
 ```
 
 #### Postman
@@ -556,7 +921,7 @@ curl -X GET "http://localhost:8000/projects/05e40750-acbb-436a-8169-9cd7022f7a91
   - `offset`: `0`
 - **Headers**: None
 - **Body**: None
-- **Authentication**: No Auth
+- **Authentication**: Bearer Token (`{{accessToken}}`)
 
 ---
 
@@ -571,10 +936,10 @@ curl -X GET "http://localhost:8000/projects/05e40750-acbb-436a-8169-9cd7022f7a91
   | `project_id` | string (UUID) | Owning project identifier |
   | `document_id` | string (UUID) | Logical document identifier |
 - **Query Parameters**: None
-- **Required Headers**: None
+- **Required Headers**: `Authorization: Bearer <access_token>`
 - **Request Body**: None
-- **Authentication**: None
-- **Prerequisites**: Obtain `project_id` and `document_id` from [Upload Source Document](#upload-source-document) or [List Source Documents](#list-source-documents).
+- **Authentication**: Bearer Token (Required)
+- **Prerequisites**: Obtain `project_id` and `document_id` from [Upload Source Document](#upload-source-document) or [List Source Documents](#list-source-documents). Project must belong to caller.
 
 #### Response Structure (200 OK)
 ```json
@@ -626,7 +991,8 @@ curl -X GET "http://localhost:8000/projects/05e40750-acbb-436a-8169-9cd7022f7a91
 
 #### cURL
 ```bash
-curl -X GET "http://localhost:8000/projects/b7e6c5a1-4321-4def-9876-543210abcdef/sources/e4a2c1b8-7890-4cde-8123-456789abcdef"
+curl -X GET "http://localhost:8000/projects/b7e6c5a1-4321-4def-9876-543210abcdef/sources/e4a2c1b8-7890-4cde-8123-456789abcdef" \
+  -H "Authorization: Bearer <your_access_token>"
 ```
 
 #### Postman
@@ -637,7 +1003,7 @@ curl -X GET "http://localhost:8000/projects/b7e6c5a1-4321-4def-9876-543210abcdef
   - `document_id`: `e4a2c1b8-7890-4cde-8123-456789abcdef`
 - **Headers**: None
 - **Body**: None
-- **Authentication**: No Auth
+- **Authentication**: Bearer Token (`{{accessToken}}`)
 
 ---
 
@@ -652,9 +1018,11 @@ curl -X GET "http://localhost:8000/projects/b7e6c5a1-4321-4def-9876-543210abcdef
   | `project_id` | string (UUID) | Owning project identifier |
   | `document_id` | string (UUID) | Logical document identifier |
 - **Query Parameters**: None
-- **Required Headers**: `Content-Type: application/json`
-- **Authentication**: None
-- **Prerequisites**: Obtain `project_id` and `document_id` from [Upload Source Document](#upload-source-document).
+- **Required Headers**:
+  - `Content-Type: application/json`
+  - `Authorization: Bearer <access_token>`
+- **Authentication**: Bearer Token (Required)
+- **Prerequisites**: Obtain `project_id` and `document_id` from [Upload Source Document](#upload-source-document). Project must belong to caller.
 
 #### Request Body Structure
 | Field | Type | Required | Description |
@@ -700,6 +1068,7 @@ curl -X GET "http://localhost:8000/projects/b7e6c5a1-4321-4def-9876-543210abcdef
 ```bash
 curl -X PATCH "http://localhost:8000/projects/b7e6c5a1-4321-4def-9876-543210abcdef/sources/e4a2c1b8-7890-4cde-8123-456789abcdef" \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <your_access_token>" \
   -d '{
     "name": "Master Services Agreement 2026 (Executed)"
   }'
@@ -719,7 +1088,7 @@ curl -X PATCH "http://localhost:8000/projects/b7e6c5a1-4321-4def-9876-543210abcd
     "name": "Master Services Agreement 2026 (Executed)"
   }
   ```
-- **Authentication**: No Auth
+- **Authentication**: Bearer Token (`{{accessToken}}`)
 
 ---
 
@@ -734,10 +1103,10 @@ curl -X PATCH "http://localhost:8000/projects/b7e6c5a1-4321-4def-9876-543210abcd
   | `project_id` | string (UUID) | Owning project identifier |
   | `document_id` | string (UUID) | Logical document identifier |
 - **Query Parameters**: None
-- **Required Headers**: None
+- **Required Headers**: `Authorization: Bearer <access_token>`
 - **Request Body**: None
-- **Authentication**: None
-- **Prerequisites**: Obtain `project_id` and `document_id`.
+- **Authentication**: Bearer Token (Required)
+- **Prerequisites**: Obtain `project_id` and `document_id`. Project must belong to caller.
 
 #### Response Structure (204 No Content)
 - **Status**: `204 No Content`
@@ -745,7 +1114,8 @@ curl -X PATCH "http://localhost:8000/projects/b7e6c5a1-4321-4def-9876-543210abcd
 
 #### cURL
 ```bash
-curl -X DELETE "http://localhost:8000/projects/b7e6c5a1-4321-4def-9876-543210abcdef/sources/e4a2c1b8-7890-4cde-8123-456789abcdef"
+curl -X DELETE "http://localhost:8000/projects/b7e6c5a1-4321-4def-9876-543210abcdef/sources/e4a2c1b8-7890-4cde-8123-456789abcdef" \
+  -H "Authorization: Bearer <your_access_token>"
 ```
 
 #### Postman
@@ -756,7 +1126,7 @@ curl -X DELETE "http://localhost:8000/projects/b7e6c5a1-4321-4def-9876-543210abc
   - `document_id`: `e4a2c1b8-7890-4cde-8123-456789abcdef`
 - **Headers**: None
 - **Body**: None
-- **Authentication**: No Auth
+- **Authentication**: Bearer Token (`{{accessToken}}`)
 
 ---
 
@@ -771,9 +1141,11 @@ curl -X DELETE "http://localhost:8000/projects/b7e6c5a1-4321-4def-9876-543210abc
   | `project_id` | string (UUID) | Owning project identifier |
   | `document_id` | string (UUID) | Logical document identifier |
 - **Query Parameters**: None
-- **Required Headers**: `Content-Type: multipart/form-data`
-- **Authentication**: None
-- **Prerequisites**: Obtain `project_id` and `document_id` from [Upload Source Document](#upload-source-document).
+- **Required Headers**:
+  - `Content-Type: multipart/form-data`
+  - `Authorization: Bearer <access_token>`
+- **Authentication**: Bearer Token (Required)
+- **Prerequisites**: Obtain `project_id` and `document_id` from [Upload Source Document](#upload-source-document). Project must belong to caller.
 
 #### Request Body Structure (Multipart Form-Data)
 | Field | Type | Required | Description |
@@ -804,6 +1176,7 @@ curl -X DELETE "http://localhost:8000/projects/b7e6c5a1-4321-4def-9876-543210abc
 #### cURL
 ```bash
 curl -X POST "http://localhost:8000/projects/b7e6c5a1-4321-4def-9876-543210abcdef/sources/e4a2c1b8-7890-4cde-8123-456789abcdef/versions" \
+  -H "Authorization: Bearer <your_access_token>" \
   -F "file=@/path/to/contract_revised.pdf"
 ```
 
@@ -818,13 +1191,15 @@ curl -X POST "http://localhost:8000/projects/b7e6c5a1-4321-4def-9876-543210abcde
   | Key | Type | Value |
   | :--- | :--- | :--- |
   | `file` | File | Select local revised file `contract_revised.pdf` |
-- **Authentication**: No Auth
+- **Authentication**: Bearer Token (`{{accessToken}}`)
 
 ---
 
 ## Conversations
 
 The Conversations API manages dialogue sessions within a project. Each conversation owns an append-only chronological history of message turns.
+
+All conversation operations require Bearer token authentication and verify that the target `project_id` belongs to the authenticated user. Operations on projects belonging to other users return HTTP `404 Not Found`.
 
 ---
 
@@ -838,9 +1213,11 @@ The Conversations API manages dialogue sessions within a project. Each conversat
   | :--- | :--- | :--- |
   | `project_id` | string (UUID) | Owning project identifier |
 - **Query Parameters**: None
-- **Required Headers**: `Content-Type: application/json`
-- **Authentication**: None
-- **Prerequisites**: Obtain `project_id` from [Create Project](#create-project).
+- **Required Headers**:
+  - `Content-Type: application/json`
+  - `Authorization: Bearer <access_token>`
+- **Authentication**: Bearer Token (Required)
+- **Prerequisites**: Obtain `project_id` from [Create Project](#create-project). Project must belong to caller.
 
 #### Request Body Structure
 | Field | Type | Required | Description |
@@ -870,6 +1247,7 @@ The Conversations API manages dialogue sessions within a project. Each conversat
 ```bash
 curl -X POST "http://localhost:8000/projects/b7e6c5a1-4321-4def-9876-543210abcdef/conversations" \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <your_access_token>" \
   -d '{
     "title": "Vendor Liability & Termination Analysis"
   }'
@@ -888,7 +1266,7 @@ curl -X POST "http://localhost:8000/projects/b7e6c5a1-4321-4def-9876-543210abcde
     "title": "Vendor Liability & Termination Analysis"
   }
   ```
-- **Authentication**: No Auth
+- **Authentication**: Bearer Token (`{{accessToken}}`)
 
 ---
 
@@ -906,10 +1284,10 @@ curl -X POST "http://localhost:8000/projects/b7e6c5a1-4321-4def-9876-543210abcde
   | :--- | :--- | :--- | :--- |
   | `limit` | integer | `100` | Maximum number of conversations to return (`1` to `100`) |
   | `offset` | integer | `0` | Number of conversations to skip (`>= 0`) |
-- **Required Headers**: None
+- **Required Headers**: `Authorization: Bearer <access_token>`
 - **Request Body**: None
-- **Authentication**: None
-- **Prerequisites**: Obtain `project_id` from [Create Project](#create-project).
+- **Authentication**: Bearer Token (Required)
+- **Prerequisites**: Obtain `project_id` from [Create Project](#create-project). Project must belong to caller.
 
 #### Response Structure (200 OK)
 ```json
@@ -927,7 +1305,8 @@ curl -X POST "http://localhost:8000/projects/b7e6c5a1-4321-4def-9876-543210abcde
 
 #### cURL
 ```bash
-curl -X GET "http://localhost:8000/projects/b7e6c5a1-4321-4def-9876-543210abcdef/conversations?limit=50&offset=0"
+curl -X GET "http://localhost:8000/projects/b7e6c5a1-4321-4def-9876-543210abcdef/conversations?limit=50&offset=0" \
+  -H "Authorization: Bearer <your_access_token>"
 ```
 
 #### Postman
@@ -939,7 +1318,7 @@ curl -X GET "http://localhost:8000/projects/b7e6c5a1-4321-4def-9876-543210abcdef
   - `offset`: `0`
 - **Headers**: None
 - **Body**: None
-- **Authentication**: No Auth
+- **Authentication**: Bearer Token (`{{accessToken}}`)
 
 ---
 
@@ -954,10 +1333,10 @@ curl -X GET "http://localhost:8000/projects/b7e6c5a1-4321-4def-9876-543210abcdef
   | `project_id` | string (UUID) | Owning project identifier |
   | `conversation_id` | string (UUID) | Conversation identifier |
 - **Query Parameters**: None
-- **Required Headers**: None
+- **Required Headers**: `Authorization: Bearer <access_token>`
 - **Request Body**: None
-- **Authentication**: None
-- **Prerequisites**: Obtain `project_id` and `conversation_id`.
+- **Authentication**: Bearer Token (Required)
+- **Prerequisites**: Obtain `project_id` and `conversation_id`. Project must belong to caller.
 
 #### Response Structure (200 OK)
 ```json
@@ -999,7 +1378,8 @@ curl -X GET "http://localhost:8000/projects/b7e6c5a1-4321-4def-9876-543210abcdef
 
 #### cURL
 ```bash
-curl -X GET "http://localhost:8000/projects/b7e6c5a1-4321-4def-9876-543210abcdef/conversations/c3d2e1f0-1234-5678-9abc-def012345678"
+curl -X GET "http://localhost:8000/projects/b7e6c5a1-4321-4def-9876-543210abcdef/conversations/c3d2e1f0-1234-5678-9abc-def012345678" \
+  -H "Authorization: Bearer <your_access_token>"
 ```
 
 #### Postman
@@ -1010,7 +1390,7 @@ curl -X GET "http://localhost:8000/projects/b7e6c5a1-4321-4def-9876-543210abcdef
   - `conversation_id`: `c3d2e1f0-1234-5678-9abc-def012345678`
 - **Headers**: None
 - **Body**: None
-- **Authentication**: No Auth
+- **Authentication**: Bearer Token (`{{accessToken}}`)
 
 ---
 
@@ -1025,9 +1405,11 @@ curl -X GET "http://localhost:8000/projects/b7e6c5a1-4321-4def-9876-543210abcdef
   | `project_id` | string (UUID) | Owning project identifier |
   | `conversation_id` | string (UUID) | Conversation identifier |
 - **Query Parameters**: None
-- **Required Headers**: `Content-Type: application/json`
-- **Authentication**: None
-- **Prerequisites**: Obtain `project_id` and `conversation_id`.
+- **Required Headers**:
+  - `Content-Type: application/json`
+  - `Authorization: Bearer <access_token>`
+- **Authentication**: Bearer Token (Required)
+- **Prerequisites**: Obtain `project_id` and `conversation_id`. Project must belong to caller.
 
 #### Request Body Structure
 | Field | Type | Required | Description |
@@ -1056,6 +1438,7 @@ curl -X GET "http://localhost:8000/projects/b7e6c5a1-4321-4def-9876-543210abcdef
 ```bash
 curl -X PATCH "http://localhost:8000/projects/b7e6c5a1-4321-4def-9876-543210abcdef/conversations/c3d2e1f0-1234-5678-9abc-def012345678" \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <your_access_token>" \
   -d '{
     "title": "Vendor Liability & Notice Analysis (Reviewed)"
   }'
@@ -1075,7 +1458,7 @@ curl -X PATCH "http://localhost:8000/projects/b7e6c5a1-4321-4def-9876-543210abcd
     "title": "Vendor Liability & Notice Analysis (Reviewed)"
   }
   ```
-- **Authentication**: No Auth
+- **Authentication**: Bearer Token (`{{accessToken}}`)
 
 ---
 
@@ -1090,10 +1473,10 @@ curl -X PATCH "http://localhost:8000/projects/b7e6c5a1-4321-4def-9876-543210abcd
   | `project_id` | string (UUID) | Owning project identifier |
   | `conversation_id` | string (UUID) | Conversation identifier |
 - **Query Parameters**: None
-- **Required Headers**: None
+- **Required Headers**: `Authorization: Bearer <access_token>`
 - **Request Body**: None
-- **Authentication**: None
-- **Prerequisites**: Obtain `project_id` and `conversation_id`.
+- **Authentication**: Bearer Token (Required)
+- **Prerequisites**: Obtain `project_id` and `conversation_id`. Project must belong to caller.
 
 #### Response Structure (204 No Content)
 - **Status**: `204 No Content`
@@ -1101,7 +1484,8 @@ curl -X PATCH "http://localhost:8000/projects/b7e6c5a1-4321-4def-9876-543210abcd
 
 #### cURL
 ```bash
-curl -X DELETE "http://localhost:8000/projects/b7e6c5a1-4321-4def-9876-543210abcdef/conversations/c3d2e1f0-1234-5678-9abc-def012345678"
+curl -X DELETE "http://localhost:8000/projects/b7e6c5a1-4321-4def-9876-543210abcdef/conversations/c3d2e1f0-1234-5678-9abc-def012345678" \
+  -H "Authorization: Bearer <your_access_token>"
 ```
 
 #### Postman
@@ -1112,13 +1496,15 @@ curl -X DELETE "http://localhost:8000/projects/b7e6c5a1-4321-4def-9876-543210abc
   - `conversation_id`: `c3d2e1f0-1234-5678-9abc-def012345678`
 - **Headers**: None
 - **Body**: None
-- **Authentication**: No Auth
+- **Authentication**: Bearer Token (`{{accessToken}}`)
 
 ---
 
 ## Messages API (Multi-turn History & Agent Streaming)
 
 The Messages API powers multi-turn dialogue within a conversation. Sending a `user` message invokes the **BRD Lead Agent** runtime under strict project boundary isolation, streams the agent response in real time via Server-Sent Events (SSE), and automatically persists both user and assistant message turns.
+
+All message operations require Bearer token authentication and verify that the target `project_id` belongs to the authenticated user. In addition, the authenticated user identity (`user_id`) is automatically injected into the agent's context (`AgentContext.user_id`). Operations on projects belonging to other users return HTTP `404 Not Found`.
 
 > **Agent-Driven Dialogue Architecture**:
 > `POST /projects/{project_id}/conversations/{conversation_id}/messages` is the single application boundary for chat.
@@ -1142,9 +1528,11 @@ The Messages API powers multi-turn dialogue within a conversation. Sending a `us
   | Parameter | Type | Default | Description |
   | :--- | :--- | :--- | :--- |
   | `stream` | boolean | `true` | When `true` (default) and `role="user"`, returns a `text/event-stream` SSE response streaming the agent's output. When `false` and `role="user"`, executes the full 9-phase BRD workflow synchronously and returns the generated assistant message as HTTP `201 Created` (`MessageResponse`). |
-- **Required Headers**: `Content-Type: application/json`
-- **Authentication**: None
-- **Prerequisites**: Obtain `project_id` from [Create Project](#create-project) and `conversation_id` from [Create Conversation](#create-conversation).
+- **Required Headers**:
+  - `Content-Type: application/json`
+  - `Authorization: Bearer <access_token>`
+- **Authentication**: Bearer Token (Required)
+- **Prerequisites**: Obtain `project_id` from [Create Project](#create-project) and `conversation_id` from [Create Conversation](#create-conversation). Target project must belong to caller.
 
 #### Request Body Structure
 | Field | Type | Required | Description |
@@ -1229,6 +1617,7 @@ When `role="assistant"` is provided (e.g. for historical seeding or manual trans
 ```bash
 curl -X POST "http://localhost:8000/projects/b7e6c5a1-4321-4def-9876-543210abcdef/conversations/c3d2e1f0-1234-5678-9abc-def012345678/messages?stream=false" \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <your_access_token>" \
   -d '{
     "content": "Draft the Executive Summary section for the BRD based on the uploaded RFP.",
     "role": "user"
@@ -1239,6 +1628,7 @@ curl -X POST "http://localhost:8000/projects/b7e6c5a1-4321-4def-9876-543210abcde
 ```bash
 curl -N -X POST "http://localhost:8000/projects/b7e6c5a1-4321-4def-9876-543210abcdef/conversations/c3d2e1f0-1234-5678-9abc-def012345678/messages?stream=true" \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <your_access_token>" \
   -d '{
     "content": "What are the key functional requirements?",
     "role": "user"
@@ -1247,12 +1637,15 @@ curl -N -X POST "http://localhost:8000/projects/b7e6c5a1-4321-4def-9876-543210ab
 
 #### Example Frontend / Client Usage (JavaScript `fetch` + `ReadableStream`)
 ```javascript
-async function sendMessageToAgent(projectId, conversationId, userText, onChunk, onComplete, onError) {
+async function sendMessageToAgent(projectId, conversationId, userText, onChunk, onComplete, onError, accessToken) {
   const response = await fetch(
     `/projects/${projectId}/conversations/${conversationId}/messages?stream=true`,
     {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${accessToken}`
+      },
       body: JSON.stringify({ content: userText, role: 'user' })
     }
   );
@@ -1312,7 +1705,7 @@ async function sendMessageToAgent(projectId, conversationId, userText, onChunk, 
     "role": "user"
   }
   ```
-- **Authentication**: No Auth
+- **Authentication**: Bearer Token (`{{accessToken}}`)
 - *Note: Postman will stream the SSE chunks in real time under the Response view.*
 
 ---
@@ -1332,10 +1725,10 @@ async function sendMessageToAgent(projectId, conversationId, userText, onChunk, 
   | :--- | :--- | :--- | :--- |
   | `limit` | integer | `100` | Maximum number of messages to return (`1` to `100`) |
   | `offset` | integer | `0` | Number of messages to skip (`>= 0`) |
-- **Required Headers**: None
+- **Required Headers**: `Authorization: Bearer <access_token>`
 - **Request Body**: None
-- **Authentication**: None
-- **Prerequisites**: Obtain `project_id` and `conversation_id`.
+- **Authentication**: Bearer Token (Required)
+- **Prerequisites**: Obtain `project_id` and `conversation_id`. Project must belong to caller.
 
 #### Response Structure (200 OK)
 ```json
@@ -1365,7 +1758,8 @@ async function sendMessageToAgent(projectId, conversationId, userText, onChunk, 
 
 #### cURL
 ```bash
-curl -X GET "http://localhost:8000/projects/b7e6c5a1-4321-4def-9876-543210abcdef/conversations/c3d2e1f0-1234-5678-9abc-def012345678/messages?limit=50&offset=0"
+curl -X GET "http://localhost:8000/projects/b7e6c5a1-4321-4def-9876-543210abcdef/conversations/c3d2e1f0-1234-5678-9abc-def012345678/messages?limit=50&offset=0" \
+  -H "Authorization: Bearer <your_access_token>"
 ```
 
 #### Postman
@@ -1378,13 +1772,15 @@ curl -X GET "http://localhost:8000/projects/b7e6c5a1-4321-4def-9876-543210abcdef
   - `offset`: `0`
 - **Headers**: None
 - **Body**: None
-- **Authentication**: No Auth
+- **Authentication**: Bearer Token (`{{accessToken}}`)
 
 ---
 
 ## Knowledge Retrieval
 
 The Knowledge Retrieval API executes the complete multi-stage RAG retrieval pipeline without invoking the LLM synthesis or conversation persistence layers. It is ideal for semantic search, search inspection, and debugging relevance ranking.
+
+Knowledge retrieval requires Bearer token authentication and verifies that the target `project_id` belongs to the authenticated user. Operations on projects belonging to other users return HTTP `404 Not Found`.
 
 ---
 
@@ -1398,9 +1794,11 @@ The Knowledge Retrieval API executes the complete multi-stage RAG retrieval pipe
   | :--- | :--- | :--- |
   | `project_id` | string (UUID) | Target project identifier |
 - **Query Parameters**: None
-- **Required Headers**: `Content-Type: application/json`
-- **Authentication**: None
-- **Prerequisites**: Obtain `project_id` from [Create Project](#create-project). Ensure source documents have been indexed into the project.
+- **Required Headers**:
+  - `Content-Type: application/json`
+  - `Authorization: Bearer <access_token>`
+- **Authentication**: Bearer Token (Required)
+- **Prerequisites**: Obtain `project_id` from [Create Project](#create-project). Ensure source documents have been indexed into the project. Project must belong to caller.
 
 #### Request Body Structure
 | Field | Type | Required | Description |
@@ -1515,6 +1913,7 @@ The Knowledge Retrieval API executes the complete multi-stage RAG retrieval pipe
 ```bash
 curl -X POST "http://localhost:8000/projects/b7e6c5a1-4321-4def-9876-543210abcdef/retrieval" \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <your_access_token>" \
   -d '{
     "query": "termination notice period and breach conditions",
     "top_k": 3,
@@ -1541,7 +1940,7 @@ curl -X POST "http://localhost:8000/projects/b7e6c5a1-4321-4def-9876-543210abcde
     "enable_reranking": true
   }
   ```
-- **Authentication**: No Auth
+- **Authentication**: Bearer Token (`{{accessToken}}`)
 
 ---
 
@@ -1549,9 +1948,9 @@ curl -X POST "http://localhost:8000/projects/b7e6c5a1-4321-4def-9876-543210abcde
 
 The following observations, gaps, and design inconsistencies were identified during this comprehensive architectural inspection:
 
-### 1. Authentication Endpoints are Completely Missing
-- **Current Situation**: The application lacks user management, signup, login, session validation, or API key generation endpoints.
-- **Impact**: All endpoints are public and unprotected at the network level. Security and tenant isolation rely entirely on client-supplied `project_id` path parameters.
+### 1. [RESOLVED] Authentication MVP & Project Tenancy Implemented
+- **Resolution**: Implemented comprehensive email + password authentication (`/auth/signup`, `/auth/login`, `/auth/refresh`, `/auth/logout`, `/auth/me`), Argon2id password hashing, 15-minute JWT access tokens, 32-byte rotating opaque refresh tokens with reuse detection, and sliding window login rate limiting (5 attempts / 5 mins).
+- **Ownership Enforcement**: Projects are strictly owned by Users (`user_id`). All project and sub-resource operations (`/projects`, `/sources`, `/conversations`, `/retrieval`) require a valid Bearer token and enforce tenancy isolation.
 
 ### 2. Lack of Manual Document Processing / Indexing Trigger Endpoint
 - **Current Situation**: `DocumentProcessingService` implements parsing, cleaning, chunking, embedding generation, and vector indexing. However, there is **no public API endpoint** (e.g. `POST /projects/{project_id}/sources/{document_id}/process` or `POST .../versions/{version_id}/index`) to trigger or retry indexing.
