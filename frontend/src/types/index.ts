@@ -98,13 +98,58 @@ export interface Conversation {
 export type ConversationDetail = Conversation;
 export type ProjectCreatePayload = CreateProjectPayload;
 
+export interface AgentActivityItem {
+  id: string;
+  message: string;
+  phase?: string;
+  section?: string;
+  actor?: string;
+  status: 'completed' | 'in_progress' | 'failed';
+  timestamp: string;
+}
+
 export interface WorkflowProgressEvent {
   type?: string;
+  phase?: string;
   stage?: string;
   step?: string;
   message?: string;
   section?: string;
+  actor?: string;
   [key: string]: unknown;
+}
+
+export interface LLMExecutionSummary {
+  run_id: string;
+  requests: {
+    total: number;
+    successful: number;
+    failed: number;
+    retries: number;
+    total_retries: number;
+    rate_limited: number;
+    other_errors: number;
+  };
+  tokens: {
+    input: number;
+    output: number;
+    total: number;
+    tokens_available_requests: number;
+    tokens_missing_requests: number;
+  };
+  timing: {
+    total_llm_time_seconds: number;
+    average_duration_seconds: number;
+  };
+  breakdowns: {
+    by_component: Record<string, number>;
+    by_phase: Record<string, number>;
+    by_operation: Record<string, number>;
+    by_section: Record<string, number>;
+  };
+  failures: {
+    summary: Record<string, number>;
+  };
 }
 
 export function getMessageWorkflowStatus(message?: Message): string {
@@ -208,6 +253,8 @@ export interface UIMessage extends Message {
   _error?: boolean;
   /** The human-readable error string for failed assistant turns. */
   _errorText?: string;
+  /** Recorded live agent execution activity steps for this turn. */
+  activityLog?: AgentActivityItem[];
 }
 
 // ---------------------------------------------------------------------------

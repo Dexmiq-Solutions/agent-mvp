@@ -27,7 +27,11 @@ from langchain_core.messages import HumanMessage
 from deepagents import create_deep_agent
 from agents.brd.config import AgentConfig, create_agent_model
 from agents.brd.template import extract_section_requirements, extract_section_template
-from observability.logging import get_logger
+from observability import (
+    execute_with_rate_limit_retry_async,
+    extract_rate_limit_info,
+    get_logger,
+)
 
 logger = get_logger(__name__)
 
@@ -526,7 +530,13 @@ class BRDSectionGenerationAgent:
 
         try:
             prompt_input = _build_generation_prompt(ctx)
-            result = await self._graph.ainvoke({"messages": [HumanMessage(content=prompt_input)]})
+            result = await execute_with_rate_limit_retry_async(
+                lambda: self._graph.ainvoke({"messages": [HumanMessage(content=prompt_input)]}),
+                component="section_generation",
+                phase=ctx.metadata.get("phase", "5_SECTION_ITERATION") if ctx.metadata else "5_SECTION_ITERATION",
+                section=ctx.section_name,
+                operation=ctx.operation.value,
+            )
             duration = time.perf_counter() - start_time
 
             messages = result.get("messages", [])
@@ -558,9 +568,11 @@ class BRDSectionGenerationAgent:
         except Exception as exc:
             duration = time.perf_counter() - start_time
             err_msg = str(exc).strip() or exc.__class__.__name__
+            rl_info = extract_rate_limit_info(exc)
             logger.error(
-                "Async Section Generation Sub-Agent execution failed (duration: %.2fs): %s",
+                "Async Section Generation Sub-Agent execution failed (duration: %.2fs, is_rate_limit=%s): %s",
                 duration,
+                rl_info.is_rate_limit,
                 err_msg,
                 exc_info=True,
             )
@@ -571,6 +583,9 @@ class BRDSectionGenerationAgent:
                 summary=f"Section generation failed due to runtime error: {err_msg}",
                 metadata={
                     "error": err_msg,
+                    "is_rate_limit": rl_info.is_rate_limit,
+                    "rate_limit_info": rl_info.to_dict() if rl_info.is_rate_limit else None,
                     "duration_seconds": duration,
                 },
             )
+

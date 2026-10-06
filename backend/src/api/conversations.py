@@ -377,6 +377,11 @@ async def create_message(
                 "project_id": project_id,
                 "duration_seconds": round(time.perf_counter() - start_time, 3),
                 "workflow_state": persisted_state_dict,
+                "llm_execution_summary": (
+                    getattr(agent, "telemetry_tracker", None).get_summary().to_dict()
+                    if getattr(agent, "telemetry_tracker", None)
+                    else (final_state.metadata.get("llm_execution_summary") if final_state else None)
+                ),
             },
             original_session=service._session,
         )
@@ -416,6 +421,9 @@ async def create_message(
                 elif event.get("type") in ("progress", "status"):
                     progress_data = json.dumps(event)
                     yield f"event: progress\ndata: {progress_data}\n\n"
+                elif event.get("type") == "execution_summary":
+                    summary_data = json.dumps(event)
+                    yield f"event: execution_summary\ndata: {summary_data}\n\n"
 
             final_text = "".join(accumulated_parts).strip()
             if not final_text:
@@ -440,6 +448,11 @@ async def create_message(
                     "project_id": project_id,
                     "duration_seconds": round(time.perf_counter() - start_time, 3),
                     "workflow_state": persisted_state_dict,
+                    "llm_execution_summary": (
+                        getattr(agent, "telemetry_tracker", None).get_summary().to_dict()
+                        if getattr(agent, "telemetry_tracker", None)
+                        else (final_state.metadata.get("llm_execution_summary") if final_state else None)
+                    ),
                 },
                 original_session=service._session,
             )
@@ -478,6 +491,13 @@ async def create_message(
                 exc,
                 exc_info=True,
             )
+            tracker = getattr(agent, "telemetry_tracker", None)
+            if tracker and tracker.records:
+                try:
+                    summary_payload = {"type": "execution_summary", "execution_summary": tracker.get_summary().to_dict()}
+                    yield f"event: execution_summary\ndata: {json.dumps(summary_payload)}\n\n"
+                except Exception:
+                    pass
             error_data = json.dumps({
                 "type": "error",
                 "error": f"Agent execution failed: {str(exc)}",

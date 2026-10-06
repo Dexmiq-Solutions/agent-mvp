@@ -11,6 +11,7 @@ Maintains its working context and progress via BRDAgentState.
 """
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
@@ -107,6 +108,16 @@ from agents.brd.context import (
     AgentRunResponse,
     reset_current_agent_context,
     set_current_agent_context,
+)
+from observability import (
+    LLMExecutionSummary,
+    LLMTelemetryTracker,
+    execute_with_rate_limit_retry_async,
+    extract_rate_limit_info,
+    get_current_telemetry_tracker,
+    reset_current_telemetry_tracker,
+    scoped_telemetry_context,
+    set_current_telemetry_tracker,
 )
 from observability.logging import (
     TraceActor,
@@ -566,6 +577,12 @@ class BRDLeadAgent:
             system_prompt=resolved_instruction,
             **deepagent_kwargs,
         )
+        self._telemetry_tracker: Optional[LLMTelemetryTracker] = None
+
+    @property
+    def telemetry_tracker(self) -> Optional[LLMTelemetryTracker]:
+        """Return the current LLMTelemetryTracker for the active run."""
+        return getattr(self, "_telemetry_tracker", None)
 
     @property
     def has_rag_capability(self) -> bool:
@@ -910,7 +927,13 @@ class BRDLeadAgent:
             len(self.sections),
         )
 
-        result = await self.final_validator.validate_async(val_ctx)
+        phase = "8_FINAL_RECOVERY" if self._state.final_validation_recovery_cycles > 0 else "7_FINAL_VALIDATION"
+        with scoped_telemetry_context(
+            component="BRDFinalValidationAgent",
+            phase=phase,
+            operation="validate_final_brd",
+        ):
+            result = await self.final_validator.validate_async(val_ctx)
         self._state.set_final_validation_result(result)
 
         if result.is_valid:
@@ -1858,7 +1881,16 @@ class BRDLeadAgent:
                 f"- 'delegation': Decompose a complex objective into multiple delegated subtasks.\n\n"
                 f"Respond in valid JSON with fields: 'action_type', 'query', 'direct_work_objective', 'direct_work_instructions', 'delegated_tasks', 'reasoning'."
             )
-            msg = await self._model.ainvoke([HumanMessage(content=prompt)])
+            with scoped_telemetry_context(
+                component="BRDLeadAgent",
+                phase="ORCHESTRATION",
+                operation="decide_action",
+                section=section_name or self._state.current_section or "General",
+            ):
+                msg = await execute_with_rate_limit_retry_async(
+                    lambda: self._model.ainvoke([HumanMessage(content=prompt)]),
+                    operation_name="decide_action",
+                )
             raw_text = msg.content if isinstance(msg.content, str) else str(msg.content)
             json_match = re.search(r"\{.*\}", raw_text, re.DOTALL)
             if json_match:
@@ -3522,7 +3554,15 @@ class BRDLeadAgent:
             },
         )
 
-        result = await self.section_generator.generate_async(gen_ctx)
+        phase = "8_FINAL_RECOVERY" if self._state.final_validation_recovery_cycles > 0 else "5_SECTION_ITERATION"
+        op_name = "update_section" if op == SectionOperation.UPDATE else "generate_section"
+        with scoped_telemetry_context(
+            component="BRDSectionGenerationAgent",
+            phase=phase,
+            operation=op_name,
+            section=canonical_sec,
+        ):
+            result = await self.section_generator.generate_async(gen_ctx)
 
         if result.content:
             self._state.set_section_content(canonical_sec, result.content)
@@ -3772,7 +3812,14 @@ class BRDLeadAgent:
             },
         )
 
-        result = await self.section_validator.validate_async(val_ctx)
+        phase = "8_FINAL_RECOVERY" if self._state.final_validation_recovery_cycles > 0 else "5_SECTION_ITERATION"
+        with scoped_telemetry_context(
+            component="BRDSectionValidationAgent",
+            phase=phase,
+            operation="validate_section",
+            section=canonical_sec,
+        ):
+            result = await self.section_validator.validate_async(val_ctx)
         self._state.set_validation_result(result)
 
         if result.is_valid:
@@ -4566,6 +4613,9 @@ class BRDLeadAgent:
         if getattr(effective_ctx, "available_documents", None):
             self._state.metadata["available_documents"] = list(effective_ctx.available_documents)
 
+        self._telemetry_tracker = LLMTelemetryTracker(run_id=agent_run_id)
+        telemetry_token = set_current_telemetry_tracker(self._telemetry_tracker)
+
         input_prompt = request.input_text if isinstance(request, AgentRunRequest) else (str(request) if request is not None else None)
         self._ingest_user_conversation_evidence(input_prompt=input_prompt, prior_messages=prior_messages)
 
@@ -5170,34 +5220,79 @@ class BRDLeadAgent:
                 max_cycles=max_recovery_cycles,
             )
 
+            cycle_sections_passed = True
+            failed_sec_name = ""
             for sec in recovery_strategy.affected_sections:
                 sec_guidance = recovery_strategy.section_guidance.get(sec, "")
-                gen_res = await self.update_section_async(
-                    section=sec,
-                    rework_feedback=sec_guidance,
-                    existing_content=self._state.get_section_content(sec),
-                    context=effective_ctx,
+                sec_passed = False
+                for attempt in range(1, max_section_rework_attempts + 1):
+                    await asyncio.sleep(1.0)
+                    gen_res = await self.update_section_async(
+                        section=sec,
+                        rework_feedback=sec_guidance,
+                        existing_content=self._state.get_section_content(sec),
+                        context=effective_ctx,
+                    )
+                    val_res = await self.validate_section_async(
+                        section=sec,
+                        section_content=gen_res.content,
+                        prior_rework_feedback=sec_guidance,
+                        context=effective_ctx,
+                    )
+                    if val_res.is_valid:
+                        self._state.update_section_status(sec, BRDSectionStatus.COMPLETED)
+                        sec_passed = True
+                        break
+                    else:
+                        sec_guidance = val_res.rework_feedback or sec_guidance
+
+                if not sec_passed:
+                    cycle_sections_passed = False
+                    failed_sec_name = sec
+                    logger.warning(
+                        "Recovery rework exhausted for section '%s' after %d attempts; section remains invalid.",
+                        sec,
+                        max_section_rework_attempts,
+                    )
+                    break
+
+            if not cycle_sections_passed:
+                self._state.final_validation_recovery_exhausted = True
+                diag = {
+                    "phase": "8_FINAL_RECOVERY",
+                    "failed_section": failed_sec_name,
+                    "cycle": cycle,
+                    "error": f"Section '{failed_sec_name}' could not reach a valid state after {max_section_rework_attempts} rework attempts.",
+                }
+                self._state.metadata["recovery_failure"] = diag
+                log_trace_event(
+                    logger,
+                    agent_run_id=agent_run_id,
+                    actor=TraceActor.APPLICATION,
+                    event_name="FINAL_RECOVERY_FAILED",
+                    diagnostics=diag,
                 )
-                val_res = await self.validate_section_async(
-                    section=sec,
-                    section_content=gen_res.content,
+                if self._telemetry_tracker:
+                    self._state.metadata["llm_execution_summary"] = self._telemetry_tracker.get_summary().to_dict()
+                return AgentRunResponse(
+                    output_text=f"BRD recovery halted: section '{failed_sec_name}' could not reach a valid state after {max_section_rework_attempts} rework attempts. Assembly aborted to preserve document integrity.",
+                    success=False,
                     context=effective_ctx,
+                    state=self._state,
                 )
-                if not val_res.is_valid:
-                    for attempt in range(1, max_section_rework_attempts + 1):
-                        gen_res = await self.update_section_async(
-                            section=sec,
-                            rework_feedback=val_res.rework_feedback,
-                            existing_content=gen_res.content,
-                            context=effective_ctx,
-                        )
-                        val_res = await self.validate_section_async(
-                            section=sec,
-                            section_content=gen_res.content,
-                            context=effective_ctx,
-                        )
-                        if val_res.is_valid:
-                            break
+
+            # INVARIANT: DO NOT assemble unless ALL sections are completed
+            if not self.is_section_processing_complete:
+                self._state.final_validation_recovery_exhausted = True
+                logger.error("Cannot assemble BRD in recovery: not all template sections are completed.")
+                if self._telemetry_tracker:
+                    self._state.metadata["llm_execution_summary"] = self._telemetry_tracker.get_summary().to_dict()
+                return AgentRunResponse(
+                    output_text="Cannot assemble BRD in recovery: not all template sections are completed.",
+                    success=False,
+                    context=effective_ctx,
+                    state=self._state,
+                )
 
             await self.assemble_brd_async(context=effective_ctx)
             final_val_res = await self.validate_final_brd_async(context=effective_ctx, auto_recover=False)
@@ -5259,6 +5354,10 @@ class BRDLeadAgent:
             success=True,
             is_valid=final_val_res.is_valid,
         )
+
+        if self._telemetry_tracker:
+            self._state.metadata["llm_execution_summary"] = self._telemetry_tracker.get_summary().to_dict()
+            logger.info(self._telemetry_tracker.format_log_summary())
 
         return AgentRunResponse(
             output_text=final_output,
@@ -5377,6 +5476,9 @@ class BRDLeadAgent:
             self._state.metadata["project_description"] = effective_ctx.project_description
         if getattr(effective_ctx, "available_documents", None):
             self._state.metadata["available_documents"] = list(effective_ctx.available_documents)
+
+        self._telemetry_tracker = LLMTelemetryTracker(run_id=agent_run_id)
+        telemetry_token = set_current_telemetry_tracker(self._telemetry_tracker)
 
         input_prompt = request.input_text if isinstance(request, AgentRunRequest) else (str(request) if request is not None else None)
         self._ingest_user_conversation_evidence(input_prompt=input_prompt, prior_messages=prior_messages)
@@ -5742,10 +5844,116 @@ class BRDLeadAgent:
                 "actor": TraceActor.APPLICATION,
                 "message": f"Executing recovery cycle {cycle}/{max_recovery_cycles} for sections: {', '.join(recovery_strategy.affected_sections)}",
             }
+            cycle_sections_passed = True
+            failed_sec_name = ""
             for sec in recovery_strategy.affected_sections:
                 guidance = recovery_strategy.section_guidance.get(sec, "")
-                gen_res = await self.update_section_async(section=sec, rework_feedback=guidance, existing_content=self._state.get_section_content(sec), context=effective_ctx)
-                val_res = await self.validate_section_async(section=sec, section_content=gen_res.content, context=effective_ctx)
+                sec_passed = False
+                for attempt in range(1, max_section_rework_attempts + 1):
+                    yield {
+                        "type": "progress",
+                        "phase": "8_FINAL_RECOVERY",
+                        "actor": TraceActor.APPLICATION,
+                        "section": sec,
+                        "message": f"Updating and validating affected section: {sec} (attempt {attempt}/{max_section_rework_attempts})",
+                    }
+                    await asyncio.sleep(1.0)
+                    gen_res = await self.update_section_async(
+                        section=sec,
+                        rework_feedback=guidance,
+                        existing_content=self._state.get_section_content(sec),
+                        context=effective_ctx,
+                    )
+                    val_res = await self.validate_section_async(
+                        section=sec,
+                        section_content=gen_res.content,
+                        prior_rework_feedback=guidance,
+                        context=effective_ctx,
+                    )
+                    if val_res.is_valid:
+                        self._state.update_section_status(sec, BRDSectionStatus.COMPLETED)
+                        sec_passed = True
+                        yield {
+                            "type": "progress",
+                            "phase": "8_FINAL_RECOVERY",
+                            "actor": TraceActor.APPLICATION,
+                            "section": sec,
+                            "message": f"Section '{sec}' successfully validated in recovery (attempt {attempt}).",
+                        }
+                        break
+                    else:
+                        guidance = val_res.rework_feedback or guidance
+
+                if not sec_passed:
+                    cycle_sections_passed = False
+                    failed_sec_name = sec
+                    logger.warning(
+                        "Recovery rework exhausted for section '%s' after %d attempts; section remains invalid.",
+                        sec,
+                        max_section_rework_attempts,
+                    )
+                    break
+
+            if not cycle_sections_passed:
+                self._state.final_validation_recovery_exhausted = True
+                diag = {
+                    "phase": "8_FINAL_RECOVERY",
+                    "failed_section": failed_sec_name,
+                    "cycle": cycle,
+                    "error": f"Section '{failed_sec_name}' could not reach a valid state after {max_section_rework_attempts} rework attempts.",
+                }
+                self._state.metadata["recovery_failure"] = diag
+                log_trace_event(
+                    logger,
+                    agent_run_id=agent_run_id,
+                    actor=TraceActor.APPLICATION,
+                    event_name="FINAL_RECOVERY_FAILED",
+                    diagnostics=diag,
+                )
+                yield {
+                    "type": "progress",
+                    "phase": "8_FINAL_RECOVERY",
+                    "actor": TraceActor.APPLICATION,
+                    "section": failed_sec_name,
+                    "message": f"Recovery rework exhausted for section '{failed_sec_name}': section remains invalid. Assembly aborted.",
+                }
+                yield {
+                    "type": "content",
+                    "content": f"\n\n**BRD Generation Paused**: Section '{failed_sec_name}' could not satisfy quality and compliance requirements after {max_section_rework_attempts} rework attempts. Document assembly aborted to maintain document integrity.",
+                }
+                if self._telemetry_tracker:
+                    summary = self._telemetry_tracker.get_summary()
+                    self._state.metadata["llm_execution_summary"] = summary.to_dict()
+                    yield {
+                        "type": "execution_summary",
+                        "execution_summary": summary.to_dict(),
+                    }
+                return
+
+            if not self.is_section_processing_complete:
+                self._state.final_validation_recovery_exhausted = True
+                logger.error("Cannot assemble BRD in recovery: not all template sections are completed.")
+                yield {
+                    "type": "progress",
+                    "phase": "8_FINAL_RECOVERY",
+                    "actor": TraceActor.APPLICATION,
+                    "message": "Cannot assemble BRD in recovery: not all template sections are completed.",
+                }
+                if self._telemetry_tracker:
+                    summary = self._telemetry_tracker.get_summary()
+                    self._state.metadata["llm_execution_summary"] = summary.to_dict()
+                    yield {
+                        "type": "execution_summary",
+                        "execution_summary": summary.to_dict(),
+                    }
+                return
+
+            yield {
+                "type": "progress",
+                "phase": "6_DOCUMENT_ASSEMBLY",
+                "actor": TraceActor.APPLICATION,
+                "message": "Re-assembling complete Business Requirements Document...",
+            }
             await self.assemble_brd_async(context=effective_ctx)
             final_val_res = await self.validate_final_brd_async(context=effective_ctx, auto_recover=False)
 
@@ -5782,6 +5990,15 @@ class BRDLeadAgent:
                 "message": f"Consolidated clarification requested for continuation: {clarification_q}",
             }
             yield {"type": "content", "content": f"\n\n---\n\n{clarification_q}"}
+
+        if self._telemetry_tracker:
+            summary = self._telemetry_tracker.get_summary()
+            self._state.metadata["llm_execution_summary"] = summary.to_dict()
+            logger.info(self._telemetry_tracker.format_log_summary())
+            yield {
+                "type": "execution_summary",
+                "execution_summary": summary.to_dict(),
+            }
 
 
 def create_brd_lead_agent(

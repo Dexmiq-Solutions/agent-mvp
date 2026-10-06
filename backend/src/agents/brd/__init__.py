@@ -9,6 +9,35 @@ from agents.brd.context import (
     AgentRunRequest,
     AgentRunResponse,
 )
+from agents.brd.final_validation import (
+    BRDFinalValidationAgent,
+    FinalValidationCategory,
+    FinalValidationContext,
+    FinalValidationFinding,
+    FinalValidationOutcome,
+    FinalValidationResult,
+    FinalValidationSeverity,
+)
+from agents.brd.recovery import (
+    FinalValidationRecoveryResult,
+    MAX_FINAL_VALIDATION_RECOVERY_CYCLES,
+    format_section_rework_guidance,
+    resolve_affected_sections,
+)
+from agents.brd.section_generation import (
+    BRDSectionGenerationAgent,
+    SectionGenerationContext,
+    SectionGenerationResult,
+    SectionOperation,
+)
+from agents.brd.section_validation import (
+    BRDSectionValidationAgent,
+    SectionValidationContext,
+    ValidationCategory,
+    ValidationFinding,
+    ValidationOutcome,
+    ValidationResult,
+)
 from agents.brd.state import BRDAgentState, BRDSectionStatus
 
 __all__ = [
@@ -19,8 +48,29 @@ __all__ = [
     "AgentRunRequest",
     "AgentRunResponse",
     "BRDAgentState",
+    "BRDFinalValidationAgent",
     "BRDLeadAgent",
+    "BRDSectionGenerationAgent",
     "BRDSectionStatus",
+    "BRDSectionValidationAgent",
+    "FinalValidationCategory",
+    "FinalValidationContext",
+    "FinalValidationFinding",
+    "FinalValidationOutcome",
+    "FinalValidationRecoveryResult",
+    "FinalValidationResult",
+    "FinalValidationSeverity",
+    "MAX_FINAL_VALIDATION_RECOVERY_CYCLES",
+    "SectionGenerationContext",
+    "SectionGenerationResult",
+    "SectionOperation",
+    "SectionValidationContext",
+    "ValidationCategory",
+    "ValidationFinding",
+    "ValidationOutcome",
+    "ValidationResult",
     "create_agent_model",
     "create_brd_lead_agent",
+    "format_section_rework_guidance",
+    "resolve_affected_sections",
 ]

@@ -27,12 +27,59 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { Components } from 'react-markdown';
 import { getConversation, streamMessage, updateConversation, deleteConversation } from '../services/chatService';
-import type { Conversation, ChatStatus, UIMessage } from '../types';
+import type { Conversation, ChatStatus, UIMessage, AgentActivityItem, WorkflowProgressEvent } from '../types';
 import { TelemetryView } from '../components/chat/TelemetryView';
+import { AgentActivityView } from '../components/chat/AgentActivityView';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 type LoadState = 'loading' | 'not_found' | 'error' | 'loaded';
+
+/**
+ * Reconstructs or extracts recorded execution activity items for an assistant turn.
+ * If activityLog was captured in this session, returns it directly.
+ * Otherwise, synthesizes summary steps from persisted metadata.workflow_state.
+ */
+function getActivityLogFromMessage(msg: UIMessage): AgentActivityItem[] {
+  if (msg.activityLog && msg.activityLog.length > 0) {
+    return msg.activityLog;
+  }
+  const ws = (msg.metadata?.workflow_state as Record<string, any>) || null;
+  if (!ws) return [];
+
+  const items: AgentActivityItem[] = [];
+  if (ws.objective) {
+    items.push({
+      id: `syn-init-${msg.id}`,
+      message: `Started BRD analysis for objective`,
+      phase: '1_INITIAL_CONTEXT',
+      status: 'completed',
+      timestamp: msg.created_at || new Date().toISOString(),
+    });
+  }
+  if (ws.section_progress && typeof ws.section_progress === 'object') {
+    Object.entries(ws.section_progress).forEach(([section, secStatus], i) => {
+      items.push({
+        id: `syn-sec-${msg.id}-${i}`,
+        message: `${secStatus === 'Completed' ? 'Completed' : 'Drafted'} section: ${section}`,
+        phase: '5_SECTION_ITERATION',
+        section,
+        status: secStatus === 'Completed' ? 'completed' : 'in_progress',
+        timestamp: msg.created_at || new Date().toISOString(),
+      });
+    });
+  }
+  if (ws.assembled_brd) {
+    items.push({
+      id: `syn-asm-${msg.id}`,
+      message: 'Assembled complete Business Requirements Document',
+      phase: '6_DOCUMENT_ASSEMBLY',
+      status: 'completed',
+      timestamp: msg.created_at || new Date().toISOString(),
+    });
+  }
+  return items;
+}
 
 /** Classify an API error into a friendly message string. */
 function classifyError(err: unknown): string {
@@ -257,38 +304,6 @@ const markdownComponents: Components = {
   },
 };
 
-// ─── ThinkingIndicator ────────────────────────────────────────────────────────
-
-function ThinkingIndicator({ message }: { message?: string }) {
-  return (
-    <div className="flex w-full justify-start slide-up">
-      <div
-        className="w-8 h-8 rounded-lg flex items-center justify-center mr-3 mt-0.5 flex-shrink-0"
-        style={{ background: 'rgba(99,102,241,0.1)', border: '1px solid rgba(99,102,241,0.2)' }}
-      >
-        <Bot size={15} style={{ color: '#818cf8' }} />
-      </div>
-      <div
-        className="flex items-center gap-1.5 px-4"
-        style={{
-          height: '40px',
-          borderRadius: '16px',
-          borderTopLeftRadius: '4px',
-          background: '#141414',
-          border: '1px solid #242424',
-        }}
-      >
-        <span className="dot-pulse-dot w-1.5 h-1.5 rounded-full" style={{ background: 'rgba(129,140,248,0.7)', display: 'inline-block' }} />
-        <span className="dot-pulse-dot w-1.5 h-1.5 rounded-full" style={{ background: 'rgba(129,140,248,0.7)', display: 'inline-block' }} />
-        <span className="dot-pulse-dot w-1.5 h-1.5 rounded-full" style={{ background: 'rgba(129,140,248,0.7)', display: 'inline-block' }} />
-        <span className="text-[12px] ml-1.5" style={{ color: 'rgba(129,140,248,0.6)' }}>
-          {message || 'Agent is working…'}
-        </span>
-      </div>
-    </div>
-  );
-}
-
 // ─── MessageTurn ──────────────────────────────────────────────────────────────
 
 interface MessageTurnProps {
@@ -296,9 +311,19 @@ interface MessageTurnProps {
   /** If true, generation is active — disables retry button to prevent double-fire */
   generationActive: boolean;
   onRetry: (originalText: string) => void;
+  isStreamingThisMessage?: boolean;
+  activeProgress?: WorkflowProgressEvent | null;
+  activeActivityLog?: AgentActivityItem[];
 }
 
-function MessageTurn({ msg, generationActive, onRetry }: MessageTurnProps) {
+function MessageTurn({
+  msg,
+  generationActive,
+  onRetry,
+  isStreamingThisMessage = false,
+  activeProgress = null,
+  activeActivityLog = [],
+}: MessageTurnProps) {
   const isUser = msg.role === 'user';
 
   if (isUser) {
@@ -326,6 +351,10 @@ function MessageTurn({ msg, generationActive, onRetry }: MessageTurnProps) {
     );
   }
 
+  const activityItems = isStreamingThisMessage
+    ? activeActivityLog
+    : getActivityLogFromMessage(msg);
+
   // Assistant error turn
   if (msg._error) {
     return (
@@ -336,7 +365,18 @@ function MessageTurn({ msg, generationActive, onRetry }: MessageTurnProps) {
         >
           <AlertCircle size={15} style={{ color: '#f87171' }} />
         </div>
-        <div style={{ maxWidth: 'min(85%, 720px)', marginRight: '1rem' }}>
+        <div style={{ maxWidth: 'min(85%, 780px)', width: '100%', marginRight: '1rem' }}>
+          {/* Display executed steps prior to error if available */}
+          {activityItems.length > 0 && (
+            <div className="mb-3">
+              <AgentActivityView
+                isLive={false}
+                activityLog={activityItems}
+                defaultExpanded={false}
+              />
+            </div>
+          )}
+
           <div
             style={{
               background: 'rgba(239,68,68,0.06)',
@@ -402,18 +442,38 @@ function MessageTurn({ msg, generationActive, onRetry }: MessageTurnProps) {
       >
         <Bot size={15} style={{ color: '#818cf8' }} />
       </div>
-      <div style={{ maxWidth: 'min(85%, 760px)', marginRight: '0.5rem', minWidth: 0 }}>
-        <div
-          className="chat-prose overflow-x-auto max-w-full"
-          style={{ fontSize: '14px', lineHeight: '1.7', color: '#d4d4d8' }}
-        >
-          <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
-            {msg.content}
-          </ReactMarkdown>
-        </div>
+      <div style={{ maxWidth: 'min(85%, 780px)', width: '100%', marginRight: '0.5rem', minWidth: 0 }}>
+        {/* Agent Activity View: Live while running, Collapsed summary when completed */}
+        {(isStreamingThisMessage || activityItems.length > 0) && (
+          <div className="mb-3.5">
+            <AgentActivityView
+              isLive={isStreamingThisMessage}
+              currentProgress={isStreamingThisMessage ? activeProgress : null}
+              activityLog={activityItems}
+              defaultExpanded={isStreamingThisMessage}
+            />
+          </div>
+        )}
+
+        {/* BRD Markdown Response Content */}
+        {msg.content ? (
+          <div
+            className="chat-prose overflow-x-auto max-w-full"
+            style={{ fontSize: '14px', lineHeight: '1.7', color: '#d4d4d8' }}
+          >
+            <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+              {msg.content}
+            </ReactMarkdown>
+          </div>
+        ) : isStreamingThisMessage ? (
+          <div className="flex items-center gap-2 text-zinc-400 text-xs italic py-1">
+            <span className="w-1.5 h-1.5 rounded-full bg-indigo-400 animate-ping" />
+            <span>Executing BRD workflow...</span>
+          </div>
+        ) : null}
 
         {/* Telemetry — only for non-error, non-optimistic assistant messages */}
-        {!msg._optimistic && msg.metadata && Object.keys(msg.metadata).length > 0 && (
+        {!msg._optimistic && !isStreamingThisMessage && msg.metadata && Object.keys(msg.metadata).length > 0 && (
           <TelemetryView metadata={msg.metadata} />
         )}
       </div>
@@ -439,12 +499,36 @@ export const ConversationView: React.FC = () => {
 
   // ── Chat state machine
   const [chatStatus, setChatStatus] = useState<ChatStatus>('idle');
-  const [progressMessage, setProgressMessage] = useState<string | null>(null);
+  const [activeProgress, setActiveProgress] = useState<WorkflowProgressEvent | null>(null);
+  const [activeActivityLog, setActiveActivityLog] = useState<AgentActivityItem[]>([]);
+  const [activeAssistantId, setActiveAssistantId] = useState<string | null>(null);
+
+  /**
+   * Ref tracking the latest activity log for the active stream,
+   * avoiding stale closures inside streaming callbacks.
+   */
+  const activeLogRef = useRef<AgentActivityItem[]>([]);
+
+  /**
+   * AbortController ref to allow clean cancellation / unmount cleanup.
+   */
+  const abortControllerRef = useRef<AbortController | null>(null);
+
   /**
    * retryText — original user text of the last failed turn.
    * Stored so retry doesn't duplicate the user bubble.
    */
   const retryTextRef = useRef<string | null>(null);
+
+  // ── Clean up pending stream connections on component unmount
+  useEffect(() => {
+    return () => {
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+        abortControllerRef.current = null;
+      }
+    };
+  }, []);
 
   // ── Composer
   const [inputMessage, setInputMessage] = useState('');
@@ -533,7 +617,7 @@ export const ConversationView: React.FC = () => {
   // ── Scroll when messages or status change
   useEffect(() => {
     scrollToBottomIfNear();
-  }, [messages, chatStatus, scrollToBottomIfNear]);
+  }, [messages, chatStatus, activeProgress, scrollToBottomIfNear]);
 
   // ── Core: send a message and generate AI response
 
@@ -541,6 +625,13 @@ export const ConversationView: React.FC = () => {
     if (!projectId || !conversationId) return;
     const trimmed = text.trim();
     if (!trimmed || generationActive) return;
+
+    // Abort any prior in-flight request to ensure single connection
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
 
     // 1. Clear input immediately
     setInputMessage('');
@@ -558,44 +649,62 @@ export const ConversationView: React.FC = () => {
       _optimistic: true,
     };
 
-    setMessages((prev) => [...prev, optimisticUserMsg]);
-    setChatStatus('sending');
+    const assistantId = `ast-${crypto.randomUUID()}`;
+    const placeholderMsg: UIMessage = {
+      id: assistantId,
+      conversation_id: conversationId,
+      role: 'assistant',
+      content: '',
+      created_at: new Date().toISOString(),
+      metadata: {},
+      _optimistic: true,
+    };
 
-    // Brief "sending" phase before the request fires
-    await new Promise((r) => setTimeout(r, 80));
+    setMessages((prev) => [...prev, optimisticUserMsg, placeholderMsg]);
     setChatStatus('thinking');
+    setActiveAssistantId(assistantId);
+    setActiveProgress(null);
+    setActiveActivityLog([]);
+    activeLogRef.current = [];
 
     // Store in case we need to retry
     retryTextRef.current = trimmed;
 
     try {
-      const assistantId = `ast-${crypto.randomUUID()}`;
-      const placeholderMsg: UIMessage = {
-        id: assistantId,
-        conversation_id: conversationId,
-        role: 'assistant',
-        content: '',
-        created_at: new Date().toISOString(),
-        metadata: {},
-      };
-      
-      setMessages((prev) => {
-        const confirmed = prev.map((m) =>
-          m.id === tempId ? { ...m, _optimistic: false } : m
-        );
-        return [...confirmed, placeholderMsg];
-      });
-
-      setProgressMessage(null);
       await streamMessage(
         projectId,
         conversationId,
         { content: trimmed },
         {
-          onProgress: (data) => {
-            if (data?.message) {
-              setProgressMessage(data.message);
-            }
+          signal: controller.signal,
+          onProgress: (prog) => {
+            setActiveProgress(prog);
+            setActiveActivityLog((prev) => {
+              const updated = prev.map((item, idx) => {
+                if (idx === prev.length - 1 && item.status === 'in_progress') {
+                  return { ...item, status: 'completed' as const };
+                }
+                return item;
+              });
+
+              const msgText = prog.message || (prog.section ? `Working on ${prog.section}` : 'Executing agent workflow...');
+              if (updated.length > 0 && updated[updated.length - 1].message === msgText) {
+                return updated;
+              }
+
+              const newItem: AgentActivityItem = {
+                id: `act-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+                message: msgText,
+                phase: prog.phase,
+                section: prog.section,
+                actor: prog.actor,
+                status: 'in_progress',
+                timestamp: new Date().toISOString(),
+              };
+              const nextLog = [...updated, newItem];
+              activeLogRef.current = nextLog;
+              return nextLog;
+            });
           },
           onMessage: (content) => {
             setMessages((prev) => 
@@ -603,26 +712,58 @@ export const ConversationView: React.FC = () => {
             );
           },
           onDone: (msg) => {
+            const finalizedLog = activeLogRef.current.map((item) => ({
+              ...item,
+              status: item.status === 'in_progress' ? ('completed' as const) : item.status,
+            }));
+
             setMessages((prev) => 
-              prev.map(m => m.id === assistantId ? { ...(msg as UIMessage), _optimistic: false } : m)
+              prev.map(m =>
+                m.id === assistantId
+                  ? {
+                      ...(msg as UIMessage),
+                      activityLog: finalizedLog.length > 0 ? finalizedLog : undefined,
+                      _optimistic: false,
+                    }
+                  : m.id === tempId
+                  ? { ...m, _optimistic: false }
+                  : m
+              )
             );
             setChatStatus('idle');
-            setProgressMessage(null);
+            setActiveProgress(null);
+            setActiveAssistantId(null);
             retryTextRef.current = null;
+            abortControllerRef.current = null;
           },
           onError: (err) => {
-             setProgressMessage(null);
-             throw err;
+            const failedLog = activeLogRef.current.map((item, idx) =>
+              idx === activeLogRef.current.length - 1 && item.status === 'in_progress'
+                ? { ...item, status: 'failed' as const }
+                : item
+            );
+            setActiveActivityLog(failedLog);
+            activeLogRef.current = failedLog;
+            throw err;
           }
         }
       );
     } catch (err: unknown) {
-      const errText = classifyError(err);
+      if (controller.signal.aborted) {
+        return;
+      }
 
+      const errText = classifyError(err);
       if (errText === '404_NOT_FOUND') {
         setLoadState('not_found');
         return;
       }
+
+      const failedLog = activeLogRef.current.map((item, idx) =>
+        idx === activeLogRef.current.length - 1 && item.status === 'in_progress'
+          ? { ...item, status: 'failed' as const }
+          : item
+      );
 
       // Create an error assistant bubble — content = original user text for retry
       const errorMsg: UIMessage = {
@@ -634,15 +775,20 @@ export const ConversationView: React.FC = () => {
         metadata: { error: true },
         _error: true,
         _errorText: errText,
+        activityLog: failedLog.length > 0 ? failedLog : undefined,
       };
 
       setMessages((prev) => [
-        // Keep optimistic user message confirmed
-        ...prev.map((m) => (m.id === tempId ? { ...m, _optimistic: false } : m)),
+        // Remove empty placeholder, confirm optimistic user message, append error
+        ...prev
+          .filter((m) => m.id !== assistantId)
+          .map((m) => (m.id === tempId ? { ...m, _optimistic: false } : m)),
         errorMsg,
       ]);
 
       setChatStatus('error');
+      setActiveAssistantId(null);
+      abortControllerRef.current = null;
     }
   }, [projectId, conversationId, generationActive]);
 
@@ -652,6 +798,12 @@ export const ConversationView: React.FC = () => {
     if (!projectId || !conversationId) return;
     if (generationActive) return;
 
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+
     // Remove the last error assistant message
     setMessages((prev) => {
       const lastIdx = [...prev].reverse().findIndex((m) => m._error);
@@ -660,32 +812,60 @@ export const ConversationView: React.FC = () => {
       return prev.filter((_, i) => i !== realIdx);
     });
 
+    const assistantId = `ast-${crypto.randomUUID()}`;
+    const placeholderMsg: UIMessage = {
+      id: assistantId,
+      conversation_id: conversationId,
+      role: 'assistant',
+      content: '',
+      created_at: new Date().toISOString(),
+      metadata: {},
+      _optimistic: true,
+    };
+
+    setMessages((prev) => [...prev, placeholderMsg]);
     setChatStatus('thinking');
+    setActiveAssistantId(assistantId);
+    setActiveProgress(null);
+    setActiveActivityLog([]);
+    activeLogRef.current = [];
     retryTextRef.current = originalText;
 
     try {
-      const assistantId = `ast-${crypto.randomUUID()}`;
-      const placeholderMsg: UIMessage = {
-        id: assistantId,
-        conversation_id: conversationId,
-        role: 'assistant',
-        content: '',
-        created_at: new Date().toISOString(),
-        metadata: {},
-      };
-
-      setMessages((prev) => [...prev, placeholderMsg]);
-
-      setProgressMessage(null);
       await streamMessage(
         projectId,
         conversationId,
         { content: originalText },
         {
-          onProgress: (data) => {
-            if (data?.message) {
-              setProgressMessage(data.message);
-            }
+          signal: controller.signal,
+          onProgress: (prog) => {
+            setActiveProgress(prog);
+            setActiveActivityLog((prev) => {
+              const updated = prev.map((item, idx) => {
+                if (idx === prev.length - 1 && item.status === 'in_progress') {
+                  return { ...item, status: 'completed' as const };
+                }
+                return item;
+              });
+
+              const msgText = prog.message || (prog.section ? `Working on ${prog.section}` : 'Executing agent workflow...');
+              if (updated.length > 0 && updated[updated.length - 1].message === msgText) {
+                return updated;
+              }
+
+              const newItem: AgentActivityItem = {
+                id: `act-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+                message: msgText,
+                phase: prog.phase,
+                section: prog.section,
+                actor: prog.actor,
+                status: 'in_progress',
+                timestamp: new Date().toISOString(),
+              };
+              const nextLog = [...updated, newItem];
+              activeLogRef.current = nextLog;
+              return nextLog;
+            });
           },
           onMessage: (content) => {
             setMessages((prev) => 
@@ -693,26 +873,56 @@ export const ConversationView: React.FC = () => {
             );
           },
           onDone: (msg) => {
+            const finalizedLog = activeLogRef.current.map((item) => ({
+              ...item,
+              status: item.status === 'in_progress' ? ('completed' as const) : item.status,
+            }));
+
             setMessages((prev) => 
-              prev.map(m => m.id === assistantId ? { ...(msg as UIMessage) } : m)
+              prev.map(m =>
+                m.id === assistantId
+                  ? {
+                      ...(msg as UIMessage),
+                      activityLog: finalizedLog.length > 0 ? finalizedLog : undefined,
+                      _optimistic: false,
+                    }
+                  : m
+              )
             );
             setChatStatus('idle');
-            setProgressMessage(null);
+            setActiveProgress(null);
+            setActiveAssistantId(null);
             retryTextRef.current = null;
+            abortControllerRef.current = null;
           },
           onError: (err) => {
-            setProgressMessage(null);
+            const failedLog = activeLogRef.current.map((item, idx) =>
+              idx === activeLogRef.current.length - 1 && item.status === 'in_progress'
+                ? { ...item, status: 'failed' as const }
+                : item
+            );
+            setActiveActivityLog(failedLog);
+            activeLogRef.current = failedLog;
             throw err;
           }
         }
       );
     } catch (err: unknown) {
-      const errText = classifyError(err);
+      if (controller.signal.aborted) {
+        return;
+      }
 
+      const errText = classifyError(err);
       if (errText === '404_NOT_FOUND') {
         setLoadState('not_found');
         return;
       }
+
+      const failedLog = activeLogRef.current.map((item, idx) =>
+        idx === activeLogRef.current.length - 1 && item.status === 'in_progress'
+          ? { ...item, status: 'failed' as const }
+          : item
+      );
 
       const errorMsg: UIMessage = {
         id: `err-${crypto.randomUUID()}`,
@@ -723,10 +933,16 @@ export const ConversationView: React.FC = () => {
         metadata: { error: true },
         _error: true,
         _errorText: errText,
+        activityLog: failedLog.length > 0 ? failedLog : undefined,
       };
 
-      setMessages((prev) => [...prev, errorMsg]);
+      setMessages((prev) => [
+        ...prev.filter((m) => m.id !== assistantId),
+        errorMsg,
+      ]);
       setChatStatus('error');
+      setActiveAssistantId(null);
+      abortControllerRef.current = null;
     }
   }, [projectId, conversationId, generationActive]);
 
@@ -910,11 +1126,11 @@ export const ConversationView: React.FC = () => {
               msg={msg}
               generationActive={generationActive}
               onRetry={handleRetry}
+              isStreamingThisMessage={generationActive && msg.id === activeAssistantId}
+              activeProgress={msg.id === activeAssistantId ? activeProgress : null}
+              activeActivityLog={msg.id === activeAssistantId ? activeActivityLog : undefined}
             />
           ))}
-
-          {/* AI thinking indicator */}
-          {generationActive && <ThinkingIndicator message={progressMessage || undefined} />}
 
           <div ref={messagesEndRef} />
         </div>

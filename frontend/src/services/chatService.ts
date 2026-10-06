@@ -12,6 +12,7 @@ import type {
   Message,
   SendMessagePayload,
   PaginatedResponse,
+  WorkflowProgressEvent,
 } from '../types/index.ts';
 
 function base(projectId: string) {
@@ -94,10 +95,11 @@ export async function sendMessage(
 }
 
 export interface StreamHandlers {
-  onProgress?: (data: any) => void;
+  onProgress?: (data: WorkflowProgressEvent) => void;
   onMessage?: (content: string) => void;
   onDone?: (message: Message) => void;
   onError?: (error: Error) => void;
+  signal?: AbortSignal;
 }
 
 /** Stream the assistant's response via SSE */
@@ -114,6 +116,7 @@ export async function streamMessage(
   const getHeaders = (token: string | null) => {
     const h: Record<string, string> = {
       'Content-Type': 'application/json',
+      Accept: 'text/event-stream',
     };
     if (token) {
       h.Authorization = `Bearer ${token}`;
@@ -122,15 +125,18 @@ export async function streamMessage(
   };
 
   try {
+    if (handlers.signal?.aborted) return;
+
     let token = tokenService.getAccessToken();
     let response = await fetch(url, {
       method: 'POST',
       headers: getHeaders(token),
       body: JSON.stringify(payload),
+      signal: handlers.signal,
     });
 
     // Handle expired token with automatic refresh retry
-    if (response.status === 401) {
+    if (response.status === 401 && !handlers.signal?.aborted) {
       try {
         const newTokens = await refreshTokens();
         token = newTokens.access_token;
@@ -138,11 +144,14 @@ export async function streamMessage(
           method: 'POST',
           headers: getHeaders(token),
           body: JSON.stringify(payload),
+          signal: handlers.signal,
         });
       } catch (refreshErr) {
         throw new Error('Authentication expired. Please log in again.');
       }
     }
+
+    if (handlers.signal?.aborted) return;
 
     if (!response.ok) {
       const text = await response.text();
@@ -160,45 +169,59 @@ export async function streamMessage(
     let buffer = '';
 
     while (true) {
+      if (handlers.signal?.aborted) {
+        await reader.cancel().catch(() => {});
+        return;
+      }
+
       const { done, value } = await reader.read();
       if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n\n');
-      buffer = lines.pop() || ''; // Keep the last incomplete block in the buffer
 
-      for (const block of lines) {
+      buffer += decoder.decode(value, { stream: true });
+      const blocks = buffer.split(/(?:\r?\n){2}/);
+      buffer = blocks.pop() || ''; // Keep the last incomplete block in the buffer
+
+      for (const block of blocks) {
         if (!block.trim()) continue;
-        const blockLines = block.split('\n');
+        const blockLines = block.split(/\r?\n/);
         let eventType = 'message';
         let eventData = '';
 
         for (const line of blockLines) {
-          if (line.startsWith('event: ')) {
-            eventType = line.substring(7).trim();
-          } else if (line.startsWith('data: ')) {
-            eventData += line.substring(6);
+          const trimmed = line.trim();
+          if (trimmed.startsWith('event:')) {
+            eventType = trimmed.replace(/^event:\s*/, '').trim();
+          } else if (trimmed.startsWith('data:')) {
+            eventData += trimmed.replace(/^data:\s*/, '');
           }
         }
 
         if (eventData) {
           try {
             const parsed = JSON.parse(eventData);
-            if (eventType === 'progress' && handlers.onProgress) {
+            if ((eventType === 'progress' || parsed.type === 'progress') && handlers.onProgress) {
               handlers.onProgress(parsed);
-            } else if (eventType === 'message' && handlers.onMessage) {
+            } else if ((eventType === 'message' || parsed.type === 'content') && handlers.onMessage) {
               handlers.onMessage(parsed.content || '');
-            } else if (eventType === 'done' && handlers.onDone) {
+            } else if ((eventType === 'done' || parsed.type === 'done') && handlers.onDone) {
               handlers.onDone(parsed.message);
-            } else if (eventType === 'error' && handlers.onError) {
+            } else if ((eventType === 'error' || parsed.type === 'error') && handlers.onError) {
               handlers.onError(new Error(parsed.error || 'Stream error'));
             }
           } catch (e) {
-            console.warn('Failed to parse SSE data:', eventData);
+            // Raw text fallback if not JSON
+            if (eventType === 'message' && eventData && handlers.onMessage) {
+              handlers.onMessage(eventData);
+            }
           }
         }
       }
     }
   } catch (error) {
+    if (handlers.signal?.aborted || (error instanceof DOMException && error.name === 'AbortError')) {
+      // Aborted intentionally by client; cleanly return
+      return;
+    }
     if (handlers.onError) {
       handlers.onError(error instanceof Error ? error : new Error(String(error)));
     } else {

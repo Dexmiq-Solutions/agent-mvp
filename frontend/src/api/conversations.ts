@@ -1,5 +1,6 @@
 import { apiRequest, API_BASE } from './client.ts';
-import type { Conversation, ConversationDetail, Message, WorkflowProgressEvent } from '../types/index.ts';
+import { tokenService } from '../services/tokenService.ts';
+import type { Conversation, ConversationDetail, LLMExecutionSummary, Message, WorkflowProgressEvent } from '../types/index.ts';
 
 export async function listConversations(projectId: string): Promise<Conversation[]> {
   return apiRequest<Conversation[]>(`/projects/${projectId}/conversations`);
@@ -26,8 +27,10 @@ export interface SendMessageStreamOptions {
   content: string;
   onToken?: (token: string) => void;
   onProgress?: (progress: WorkflowProgressEvent) => void;
+  onExecutionSummary?: (summary: LLMExecutionSummary) => void;
   onDone?: (finalMessage: Message) => void;
   onError?: (error: string) => void;
+  signal?: AbortSignal;
 }
 
 export async function sendMessageStream({
@@ -36,17 +39,25 @@ export async function sendMessageStream({
   content,
   onToken,
   onProgress,
+  onExecutionSummary,
   onDone,
   onError,
+  signal,
 }: SendMessageStreamOptions): Promise<void> {
   const url = `${API_BASE}/projects/${projectId}/conversations/${conversationId}/messages?stream=true`;
+  const token = tokenService.getAccessToken();
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    Accept: 'text/event-stream',
+  };
+  if (token) {
+    headers.Authorization = `Bearer ${token}`;
+  }
   
   const response = await fetch(url, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Accept: 'text/event-stream',
-    },
+    headers,
+    signal,
     body: JSON.stringify({
       role: 'user',
       content,
@@ -107,6 +118,8 @@ export async function sendMessageStream({
               }
             } else if (currentEvent === 'progress' || parsed.type === 'progress') {
               onProgress?.(parsed as WorkflowProgressEvent);
+            } else if (currentEvent === 'execution_summary' || parsed.type === 'execution_summary') {
+              onExecutionSummary?.((parsed.execution_summary || parsed) as LLMExecutionSummary);
             } else if (currentEvent === 'done' || parsed.type === 'done') {
               streamCompleted = true;
               if (parsed.message) {

@@ -125,6 +125,8 @@ def create_agent_model(config: Optional[AgentConfig] = None) -> BaseChatModel:
         cfg.base_url,
     )
 
+    from observability.llm_telemetry import get_telemetry_callback_handler
+
     return ChatOpenAI(
         model=cfg.model,
         api_key=cfg.api_key or "sk-dummy-key",
@@ -133,8 +135,10 @@ def create_agent_model(config: Optional[AgentConfig] = None) -> BaseChatModel:
         max_tokens=cfg.max_tokens,
         timeout=cfg.timeout,
         max_retries=cfg.max_retries,
+        callbacks=[get_telemetry_callback_handler()],
         default_headers={
             "HTTP-Referer": "https://agent-mvp.local",
             "X-Title": "Agent MVP",
         },
     )
+
