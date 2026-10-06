@@ -80,7 +80,7 @@ export interface Message {
   conversation_id: string;              // UUID
   role: MessageRole;
   content: string;
-  metadata: TelemetryMetadata;
+  metadata?: TelemetryMetadata;
   created_at: string;                   // ISO-8601
 }
 
@@ -94,6 +94,79 @@ export interface Conversation {
   messages_count: number;
   messages: Message[];
 }
+
+export type ConversationDetail = Conversation;
+export type ProjectCreatePayload = CreateProjectPayload;
+
+export interface AgentActivityItem {
+  id: string;
+  message: string;
+  phase?: string;
+  section?: string;
+  actor?: string;
+  status: 'completed' | 'in_progress' | 'failed';
+  timestamp: string;
+}
+
+export interface WorkflowProgressEvent {
+  type?: string;
+  phase?: string;
+  stage?: string;
+  step?: string;
+  message?: string;
+  section?: string;
+  actor?: string;
+  [key: string]: unknown;
+}
+
+export interface LLMExecutionSummary {
+  run_id: string;
+  requests: {
+    total: number;
+    successful: number;
+    failed: number;
+    retries: number;
+    total_retries: number;
+    rate_limited: number;
+    other_errors: number;
+  };
+  tokens: {
+    input: number;
+    output: number;
+    total: number;
+    tokens_available_requests: number;
+    tokens_missing_requests: number;
+  };
+  timing: {
+    total_llm_time_seconds: number;
+    average_duration_seconds: number;
+  };
+  breakdowns: {
+    by_component: Record<string, number>;
+    by_phase: Record<string, number>;
+    by_operation: Record<string, number>;
+    by_section: Record<string, number>;
+  };
+  failures: {
+    summary: Record<string, number>;
+  };
+}
+
+export function getMessageWorkflowStatus(message?: Message): string {
+  const ws = (message?.metadata?.workflow_state as Record<string, any>) || null;
+  if (!ws) return 'NORMAL';
+  if (ws.waiting_for_user) return 'WAITING_FOR_CLARIFICATION';
+  if (ws.failure_diagnostics) return 'HALTED';
+  if (ws.section_progress) {
+    const values = Object.values(ws.section_progress);
+    if (values.length > 0 && values.every((v) => v === 'Completed')) {
+      return 'COMPLETED';
+    }
+  }
+  return 'NORMAL';
+}
+
+
 
 /** Payload for creating a new conversation. */
 export interface CreateConversationPayload {
@@ -180,6 +253,8 @@ export interface UIMessage extends Message {
   _error?: boolean;
   /** The human-readable error string for failed assistant turns. */
   _errorText?: string;
+  /** Recorded live agent execution activity steps for this turn. */
+  activityLog?: AgentActivityItem[];
 }
 
 // ---------------------------------------------------------------------------
@@ -202,3 +277,44 @@ export interface PaginatedResponse<T> {
 export interface ApiError {
   detail: string | { msg: string; type: string }[];
 }
+
+// ---------------------------------------------------------------------------
+// Authentication & User Schemas
+// ---------------------------------------------------------------------------
+
+/** Authenticated user profile schema. */
+export interface User {
+  id: string;
+  email: string;
+  is_active: boolean;
+  created_at?: string | null;
+  updated_at?: string | null;
+}
+
+export type UserResponse = User;
+
+/** Request payload for user registration. */
+export interface UserSignupRequest {
+  email: string;
+  password: string;
+}
+
+/** Request payload for user authentication. */
+export interface UserLoginRequest {
+  email: string;
+  password: string;
+}
+
+/** Request payload for token refresh and session revocation. */
+export interface RefreshTokenRequest {
+  refresh_token: string;
+}
+
+/** Authentication token response from /auth/login and /auth/refresh. */
+export interface TokenResponse {
+  access_token: string;
+  refresh_token: string;
+  token_type: string;
+  expires_in: number;
+}
+

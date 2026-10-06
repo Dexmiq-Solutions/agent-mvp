@@ -1,6 +1,13 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Conversation, Message, WorkflowProgressEvent, getMessageWorkflowStatus } from '../types';
+import {
+  type Conversation,
+  type Message,
+  type WorkflowProgressEvent,
+  type AgentActivityItem,
+  getMessageWorkflowStatus,
+} from '../types';
 import { sendMessageStream } from '../api/conversations';
+import { AgentActivityView } from './chat/AgentActivityView';
 
 interface ChatViewProps {
   projectId: string;
@@ -23,10 +30,21 @@ export const ChatView: React.FC<ChatViewProps> = ({
   const [isGenerating, setIsGenerating] = useState(false);
   const [streamingContent, setStreamingContent] = useState<string | null>(null);
   const [activeProgress, setActiveProgress] = useState<WorkflowProgressEvent | null>(null);
+  const [activityLog, setActivityLog] = useState<AgentActivityItem[]>([]);
   const [chatError, setChatError] = useState<string | null>(null);
 
+  const abortControllerRef = useRef<AbortController | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    return () => {
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+        abortControllerRef.current = null;
+      }
+    };
+  }, []);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -59,11 +77,18 @@ export const ChatView: React.FC<ChatViewProps> = ({
     const content = inputText.trim();
     if (!content || isGenerating) return;
 
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+
     setInputText('');
     setChatError(null);
     setIsGenerating(true);
     setStreamingContent('');
     setActiveProgress(null);
+    setActivityLog([]);
 
     // Optimistic user message for immediate UI responsiveness
     const optimisticUserMessage: Message = {
@@ -81,17 +106,41 @@ export const ChatView: React.FC<ChatViewProps> = ({
         projectId,
         conversationId: conversation.id,
         content,
+        signal: controller.signal,
         onToken: (token: string) => {
           accumulatedContent += token;
           setStreamingContent(accumulatedContent);
         },
         onProgress: (prog: WorkflowProgressEvent) => {
           setActiveProgress(prog);
+          setActivityLog((prev) => {
+            const updated = prev.map((item, idx) => {
+              if (idx === prev.length - 1 && item.status === 'in_progress') {
+                return { ...item, status: 'completed' as const };
+              }
+              return item;
+            });
+            const msgText = prog.message || (prog.section ? `Working on ${prog.section}` : 'Executing agent workflow...');
+            if (updated.length > 0 && updated[updated.length - 1].message === msgText) {
+              return updated;
+            }
+            const newItem: AgentActivityItem = {
+              id: `act-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+              message: msgText,
+              phase: prog.phase,
+              section: prog.section,
+              actor: prog.actor,
+              status: 'in_progress',
+              timestamp: new Date().toISOString(),
+            };
+            return [...updated, newItem];
+          });
         },
         onDone: (finalAssistantMessage: Message) => {
           setStreamingContent(null);
           setActiveProgress(null);
           setIsGenerating(false);
+          abortControllerRef.current = null;
           onMessageSent(optimisticUserMessage, finalAssistantMessage);
         },
         onError: (err: string) => {
@@ -99,16 +148,21 @@ export const ChatView: React.FC<ChatViewProps> = ({
           setIsGenerating(false);
           setStreamingContent(null);
           setActiveProgress(null);
+          abortControllerRef.current = null;
           // Refresh messages from server to sync state
           onRefreshMessages();
         },
       });
     } catch (err: unknown) {
+      if (controller.signal.aborted) {
+        return;
+      }
       const errMsg = err instanceof Error ? err.message : 'Failed to send message';
       setChatError(errMsg);
       setIsGenerating(false);
       setStreamingContent(null);
       setActiveProgress(null);
+      abortControllerRef.current = null;
       onRefreshMessages();
     }
   };
@@ -210,27 +264,20 @@ export const ChatView: React.FC<ChatViewProps> = ({
               );
             })}
 
-            {isGenerating && streamingContent !== null && (
+            {isGenerating && (
               <div className="chat-bubble-row row-agent" id="streaming-agent-bubble">
-                <div className="chat-bubble bubble-agent">
-                  <div className="bubble-sender">
+                <div className="chat-bubble bubble-agent" style={{ maxWidth: '85%', width: '100%' }}>
+                  <div className="bubble-sender mb-2">
                     BRD Agent <span className="typing-indicator">generating...</span>
                   </div>
-                  <div className="workflow-live-progress" id="workflow-live-progress">
-                    <div className="progress-status-line">
-                      <span className="progress-spinner">●</span>
-                      <span className="progress-message">
-                        {activeProgress?.message || 'Initiating BRD workflow...'}
-                      </span>
-                    </div>
-                    {activeProgress?.section && (
-                      <div className="progress-section-badge">
-                        Section: <strong>{activeProgress.section}</strong>
-                      </div>
-                    )}
-                  </div>
+                  <AgentActivityView
+                    isLive={true}
+                    currentProgress={activeProgress}
+                    activityLog={activityLog}
+                    defaultExpanded={true}
+                  />
                   {streamingContent ? (
-                    <div className="bubble-content mt-2">{streamingContent}</div>
+                    <div className="bubble-content mt-3">{streamingContent}</div>
                   ) : null}
                 </div>
               </div>

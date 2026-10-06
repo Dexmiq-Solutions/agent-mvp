@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Project, Conversation, SourceDocument, Message } from '../types';
+import type { Project, Conversation, SourceDocument, Message } from '../types';
 import { ConversationList } from './ConversationList';
 import { SourceList } from './SourceList';
 import { ChatView } from './ChatView';

@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Project, ProjectCreatePayload } from '../types';
+import type { Project, ProjectCreatePayload } from '../types';
 
 interface ProjectListProps {
   projects: Project[];

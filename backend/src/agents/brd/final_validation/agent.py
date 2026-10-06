@@ -29,7 +29,11 @@ from agents.brd.section_validation.agent import ValidationOutcome
 from agents.brd.template import classify_requirement_item, is_metadata_or_role_item, is_tbd_value
 from deepagents import create_deep_agent
 from agents.brd.config import AgentConfig, create_agent_model
-from observability.logging import get_logger
+from observability import (
+    execute_with_rate_limit_retry_async,
+    extract_rate_limit_info,
+    get_logger,
+)
 
 logger = get_logger(__name__)
 
@@ -708,7 +712,10 @@ class BRDFinalValidationAgent:
 
         try:
             prompt_input = _build_final_validation_prompt(ctx)
-            result = await self._graph.ainvoke({"messages": [HumanMessage(content=prompt_input)]})
+            result = await execute_with_rate_limit_retry_async(
+                lambda: self._graph.ainvoke({"messages": [HumanMessage(content=prompt_input)]}),
+                operation_name="validate_final_brd",
+            )
             duration = time.perf_counter() - start_time
 
             messages = result.get("messages", [])
@@ -739,9 +746,11 @@ class BRDFinalValidationAgent:
         except Exception as exc:
             duration = time.perf_counter() - start_time
             err_msg = str(exc).strip() or exc.__class__.__name__
+            rate_info = extract_rate_limit_info(exc)
             logger.error(
-                "Async BRD Final Validation Sub-Agent execution failed (duration: %.2fs): %s",
+                "Async BRD Final Validation Sub-Agent execution failed (duration: %.2fs, is_rate_limit: %s): %s",
                 duration,
+                rate_info.is_rate_limit,
                 err_msg,
                 exc_info=True,
             )
@@ -761,5 +770,6 @@ class BRDFinalValidationAgent:
                 metadata={
                     "error": err_msg,
                     "duration_seconds": duration,
+                    "rate_limit_info": rate_info.to_dict() if rate_info.is_rate_limit else None,
                 },
             )
