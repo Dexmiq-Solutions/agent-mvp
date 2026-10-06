@@ -478,10 +478,7 @@ async def test_application_enforces_max_3_final_validation_recovery_cycles():
     first_sec = agent.sections[0]
 
     with patch.object(agent, "validate_final_brd_async", new_callable=AsyncMock) as mock_val, \
-         patch.object(agent, "interpret_final_validation_async", new_callable=AsyncMock) as mock_interpret, \
-         patch.object(agent, "update_section_async", new_callable=AsyncMock) as mock_update, \
-         patch.object(agent, "validate_section_async", new_callable=AsyncMock) as mock_sec_val, \
-         patch.object(agent, "assemble_brd_async", new_callable=AsyncMock) as mock_asm:
+         patch.object(agent, "rewrite_brd_async", new_callable=AsyncMock) as mock_rewrite:
 
         # Always returns NEEDS_REWORK
         mock_val.return_value = FinalValidationResult(
@@ -489,40 +486,32 @@ async def test_application_enforces_max_3_final_validation_recovery_cycles():
             summary="Persistent document issue",
             findings=[
                 FinalValidationFinding(
+                    finding_id="FV-001",
                     category=FinalValidationCategory.COMPLETENESS,
                     severity=FinalValidationSeverity.ERROR,
                     issue="Missing key detail",
+                    location="Section 1",
                     affected_sections=[first_sec],
                 )
             ],
         )
-        mock_interpret.return_value = FinalValidationStrategy(
-            requires_recovery=True,
-            affected_sections=[first_sec],
-            section_guidance={first_sec: "Revise section"},
-            overall_strategy="Persistent issue",
-        )
-        mock_update.return_value = SectionGenerationResult(
-            section_name=first_sec,
-            content="## Content v2",
-            operation=SectionOperation.UPDATE,
-        )
-        mock_sec_val.return_value = ValidationResult(section_name=first_sec, outcome=ValidationOutcome.VALID)
-        mock_asm.return_value = BRDAssemblyResult(
-            assembled_document="# BRD v2",
-            sections_assembled=list(agent.sections),
-            section_count=len(agent.sections),
-            assembly_complete=True,
+        from agents.brd.rewriter.agent import BRDRewriterResult
+        mock_rewrite.return_value = BRDRewriterResult(
+            summary="Attempted targeted edit",
+            edits=[],
+            unapplied_findings=["FV-001"],
         )
 
         recovery_result = await agent.recover_final_validation_async(
             context=ctx,
         )
 
-        # Application must enforce max 3 recovery cycles
-        assert recovery_result.recovery_cycles <= 3
+        # Application terminates correction cycle immediately after Pass 2
+        assert recovery_result.recovery_cycles == 1
         assert recovery_result.max_cycles_exhausted is True
         assert recovery_result.success is False
+        assert mock_rewrite.await_count == 1
+        assert mock_val.await_count == 2  # Pass 1 and Pass 2
 
 
 # ---------------------------------------------------------------------------

@@ -133,26 +133,21 @@ flowchart TD
     
     Store_Assembled --> P7_FinalVal
     
-    %% Phase 7 & 8: Final Validation & Bounded Recovery Loop
-    subgraph Phase78 ["Phase 7 & 8: Document Final Validation & Bounded Recovery (Max 3 Cycles)"]
-        P7_FinalVal["Invoke Final Validation Sub-Agent (BRDFinalValidationAgent)<br/><i>(Evaluate 8 Cross-Section & Document-Level Consistency Dimensions)</i>"]
-        P7_FinalVal --> FinalVal_Check{"Document Valid?"}
+    %% Phase 7 & 8: Final Validation & BRD Rewriter Workflow
+    subgraph Phase78 ["Phase 7 & 8: Document Final Validation & BRD Rewriter (Single-Pass Correction Cycle)"]
+        P7_FinalVal["Phase 7: Final Validation Sub-Agent (Pass 1)<br/><i>(Whole-document evaluation across cross-section & consistency dimensions)</i>"]
+        P7_FinalVal --> FinalVal_Check{"Pass 1 Valid?"}
         
         FinalVal_Check -- "VALID" --> P9_Comp
         
-        FinalVal_Check -- "NEEDS_REWORK" --> Recov_CycleCheck{"Recovery Cycles < 3?"}
+        FinalVal_Check -- "NEEDS_REWORK" --> P8_Rewriter["Phase 8: BRD Rewriter Sub-Agent (BRDRewriterAgent)<br/><i>(Targeted minimal edits in a single operation; tools=[])</i>"]
+        P8_Rewriter --> P8_ApplyEdits["Apply DocumentEdits to assembled_brd<br/>Synchronize section content downstream for state persistence"]
+        P8_ApplyEdits --> P7_Pass2["Phase 7: Final Validation Sub-Agent (Pass 2)<br/><i>(Re-validate assembled document against findings)</i>"]
+        P7_Pass2 --> Pass2_Check{"Pass 2 Valid?"}
         
-        Recov_CycleCheck -- "Yes: Enter Recovery" --> Recov_Interpret["Lead Agent Interprets Document Findings<br/>Resolve Affected Sections & Formulate Section Guidance"]
-        Recov_Interpret --> Recov_SecLoop["For Each Affected Section:<br/>1. Update via Section Generation Sub-Agent<br/>2. Re-validate via Section Validation Sub-Agent (Max 2 Attempts)"]
-        Recov_SecLoop --> Recov_Reassemble["Re-assemble Document in State assembled_brd"]
-        Recov_Reassemble --> Recov_Revalidate["Re-validate Assembled Document via Final Validation Sub-Agent"]
-        Recov_Revalidate --> Recov_CheckValid{"Document Valid Now?"}
-        
-        Recov_CheckValid -- "Yes" --> P9_Comp
-        Recov_CheckValid -- "No" --> Recov_CycleCheck
-        
-        Recov_CycleCheck -- "No: Cycles Exhausted (3 Cycles)" --> Recov_Exhausted["Set final_validation_recovery_exhausted = True<br/>Log Trace Warning"]
-        Recov_Exhausted --> P9_Comp
+        Pass2_Check -- "VALID" --> P9_Comp
+        Pass2_Check -- "NEEDS_REWORK" --> P8_TerminalGaps["Terminate Correction Cycle Immediately<br/>Convert unresolved findings into ## Open Questions / Clarifications<br/>Append section to assembled_brd in state"]
+        P8_TerminalGaps --> P9_Comp
     end
     
     %% Phase 9: Completion & Response
@@ -264,19 +259,20 @@ flowchart TD
 - The assembled document is stored in `state.assembled_brd`.
 - The workflow transitions to **Step 15 — Phase 7 Document Final Validation**.
 
-### Step 15 — Phase 7 Document Final Validation
+### Step 15 — Phase 7 Document Final Validation (Pass 1)
 - The Final Validation Sub-Agent (`BRDFinalValidationAgent`) performs whole-document evaluation across 8 dimensions (Cross-Section Consistency, Requirement Consistency, Terminology Consistency, Grounding, Completeness, Duplication, Template Compliance, Overall Coherence).
-- The sub-agent returns outcome `VALID` or `NEEDS_REWORK` with finding severities (`ERROR` vs `WARNING`) and lists candidate `affected_sections`.
-- If `VALID`: the workflow skips recovery and moves to **Step 17 — Phase 9 Completion & Consolidated Clarification Gate**.
-- If `NEEDS_REWORK`: the workflow transitions to **Step 16 — Phase 8 Final Recovery Loop**.
+- The sub-agent examines the complete assembled BRD against available project evidence and produces structured findings with `finding_id`, `location`, `problematic_content`, `evidence`, `required_correction`, `intended_outcome`, `resolution_status`, and `open_question`.
+- If `VALID`: the workflow skips rewriter correction and advances directly to **Step 17 — Phase 9 Completion & Consolidated Clarification Gate**.
+- If `NEEDS_REWORK`: the workflow transitions to **Step 16 — Phase 8 BRD Rewriter Correction & Final Validation (Pass 2)**.
 
-### Step 16 — Phase 8 Final Validation Interpretation & Bounded Recovery Loop
-- While the document remains invalid and recovery cycles have not exceeded 3 cycles:
-  - The Lead Agent interprets findings, resolves candidate section names to canonical template sections, and synthesizes section-specific rework guidance.
-  - For each affected section, the Agent updates content via the Section Generation Sub-Agent and re-validates via the Section Validation Sub-Agent (up to 2 attempts per section).
-  - The complete document is re-assembled in `state.assembled_brd` and re-validated by the Final Validation Sub-Agent.
-  - If valid: the recovery loop breaks and proceeds to **Step 17**.
-- If 3 recovery cycles are exhausted without achieving full validity, the Agent sets `final_validation_recovery_exhausted = True`, logs a warning, and proceeds to deliver the best assembled document.
+### Step 16 — Phase 8 BRD Rewriter Correction & Final Validation (Pass 2)
+- **Single-Operation Correction Cycle**: The Lead Agent invokes the dedicated `BRDRewriterAgent` (`tools=[]`).
+  - **Narrowed Evidence Authority**: The Rewriter receives the complete assembled BRD, the actionable findings, and *only* the specific evidence attached to or referenced by those findings. It does not independently diagnose, reinterpret, or reassess the broader evidence corpus.
+  - **Minimal Change Semantics**: The Rewriter generates a single structured JSON response containing targeted `DocumentEdit` items (`finding_id`, `target_location`, `original_fragment`, `corrected_fragment`, `explanation`). Untouched text is preserved intact.
+- **Application & Synchronization**: The Lead Agent applies edits directly to `state.assembled_brd` and synchronizes `state.section_content` downstream using template heading boundaries strictly for persistence/session resume. Section processing remains permanently closed: Section Validation is NEVER re-executed after Phase 5.
+- **Final Validation Pass 2**: The Lead Agent runs a second (and final) validation pass via `BRDFinalValidationAgent`.
+  - If Pass 2 is `VALID`: proceeds directly to **Step 17**.
+  - If Pass 2 is `NEEDS_REWORK`: the correction cycle terminates immediately. Remaining unresolved findings and evidence gaps are converted into numbered items under a `## Open Questions / Clarifications` section appended to the assembled document. `state.final_validation_recovery_exhausted` is set to `True`, and the document is delivered to **Step 17**.
 
 ### Step 17 — Phase 9 Completion & Consolidated Clarification Gate
 - The Agent inspects `state.unresolved_information` for substantive business gaps that were preserved during the drafting pass:

@@ -1,40 +1,44 @@
-"""Tests for BRD Final Validation recovery loop.
+"""Tests for BRD Final Validation -> BRD Rewriter Architecture.
 
-Covers:
-1. Final Validation VALID requires no recovery.
-2. Final Validation NEEDS_REWORK identifies an affected section.
-3. The affected section is passed to Section Generation/Update.
-4. Final Validation feedback is passed into the section update.
-5. Updated sections are passed through Section Validation.
-6. A valid updated section proceeds to assembly.
-7. The assembled BRD is passed through Final Validation again.
-8. Multiple affected sections can be reworked in one recovery cycle.
-9. A subsequent Final Validation VALID completes successfully.
-10. Recovery repeats when Final Validation continues to return NEEDS_REWORK.
-11. Recovery stops after the maximum of 3 cycles.
-12. Exhausted recovery does not mark the BRD as valid or complete.
-13. Existing section-level retry behavior remains intact.
-14. Recovery state/history is preserved correctly across serialization.
-15. Meaningful recovery lifecycle logging occurs.
-16. Errors fail safely and do not produce a false VALID result.
-17. Async recovery parity.
-18. Edge case: unresolvable affected sections stops safely.
+Comprehensive test suite verifying the new Phase 7 & 8 workflow:
+1. Final Validation VALID requires no rewriter call.
+2. Final Validation NEEDS_REWORK invokes BRDRewriterAgent.
+3. Narrowed Evidence Authority: Rewriter receives only findings and referenced evidence.
+4. Minimal Change Semantics: Edits applied minimally to assembled_brd.
+5. Downstream State Synchronization: Section content updated without reopening sections.
+6. Section Validation Invariant: Section Validation is NEVER called after Phase 5.
+7. Two-Pass Final Validation: Pass 1 -> Rewriter -> Pass 2.
+8. Pass 2 VALID completes and delivers document.
+9. Pass 2 NEEDS_REWORK terminates correction cycle immediately (no loops).
+10. Unresolved findings converted into numbered ## Open Questions / Clarifications and appended to final BRD.
+11. Bounded Limit: At most 1 Rewriter call and at most 2 Final Validation calls.
+12. State Serialization / Deserialization of rewriter result and open questions.
+13. Async execution parity.
+14. Full workflow integration in run_workflow_async.
+15. Streaming progress event parity in stream_workflow_async.
 """
 
 from __future__ import annotations
 
-import logging
 from typing import Any, Optional, Sequence
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from langchain_core.language_models.chat_models import BaseChatModel
+from langchain_core.messages import AIMessage
+from langchain_core.outputs import ChatGeneration, ChatResult
 
 from agents.brd import (
     BRDAgentState,
     BRDFinalValidationAgent,
     BRDLeadAgent,
+    BRDRewriterAgent,
+    BRDRewriterContext,
+    BRDRewriterResult,
     BRDSectionGenerationAgent,
     BRDSectionStatus,
     BRDSectionValidationAgent,
+    DocumentEdit,
     FinalValidationCategory,
     FinalValidationContext,
     FinalValidationFinding,
@@ -42,19 +46,16 @@ from agents.brd import (
     FinalValidationRecoveryResult,
     FinalValidationResult,
     FinalValidationSeverity,
-    MAX_FINAL_VALIDATION_RECOVERY_CYCLES,
+    FindingResolutionStatus,
     SectionGenerationContext,
     SectionGenerationResult,
     SectionOperation,
     SectionValidationContext,
-    ValidationCategory,
-    ValidationFinding,
     ValidationOutcome,
     ValidationResult,
     create_brd_lead_agent,
-    format_section_rework_guidance,
-    resolve_affected_sections,
 )
+from agents.brd.assembly import BRDAssemblyResult
 from agents.brd.context import AgentContext
 
 
@@ -62,63 +63,31 @@ from agents.brd.context import AgentContext
 # Test Mocks
 # ---------------------------------------------------------------------------
 
+class MockChatModel(BaseChatModel):
+    """Deterministic mock chat model."""
 
-class MockSectionGenerator:
-    """Mock section generator tracking generation calls and returning configurable content."""
-
-    def __init__(self, prefix: str = "Updated content for ") -> None:
-        self.calls: list[SectionGenerationContext] = []
-        self.prefix = prefix
-        self.custom_responses: dict[str, str] = {}
-
-    def generate(self, context: SectionGenerationContext) -> SectionGenerationResult:
-        self.calls.append(context)
-        content = self.custom_responses.get(
-            context.section_name,
-            f"{self.prefix}{context.section_name}\n\nValidated requirements text.",
-        )
-        return SectionGenerationResult(
-            section_name=context.section_name,
-            content=content,
-            operation=context.operation,
-            metadata={"call_count": len(self.calls)},
+    def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+        return ChatResult(
+            generations=[ChatGeneration(message=AIMessage(content="Mock response"))]
         )
 
-    async def generate_async(self, context: SectionGenerationContext) -> SectionGenerationResult:
-        return self.generate(context)
+    async def _agenerate(self, messages, stop=None, run_manager=None, **kwargs):
+        return self._generate(messages, stop=stop, run_manager=run_manager, **kwargs)
 
-
-class MockSectionValidator:
-    """Mock section validator tracking validation calls and returning configured outcomes."""
-
-    def __init__(self, outcomes: Optional[list[ValidationResult]] = None) -> None:
-        self.calls: list[SectionValidationContext] = []
-        self._outcomes: list[ValidationResult] = list(outcomes or [])
-        self._default_valid = ValidationResult(
-            outcome=ValidationOutcome.VALID,
-            summary="Section content is valid.",
-            findings=[],
-        )
-
-    def validate(self, context: SectionValidationContext) -> ValidationResult:
-        self.calls.append(context)
-        if self._outcomes:
-            return self._outcomes.pop(0)
-        return self._default_valid
-
-    async def validate_async(self, context: SectionValidationContext) -> ValidationResult:
-        return self.validate(context)
+    @property
+    def _llm_type(self) -> str:
+        return "mock-chat-model"
 
 
 class MockFinalValidator:
-    """Mock final validator tracking calls and returning configured FinalValidationResult sequence."""
+    """Mock final validator returning configured outcomes in order."""
 
     def __init__(self, outcomes: Optional[list[FinalValidationResult]] = None) -> None:
         self.calls: list[FinalValidationContext] = []
         self._outcomes: list[FinalValidationResult] = list(outcomes or [])
         self._default_valid = FinalValidationResult(
             outcome=FinalValidationOutcome.VALID,
-            summary="Complete BRD document is valid.",
+            summary="Complete BRD satisfies all cross-section validation gates.",
             findings=[],
         )
 
@@ -132,597 +101,508 @@ class MockFinalValidator:
         return self.validate(context)
 
 
-# ---------------------------------------------------------------------------
-# Test Fixtures & Helpers
-# ---------------------------------------------------------------------------
+class MockRewriter:
+    """Mock BRD Rewriter tracking calls and returning configured edits."""
+
+    def __init__(self, result: Optional[BRDRewriterResult] = None) -> None:
+        self.calls: list[BRDRewriterContext] = []
+        self._result = result or BRDRewriterResult(
+            summary="Applied 1 targeted edit",
+            edits=[
+                DocumentEdit(
+                    finding_id="FV-001",
+                    target_location="Section 1",
+                    original_fragment="Original text fragment",
+                    corrected_fragment="Corrected replacement text",
+                    explanation="Applied fix",
+                )
+            ],
+            unapplied_findings=[],
+        )
+
+    def rewrite(self, context: BRDRewriterContext) -> BRDRewriterResult:
+        self.calls.append(context)
+        return self._result
+
+    async def rewrite_async(self, context: BRDRewriterContext) -> BRDRewriterResult:
+        return self.rewrite(context)
 
 
-SAMPLE_TEMPLATE = (
-    "# 1. Purpose & Scope of This Document\n\n"
-    "Initial Purpose.\n\n"
-    "# 2. Business Context (Summary from Discovery)\n\n"
-    "Initial Business Context.\n\n"
-    "# 3. In-Scope Business Modules & Feature Groups\n\n"
-    "Initial Scope Modules.\n\n"
-    "# 4. Out-of-Scope\n\n"
-    "Initial Out of Scope.\n\n"
-    "# 5. Stakeholders & Personas\n\n"
-    "Initial Stakeholders.\n\n"
-    "# 6. High-Level Business Requirements by Module\n\n"
-    "Initial Requirements.\n\n"
-    "# 7. Conceptual Business Workflows\n\n"
-    "Initial Workflows.\n\n"
-    "# 8. Integrations & External System Dependencies\n\n"
-    "Initial Integrations.\n\n"
-    "# 9. Business Data & Reporting Needs\n\n"
-    "Initial Reporting.\n\n"
-    "# 10. Non-Functional Business Expectations\n\n"
-    "Initial Non-Functional.\n\n"
-    "# 11. Assumptions & Open Questions\n\n"
-    "Initial Assumptions.\n"
-)
+class MockSectionValidator:
+    """Mock section validator to verify Section Validation is never called in Phase 8."""
+
+    def __init__(self) -> None:
+        self.calls: list[SectionValidationContext] = []
+
+    def validate(self, context: SectionValidationContext) -> ValidationResult:
+        self.calls.append(context)
+        return ValidationResult(outcome=ValidationOutcome.VALID)
+
+    async def validate_async(self, context: SectionValidationContext) -> ValidationResult:
+        return self.validate(context)
 
 
-def create_test_lead_agent(
-    final_outcomes: Optional[list[FinalValidationResult]] = None,
-    section_outcomes: Optional[list[ValidationResult]] = None,
-    template: str = SAMPLE_TEMPLATE,
-) -> tuple[BRDLeadAgent, MockSectionGenerator, MockSectionValidator, MockFinalValidator]:
-    """Helper to instantiate BRDLeadAgent with mock sub-agents and all sections populated."""
-    sec_gen = MockSectionGenerator()
-    sec_val = MockSectionValidator(section_outcomes)
-    final_val = MockFinalValidator(final_outcomes)
-
-    lead = create_brd_lead_agent(
-        template=template,
-        section_generator=sec_gen,  # type: ignore
-        section_validator=sec_val,  # type: ignore
-        final_validator=final_val,  # type: ignore
+def make_test_lead_agent(
+    final_validator: Optional[MockFinalValidator] = None,
+    rewriter: Optional[MockRewriter] = None,
+    section_validator: Optional[MockSectionValidator] = None,
+) -> BRDLeadAgent:
+    """Helper to instantiate a BRDLeadAgent with mock sub-agents."""
+    fv = final_validator or MockFinalValidator()
+    rw = rewriter or MockRewriter()
+    sv = section_validator or MockSectionValidator()
+    return BRDLeadAgent(
+        model=MockChatModel(),
+        final_validator=fv,  # type: ignore
+        rewriter=rw,  # type: ignore
+        section_validator=sv,  # type: ignore
     )
 
-    # Populate sections in state and mark all as COMPLETED
-    for sec in lead.sections:
-        lead.state.set_section_content(sec, f"Content of {sec}")
-        lead.state.update_section_status(sec, BRDSectionStatus.COMPLETED)
-
-    # Initial assembly
-    lead.assemble_brd()
-    return lead, sec_gen, sec_val, final_val
-
 
 # ---------------------------------------------------------------------------
-# Unit Tests
+# Tests: Final Validation & BRD Rewriter Architecture
 # ---------------------------------------------------------------------------
 
+def test_final_validation_valid_requires_no_rewriter():
+    """1. When Final Validation is VALID on Pass 1, rewriter is never invoked."""
+    mock_fv = MockFinalValidator([
+        FinalValidationResult(
+            outcome=FinalValidationOutcome.VALID,
+            summary="BRD is completely valid.",
+            findings=[],
+        )
+    ])
+    mock_rw = MockRewriter()
+    agent = make_test_lead_agent(final_validator=mock_fv, rewriter=mock_rw)
 
-def test_final_validation_valid_requires_no_recovery() -> None:
-    """1. Final Validation VALID requires no recovery."""
-    valid_res = FinalValidationResult(
+    # Populate assembled BRD
+    agent.state.set_assembled_brd("# 1. Project Overview\n\nContent is valid.")
+
+    res = agent.recover_final_validation()
+    assert res.is_valid is True
+    assert res.recovery_cycles == 0
+    assert res.exhausted is False
+    assert len(mock_rw.calls) == 0
+    assert len(mock_fv.calls) == 1
+
+
+def test_final_validation_needs_rework_invokes_rewriter():
+    """2. When Pass 1 returns NEEDS_REWORK, BRDRewriterAgent is invoked."""
+    finding = FinalValidationFinding(
+        finding_id="FV-001",
+        category=FinalValidationCategory.CONSISTENCY,
+        severity=FinalValidationSeverity.ERROR,
+        issue="Inconsistent term",
+        location="Section 1",
+        problematic_content="Original text fragment",
+        evidence="Glossary specifies Corrected replacement text",
+        required_correction="Change to Corrected replacement text",
+    )
+    pass1_res = FinalValidationResult(
+        outcome=FinalValidationOutcome.NEEDS_REWORK,
+        summary="Found 1 inconsistency",
+        findings=[finding],
+    )
+    pass2_res = FinalValidationResult(
         outcome=FinalValidationOutcome.VALID,
-        summary="Document is coherent.",
+        summary="Document is now valid.",
         findings=[],
     )
-    lead, sec_gen, sec_val, final_val = create_test_lead_agent([valid_res])
+    mock_fv = MockFinalValidator([pass1_res, pass2_res])
+    mock_rw = MockRewriter()
+    agent = make_test_lead_agent(final_validator=mock_fv, rewriter=mock_rw)
 
-    # Run recovery
-    rec_res = lead.recover_final_validation(context=AgentContext(project_id="p1"))
+    initial_doc = "# 1. Project Overview\n\nOriginal text fragment here."
+    agent.state.set_assembled_brd(initial_doc)
 
-    assert rec_res.is_valid is True
-    assert rec_res.recovery_cycles == 0
-    assert rec_res.exhausted is False
-    assert len(sec_gen.calls) == 0
-    assert len(sec_val.calls) == 0
-    assert len(final_val.calls) == 1
-    assert lead.final_validation_recovery_cycles == 0
-    assert lead.is_final_validation_recovery_exhausted is False
+    res = agent.recover_final_validation()
+    assert len(mock_rw.calls) == 1
+    assert len(mock_fv.calls) == 2  # Pass 1 and Pass 2
+    assert res.is_valid is True
+    assert agent.state.final_validation_recovery_cycles == 1
 
 
-def test_final_validation_needs_rework_identifies_affected_section() -> None:
-    """2. Final Validation NEEDS_REWORK identifies an affected section."""
-    rework_res = FinalValidationResult(
-        outcome=FinalValidationOutcome.NEEDS_REWORK,
-        summary="Contradiction in scope.",
-        findings=[
-            FinalValidationFinding(
-                category=FinalValidationCategory.CROSS_SECTION_CONSISTENCY,
-                severity=FinalValidationSeverity.ERROR,
-                issue="Scope mismatch",
-                explanation="Section 3 does not align with Section 7.",
-                affected_sections=["3. In-Scope Business Modules & Feature Groups"],
-                required_change="Align module count.",
-            )
-        ],
-        rework_feedback="Fix Section 3.",
+def test_rewriter_receives_only_findings_referenced_evidence():
+    """3. Narrowed Evidence Authority: Rewriter context receives ONLY evidence attached to findings."""
+    finding = FinalValidationFinding(
+        finding_id="FV-002",
+        category=FinalValidationCategory.GROUNDING,
+        severity=FinalValidationSeverity.ERROR,
+        issue="SLA mismatch",
+        location="Section 2",
+        evidence="Service Contract: 99.9% uptime",
+        required_correction="Update uptime to 99.9%",
     )
-    valid_res = FinalValidationResult(
+    pass1_res = FinalValidationResult(
+        outcome=FinalValidationOutcome.NEEDS_REWORK,
+        summary="Unreferenced SLA",
+        findings=[finding],
+    )
+    mock_fv = MockFinalValidator([pass1_res, FinalValidationResult(outcome=FinalValidationOutcome.VALID)])
+    mock_rw = MockRewriter()
+    agent = make_test_lead_agent(final_validator=mock_fv, rewriter=mock_rw)
+
+    # Provide broad state evidence
+    agent.state.add_evidence({"source": "broad_raw_notes.txt", "content": "Unrelated meeting notes"})
+    agent.state.set_assembled_brd("# 1. Overview\n\nUptime is 95%.")
+
+    agent.recover_final_validation()
+
+    assert len(mock_rw.calls) == 1
+    rewriter_ctx = mock_rw.calls[0]
+    # Check that finding_evidence contains the finding's attached evidence
+    assert len(rewriter_ctx.finding_evidence) == 1
+    assert rewriter_ctx.finding_evidence[0]["finding_id"] == "FV-002"
+    assert "99.9% uptime" in rewriter_ctx.finding_evidence[0]["evidence"]
+    # Check that broad_raw_notes was NOT dumped as finding_evidence
+    assert not any("broad_raw_notes" in str(e) for e in rewriter_ctx.finding_evidence)
+
+
+def test_rewriter_edits_applied_minimally_to_assembled_brd():
+    """4. Minimal Change Semantics: apply_rewriter_edits modifies only targeted verbatim text."""
+    agent = make_test_lead_agent()
+    original_doc = (
+        "# 1. Purpose & Scope\n\n"
+        "This project delivers an automated gateway.\n\n"
+        "Target response latency is 500ms.\n\n"
+        "# 2. Functional Requirements\n\n"
+        "FR-1: User can authenticate via OAuth2."
+    )
+    edits = [
+        DocumentEdit(
+            finding_id="FV-010",
+            target_location="Section 1",
+            original_fragment="Target response latency is 500ms.",
+            corrected_fragment="Target response latency is 200ms.",
+            explanation="Aligned with performance baseline",
+        )
+    ]
+    updated_doc, failed_ids = agent.apply_rewriter_edits(original_doc, edits)
+    assert failed_ids == []
+    assert "Target response latency is 200ms." in updated_doc
+    assert "Target response latency is 500ms." not in updated_doc
+    # Untouched text must remain identical
+    assert "This project delivers an automated gateway." in updated_doc
+    assert "FR-1: User can authenticate via OAuth2." in updated_doc
+
+
+def test_section_content_synchronized_downstream_without_reopening_sections():
+    """5. State Synchronization: section_content updated from assembled_brd for persistence."""
+    agent = make_test_lead_agent()
+    # Assume sections from agent.sections
+    first_sec = agent.sections[0]
+    second_sec = agent.sections[1]
+
+    doc = f"# {first_sec}\n\nEdited content for section 1.\n\n# {second_sec}\n\nContent for section 2."
+    agent.synchronize_section_content_from_assembled_brd(doc)
+
+    assert first_sec in agent.state.section_content
+    assert "Edited content for section 1." in agent.state.section_content[first_sec]
+    assert second_sec in agent.state.section_content
+    assert "Content for section 2." in agent.state.section_content[second_sec]
+
+
+def test_section_validation_never_called_after_phase_5():
+    """6. Crucial Invariant: Section Validation is NEVER executed in Phase 8."""
+    finding = FinalValidationFinding(
+        finding_id="FV-003",
+        category=FinalValidationCategory.CONSISTENCY,
+        severity=FinalValidationSeverity.ERROR,
+        issue="Inconsistency",
+        location="Section 1",
+        evidence="Evidence",
+        required_correction="Fix",
+    )
+    pass1_res = FinalValidationResult(
+        outcome=FinalValidationOutcome.NEEDS_REWORK,
+        summary="Needs rework",
+        findings=[finding],
+    )
+    pass2_res = FinalValidationResult(
         outcome=FinalValidationOutcome.VALID,
-        summary="Now valid.",
+        summary="Passed Pass 2",
     )
+    mock_fv = MockFinalValidator([pass1_res, pass2_res])
+    mock_rw = MockRewriter()
+    mock_sv = MockSectionValidator()
+    agent = make_test_lead_agent(final_validator=mock_fv, rewriter=mock_rw, section_validator=mock_sv)
 
-    lead, sec_gen, sec_val, final_val = create_test_lead_agent([rework_res, valid_res])
+    agent.state.set_assembled_brd("# Title\n\nOriginal text fragment")
 
-    rec_res = lead.recover_final_validation(context=AgentContext(project_id="p2"))
+    res = agent.recover_final_validation()
+    assert res.is_valid is True
+    # Section validator must NOT have been called
+    assert len(mock_sv.calls) == 0
 
-    assert rec_res.is_valid is True
-    assert rec_res.recovery_cycles == 1
-    assert "3. In-Scope Business Modules & Feature Groups" in rec_res.reworked_sections
 
-
-def test_affected_section_passed_to_section_generation_update() -> None:
-    """3. The affected section is passed to Section Generation/Update."""
-    target_sec = "3. In-Scope Business Modules & Feature Groups"
-    rework_res = FinalValidationResult(
+def test_pass2_valid_completes_successfully():
+    """7. When Pass 2 Final Validation is VALID, delivery succeeds without Open Questions."""
+    pass1_res = FinalValidationResult(
         outcome=FinalValidationOutcome.NEEDS_REWORK,
-        summary="Scope issue.",
-        findings=[
-            FinalValidationFinding(
-                category=FinalValidationCategory.CROSS_SECTION_CONSISTENCY,
-                severity=FinalValidationSeverity.ERROR,
-                issue="Missing module",
-                explanation="Module X missing.",
-                affected_sections=[target_sec],
-                required_change="Add Module X.",
+        summary="Needs rework",
+        findings=[FinalValidationFinding(finding_id="FV-004", issue="Minor issue", location="Section 1")],
+    )
+    pass2_res = FinalValidationResult(
+        outcome=FinalValidationOutcome.VALID,
+        summary="Pass 2 is fully valid.",
+    )
+    mock_fv = MockFinalValidator([pass1_res, pass2_res])
+    mock_rw = MockRewriter()
+    agent = make_test_lead_agent(final_validator=mock_fv, rewriter=mock_rw)
+
+    agent.state.set_assembled_brd("# Doc\n\nOriginal text fragment")
+    res = agent.recover_final_validation()
+
+    assert res.is_valid is True
+    assert res.exhausted is False
+    assert agent.state.final_validation_recovery_exhausted is False
+    assert "Open Questions / Clarifications" not in agent.state.assembled_brd
+
+
+def test_pass2_needs_rework_terminates_immediately_and_appends_open_questions():
+    """8. When Pass 2 is NEEDS_REWORK, cycle terminates immediately and appends Open Questions."""
+    finding_unresolved = FinalValidationFinding(
+        finding_id="FV-999",
+        category=FinalValidationCategory.COMPLETENESS,
+        severity=FinalValidationSeverity.ERROR,
+        issue="Unresolved architectural choice",
+        location="Section 3",
+        problematic_content="TBD cloud architecture",
+        required_correction="Specify whether AWS or Azure is chosen",
+        resolution_status=FindingResolutionStatus.OPEN_QUESTION,
+        open_question="Which cloud provider (AWS or Azure) should host the production workload?",
+    )
+    pass1_res = FinalValidationResult(
+        outcome=FinalValidationOutcome.NEEDS_REWORK,
+        summary="Needs rework",
+        findings=[finding_unresolved],
+    )
+    pass2_res = FinalValidationResult(
+        outcome=FinalValidationOutcome.NEEDS_REWORK,
+        summary="Still unresolved",
+        findings=[finding_unresolved],
+    )
+    mock_fv = MockFinalValidator([pass1_res, pass2_res])
+    mock_rw = MockRewriter(
+        BRDRewriterResult(
+            summary="Unable to resolve open question without user input",
+            edits=[],
+            unapplied_findings=["FV-999"],
+        )
+    )
+    agent = make_test_lead_agent(final_validator=mock_fv, rewriter=mock_rw)
+
+    agent.state.set_assembled_brd("# System Architecture\n\nTBD cloud architecture")
+    res = agent.recover_final_validation()
+
+    # Recovery must terminate immediately after Pass 2
+    assert res.is_valid is False
+    assert res.exhausted is True
+    assert agent.state.final_validation_recovery_exhausted is True
+    assert len(mock_rw.calls) == 1
+    assert len(mock_fv.calls) == 2
+
+    # Open Questions must be stored in state and appended to assembled_brd
+    assert len(agent.open_questions) > 0
+    assert "FV-999" in agent.open_questions[0]
+    assert "## Open Questions / Clarifications" in agent.state.assembled_brd
+    assert "Which cloud provider (AWS or Azure)" in agent.state.assembled_brd
+
+
+def test_bounded_limit_maximum_one_rewriter_invocation():
+    """9. Strict invariant: At most 1 Rewriter invocation per workflow run."""
+    pass1 = FinalValidationResult(
+        outcome=FinalValidationOutcome.NEEDS_REWORK,
+        summary="Rework",
+        findings=[FinalValidationFinding(finding_id="F-1", issue="Problem", location="Sec 1")],
+    )
+    pass2 = FinalValidationResult(
+        outcome=FinalValidationOutcome.NEEDS_REWORK,
+        summary="Still rework",
+        findings=[FinalValidationFinding(finding_id="F-1", issue="Problem", location="Sec 1")],
+    )
+    mock_fv = MockFinalValidator([pass1, pass2])
+    mock_rw = MockRewriter()
+    agent = make_test_lead_agent(final_validator=mock_fv, rewriter=mock_rw)
+
+    agent.state.set_assembled_brd("# BRD\n\nOriginal text fragment")
+    agent.recover_final_validation()
+
+    assert len(mock_rw.calls) == 1
+    assert agent.state.final_validation_recovery_cycles == 1
+
+
+def test_state_serialization_preserves_rewriter_and_open_questions():
+    """10. State serialization / deserialization preserves latest_rewriter_result and open_questions."""
+    state = BRDAgentState.initialize_from_template(sections=["1. Overview"])
+    rewriter_res = BRDRewriterResult(
+        summary="Applied targeted replacement",
+        edits=[
+            DocumentEdit(
+                finding_id="FV-005",
+                target_location="Section 1",
+                original_fragment="Old",
+                corrected_fragment="New",
+                explanation="Fix",
             )
         ],
+        unapplied_findings=["FV-006"],
     )
-    valid_res = FinalValidationResult(outcome=FinalValidationOutcome.VALID)
-
-    lead, sec_gen, _, _ = create_test_lead_agent([rework_res, valid_res])
-    lead.recover_final_validation()
-
-    assert len(sec_gen.calls) == 1
-    assert sec_gen.calls[0].section_name == target_sec
-    assert sec_gen.calls[0].operation == SectionOperation.UPDATE
-    assert sec_gen.calls[0].existing_content == f"Content of {target_sec}"
-
-
-def test_final_validation_feedback_passed_into_section_update() -> None:
-    """4. Final Validation feedback is passed into the section update."""
-    target_sec = "5. Stakeholders & Personas"
-    rework_res = FinalValidationResult(
-        outcome=FinalValidationOutcome.NEEDS_REWORK,
-        summary="Stakeholder mismatch.",
-        findings=[
-            FinalValidationFinding(
-                category=FinalValidationCategory.COMPLETENESS,
-                severity=FinalValidationSeverity.ERROR,
-                issue="Missing Admin Persona",
-                explanation="System Admin persona is mentioned in Section 8 but omitted in Section 5.",
-                affected_sections=[target_sec],
-                required_change="Define System Administrator persona with access privileges.",
-            )
-        ],
-        rework_feedback="Consolidate persona roles.",
-    )
-    valid_res = FinalValidationResult(outcome=FinalValidationOutcome.VALID)
-
-    lead, sec_gen, _, _ = create_test_lead_agent([rework_res, valid_res])
-    lead.recover_final_validation()
-
-    gen_call = sec_gen.calls[0]
-    assert gen_call.rework_feedback is not None
-    assert "System Admin persona is mentioned in Section 8" in gen_call.rework_feedback
-    assert "Define System Administrator persona" in gen_call.rework_feedback
-    assert "Consolidate persona roles." in gen_call.rework_feedback
-
-
-def test_updated_sections_passed_through_section_validation() -> None:
-    """5. Updated sections are passed through Section Validation."""
-    target_sec = "2. Business Context (Summary from Discovery)"
-    rework_res = FinalValidationResult(
-        outcome=FinalValidationOutcome.NEEDS_REWORK,
-        summary="Context defect.",
-        findings=[
-            FinalValidationFinding(
-                category=FinalValidationCategory.GROUNDING,
-                severity=FinalValidationSeverity.ERROR,
-                issue="Ungrounded metrics",
-                affected_sections=[target_sec],
-                required_change="Ground claims.",
-            )
-        ],
-    )
-    valid_res = FinalValidationResult(outcome=FinalValidationOutcome.VALID)
-
-    lead, sec_gen, sec_val, _ = create_test_lead_agent([rework_res, valid_res])
-    lead.recover_final_validation()
-
-    assert len(sec_val.calls) == 1
-    val_call = sec_val.calls[0]
-    assert val_call.section_name == target_sec
-    assert val_call.section_content == sec_gen.calls[0].existing_content or "Updated content" in val_call.section_content
-
-
-def test_valid_updated_section_proceeds_to_assembly() -> None:
-    """6. A valid updated section proceeds to assembly."""
-    target_sec = "2. Business Context (Summary from Discovery)"
-    rework_res = FinalValidationResult(
-        outcome=FinalValidationOutcome.NEEDS_REWORK,
-        summary="Context defect.",
-        findings=[
-            FinalValidationFinding(
-                category=FinalValidationCategory.GROUNDING,
-                severity=FinalValidationSeverity.ERROR,
-                issue="Ungrounded metrics",
-                affected_sections=[target_sec],
-            )
-        ],
-    )
-    valid_res = FinalValidationResult(outcome=FinalValidationOutcome.VALID)
-
-    lead, sec_gen, _, _ = create_test_lead_agent([rework_res, valid_res])
-    lead.recover_final_validation()
-
-    # Verify state assembled_brd contains the newly updated section content
-    assembled = lead.assembled_brd
-    assert assembled is not None
-    assert f"Updated content for {target_sec}" in assembled
-
-
-def test_assembled_brd_passed_through_final_validation_again() -> None:
-    """7. The assembled BRD is passed through Final Validation again."""
-    target_sec = "3. In-Scope Business Modules & Feature Groups"
-    rework_res = FinalValidationResult(
-        outcome=FinalValidationOutcome.NEEDS_REWORK,
-        findings=[
-            FinalValidationFinding(
-                category=FinalValidationCategory.CROSS_SECTION_CONSISTENCY,
-                issue="Contradiction",
-                affected_sections=[target_sec],
-            )
-        ],
-    )
-    valid_res = FinalValidationResult(outcome=FinalValidationOutcome.VALID)
-
-    lead, _, _, final_val = create_test_lead_agent([rework_res, valid_res])
-    lead.recover_final_validation()
-
-    assert len(final_val.calls) == 2
-    # Second call receives newly assembled document
-    first_doc = final_val.calls[0].assembled_document
-    second_doc = final_val.calls[1].assembled_document
-    assert f"Updated content for {target_sec}" in second_doc
-
-
-def test_multiple_affected_sections_reworked_in_one_cycle() -> None:
-    """8. Multiple affected sections can be reworked in one recovery cycle."""
-    sec1 = "2. Business Context (Summary from Discovery)"
-    sec2 = "5. Stakeholders & Personas"
-
-    rework_res = FinalValidationResult(
-        outcome=FinalValidationOutcome.NEEDS_REWORK,
-        summary="Multiple sections affected.",
-        findings=[
-            FinalValidationFinding(
-                category=FinalValidationCategory.CROSS_SECTION_CONSISTENCY,
-                issue="Inconsistency across context and personas",
-                affected_sections=[sec1, sec2],
-                required_change="Align roles across context and personas.",
-            )
-        ],
-    )
-    valid_res = FinalValidationResult(outcome=FinalValidationOutcome.VALID)
-
-    lead, sec_gen, sec_val, _ = create_test_lead_agent([rework_res, valid_res])
-    rec_res = lead.recover_final_validation()
-
-    assert rec_res.is_valid is True
-    assert rec_res.recovery_cycles == 1
-    assert sec1 in rec_res.reworked_sections
-    assert sec2 in rec_res.reworked_sections
-    assert len(sec_gen.calls) == 2
-    assert len(sec_val.calls) == 2
-    assert {c.section_name for c in sec_gen.calls} == {sec1, sec2}
-
-
-def test_subsequent_final_validation_valid_completes_successfully() -> None:
-    """9. A subsequent Final Validation VALID completes successfully."""
-    sec1 = "3. In-Scope Business Modules & Feature Groups"
-    rework_res = FinalValidationResult(
-        outcome=FinalValidationOutcome.NEEDS_REWORK,
-        findings=[
-            FinalValidationFinding(
-                category=FinalValidationCategory.CROSS_SECTION_CONSISTENCY,
-                issue="Issue in Section 3",
-                affected_sections=[sec1],
-            )
-        ],
-    )
-    valid_res = FinalValidationResult(outcome=FinalValidationOutcome.VALID)
-
-    lead, _, _, _ = create_test_lead_agent([rework_res, valid_res])
-    rec_res = lead.recover_final_validation()
-
-    assert rec_res.is_valid is True
-    assert rec_res.needs_rework is False
-    assert rec_res.exhausted is False
-    assert lead.is_final_validation_recovery_exhausted is False
-
-
-def test_recovery_repeats_when_final_validation_continues_to_return_needs_rework() -> None:
-    """10. Recovery repeats when Final Validation continues to return NEEDS_REWORK."""
-    sec1 = "3. In-Scope Business Modules & Feature Groups"
-    rework_res_1 = FinalValidationResult(
-        outcome=FinalValidationOutcome.NEEDS_REWORK,
-        findings=[FinalValidationFinding(category="Cross-Section Consistency", affected_sections=[sec1], issue="Issue 1")],
-    )
-    rework_res_2 = FinalValidationResult(
-        outcome=FinalValidationOutcome.NEEDS_REWORK,
-        findings=[FinalValidationFinding(category="Cross-Section Consistency", affected_sections=[sec1], issue="Issue 2")],
-    )
-    valid_res = FinalValidationResult(outcome=FinalValidationOutcome.VALID)
-
-    lead, sec_gen, _, final_val = create_test_lead_agent([rework_res_1, rework_res_2, valid_res])
-    rec_res = lead.recover_final_validation()
-
-    assert rec_res.is_valid is True
-    assert rec_res.recovery_cycles == 2
-    assert len(final_val.calls) == 3
-    assert len(sec_gen.calls) == 2
-
-
-def test_recovery_stops_after_maximum_of_3_cycles() -> None:
-    """11. Recovery stops after the maximum of 3 cycles."""
-    sec1 = "3. In-Scope Business Modules & Feature Groups"
-    rework_res = FinalValidationResult(
-        outcome=FinalValidationOutcome.NEEDS_REWORK,
-        summary="Persistent defect.",
-        findings=[FinalValidationFinding(category="Cross-Section Consistency", affected_sections=[sec1], issue="Unresolved defect")],
-    )
-
-    # 4 NEEDS_REWORK results (initial + 3 recovery cycles)
-    lead, sec_gen, _, final_val = create_test_lead_agent(
-        [rework_res, rework_res, rework_res, rework_res]
-    )
-    rec_res = lead.recover_final_validation()
-
-    assert rec_res.recovery_cycles == 3
-    assert rec_res.exhausted is True
-    assert len(sec_gen.calls) == 3
-    assert len(final_val.calls) == 4  # Initial + 3 cycles
-
-
-def test_exhausted_recovery_does_not_mark_brd_as_valid() -> None:
-    """12. Exhausted recovery does not mark the BRD as valid or complete."""
-    sec1 = "3. In-Scope Business Modules & Feature Groups"
-    rework_res = FinalValidationResult(
-        outcome=FinalValidationOutcome.NEEDS_REWORK,
-        summary="Still invalid.",
-        findings=[FinalValidationFinding(category="Cross-Section Consistency", affected_sections=[sec1], issue="Cannot resolve")],
-    )
-
-    lead, _, _, _ = create_test_lead_agent([rework_res] * 5)
-    rec_res = lead.recover_final_validation()
-
-    assert rec_res.is_valid is False
-    assert rec_res.needs_rework is True
-    assert rec_res.exhausted is True
-    assert lead.latest_final_validation_result is not None
-    assert lead.latest_final_validation_result.is_valid is False
-    assert lead.is_final_validation_recovery_exhausted is True
-
-
-def test_existing_section_level_retry_behavior_remains_intact() -> None:
-    """13. Existing section-level retry behavior remains intact."""
-    sec1 = "3. In-Scope Business Modules & Feature Groups"
-    rework_res = FinalValidationResult(
-        outcome=FinalValidationOutcome.NEEDS_REWORK,
-        findings=[FinalValidationFinding(category="Cross-Section Consistency", affected_sections=[sec1], issue="Issue")],
-    )
-    # Section validator returns NEEDS_REWORK on first check, then VALID on section retry
-    sec_needs_rework = ValidationResult(
-        outcome=ValidationOutcome.NEEDS_REWORK,
-        summary="Section needs rework.",
-        findings=[
-            ValidationFinding(
-                category=ValidationCategory.COMPLETENESS,
-                issue="Missing sub-points",
-                explanation="Sub-points 3.1 and 3.2 are missing.",
-                required_change="Add sub-points 3.1 and 3.2.",
-            )
-        ],
-        rework_feedback="Add sub-points",
-    )
-    sec_valid = ValidationResult(outcome=ValidationOutcome.VALID)
-
-    final_valid = FinalValidationResult(outcome=FinalValidationOutcome.VALID)
-
-    lead, sec_gen, sec_val, _ = create_test_lead_agent(
-        final_outcomes=[rework_res, final_valid],
-        section_outcomes=[sec_needs_rework, sec_valid],
-    )
-    rec_res = lead.recover_final_validation()
-
-    assert rec_res.is_valid is True
-    # Section generator was called twice (initial section rework + section-level retry)
-    assert len(sec_gen.calls) == 2
-    # Section validator was called twice (initial validation + retry validation)
-    assert len(sec_val.calls) == 2
-
-
-def test_recovery_state_and_history_preserved_correctly() -> None:
-    """14. Recovery state/history is preserved correctly across serialization."""
-    sec1 = "3. In-Scope Business Modules & Feature Groups"
-    rework_res_1 = FinalValidationResult(
-        outcome=FinalValidationOutcome.NEEDS_REWORK,
-        summary="Cycle 1 issue",
-        findings=[FinalValidationFinding(category="Cross-Section Consistency", affected_sections=[sec1], issue="Issue 1")],
-    )
-    valid_res = FinalValidationResult(outcome=FinalValidationOutcome.VALID, summary="Fixed in cycle 1")
-
-    lead, _, _, _ = create_test_lead_agent([rework_res_1, valid_res])
-    lead.recover_final_validation()
-
-    state = lead.state
-    assert state.final_validation_recovery_cycles == 1
-    assert len(state.final_validation_history) == 2
-
-    # Serialize and deserialize
-    data = state.to_dict()
-    assert data["final_validation_recovery_cycles"] == 1
-    assert data["final_validation_recovery_exhausted"] is False
-    assert len(data["final_validation_history"]) == 2
-
-    restored = BRDAgentState.from_dict(data)
-    assert restored.final_validation_recovery_cycles == 1
-    assert restored.final_validation_recovery_exhausted is False
-    assert len(restored.final_validation_history) == 2
-    assert restored.latest_final_validation_result.is_valid is True
-
-
-def test_meaningful_recovery_lifecycle_logging(caplog: pytest.LogCaptureFixture) -> None:
-    """15. Meaningful recovery lifecycle logging occurs."""
-    sec1 = "3. In-Scope Business Modules & Feature Groups"
-    rework_res = FinalValidationResult(
-        outcome=FinalValidationOutcome.NEEDS_REWORK,
-        summary="Contradiction found.",
-        findings=[FinalValidationFinding(category="Cross-Section Consistency", affected_sections=[sec1], issue="Contradiction")],
-    )
-    valid_res = FinalValidationResult(outcome=FinalValidationOutcome.VALID)
-
-    lead, _, _, _ = create_test_lead_agent([rework_res, valid_res])
-
-    with caplog.at_level(logging.INFO):
-        lead.recover_final_validation(context=AgentContext(project_id="test_log_proj"))
-
-    logs = caplog.text
-    assert "BRD final validation recovery started" in logs
-    assert "Final validation recovery identified affected sections" in logs
-    assert "Final validation section rework started" in logs
-    assert "Final validation section rework completed" in logs
-    assert "Final validation section validation completed" in logs
-    assert "Final validation recovery cycle 1 completed" in logs
-    assert "BRD final validation passed after recovery" in logs
-
-
-def test_recovery_lifecycle_logging_exhausted(caplog: pytest.LogCaptureFixture) -> None:
-    """15b. Lifecycle logging records recovery exhausted when max cycles reached."""
-    sec1 = "3. In-Scope Business Modules & Feature Groups"
-    rework_res = FinalValidationResult(
-        outcome=FinalValidationOutcome.NEEDS_REWORK,
-        summary="Persistent issue.",
-        findings=[FinalValidationFinding(category="Cross-Section Consistency", affected_sections=[sec1], issue="Persistent")],
-    )
-
-    lead, _, _, _ = create_test_lead_agent([rework_res] * 5)
-
-    with caplog.at_level(logging.INFO):
-        lead.recover_final_validation(context=AgentContext(project_id="exhaust_proj"))
-
-    logs = caplog.text
-    assert "BRD final validation recovery exhausted" in logs
-
-
-def test_errors_fail_safely_and_do_not_produce_false_valid(caplog: pytest.LogCaptureFixture) -> None:
-    """16. Errors fail safely and do not produce a false VALID result."""
-    sec1 = "3. In-Scope Business Modules & Feature Groups"
-    rework_res = FinalValidationResult(
-        outcome=FinalValidationOutcome.NEEDS_REWORK,
-        summary="Needs rework.",
-        findings=[FinalValidationFinding(category="Cross-Section Consistency", affected_sections=[sec1], issue="Issue")],
-    )
-
-    lead, sec_gen, _, _ = create_test_lead_agent([rework_res])
-
-    # Force section generator to raise an unexpected runtime error
-    def failing_generate(context: Any) -> Any:
-        raise RuntimeError("Unexpected LLM failure during section generation")
-
-    sec_gen.generate = failing_generate  # type: ignore
-
-    with caplog.at_level(logging.ERROR):
-        rec_res = lead.recover_final_validation(context=AgentContext(project_id="err_proj"))
-
-    assert rec_res.is_valid is False
-    assert rec_res.needs_rework is True
-    assert "Error during final validation recovery section rework" in caplog.text
+    state.set_rewriter_result(rewriter_res)
+    state.set_open_questions(["**[FV-006]**: Clarification question text"])
+
+    d = state.to_dict()
+    assert "latest_rewriter_result" in d
+    assert "open_questions" in d
+    assert d["latest_rewriter_result"]["summary"] == "Applied targeted replacement"
+    assert len(d["open_questions"]) == 1
+
+    restored = BRDAgentState.from_dict(d)
+    assert restored.latest_rewriter_result is not None
+    assert restored.latest_rewriter_result.summary == "Applied targeted replacement"
+    assert len(restored.latest_rewriter_result.edits) == 1
+    assert restored.latest_rewriter_result.edits[0].finding_id == "FV-005"
+    assert len(restored.open_questions) == 1
+    assert "FV-006" in restored.open_questions[0]
 
 
 @pytest.mark.asyncio
-async def test_async_final_validation_recovery_parity() -> None:
-    """17. Asynchronous final validation recovery parity."""
-    sec1 = "3. In-Scope Business Modules & Feature Groups"
-    rework_res = FinalValidationResult(
-        outcome=FinalValidationOutcome.NEEDS_REWORK,
-        summary="Cross-section error.",
-        findings=[FinalValidationFinding(category="Cross-Section Consistency", affected_sections=[sec1], issue="Issue")],
+async def test_async_recovery_parity():
+    """11. Async recovery parity: recover_final_validation_async operates identically."""
+    finding = FinalValidationFinding(
+        finding_id="FV-007",
+        category=FinalValidationCategory.CONSISTENCY,
+        severity=FinalValidationSeverity.ERROR,
+        issue="Issue",
+        location="Section 1",
+        problematic_content="Original text fragment",
+        evidence="Evidence",
+        required_correction="Corrected replacement text",
     )
-    valid_res = FinalValidationResult(outcome=FinalValidationOutcome.VALID)
+    mock_fv = MockFinalValidator([
+        FinalValidationResult(outcome=FinalValidationOutcome.NEEDS_REWORK, findings=[finding]),
+        FinalValidationResult(outcome=FinalValidationOutcome.VALID),
+    ])
+    mock_rw = MockRewriter()
+    agent = make_test_lead_agent(final_validator=mock_fv, rewriter=mock_rw)
 
-    lead, sec_gen, sec_val, final_val = create_test_lead_agent([rework_res, valid_res])
-
-    rec_res = await lead.recover_final_validation_async(context=AgentContext(project_id="async_p1"))
-
-    assert rec_res.is_valid is True
-    assert rec_res.recovery_cycles == 1
-    assert len(sec_gen.calls) == 1
-    assert len(sec_val.calls) == 1
-    assert len(final_val.calls) == 2
-
-
-def test_unresolvable_affected_sections_stops_safely(caplog: pytest.LogCaptureFixture) -> None:
-    """18. Unresolvable affected section edge case stops safely."""
-    rework_res = FinalValidationResult(
-        outcome=FinalValidationOutcome.NEEDS_REWORK,
-        summary="Issue in unknown section.",
-        findings=[
-            FinalValidationFinding(
-                category=FinalValidationCategory.CROSS_SECTION_CONSISTENCY,
-                issue="Unknown section defect",
-                affected_sections=["NonExistentSection 999"],
-            )
-        ],
-    )
-
-    lead, sec_gen, _, _ = create_test_lead_agent([rework_res])
-
-    with caplog.at_level(logging.WARNING):
-        rec_res = lead.recover_final_validation()
-
-    assert rec_res.is_valid is False
-    assert len(sec_gen.calls) == 0  # No sections updated
-    assert "identified no resolvable affected sections" in caplog.text
-
-
-def test_validate_final_brd_with_auto_recover() -> None:
-    """Auto-recover parameter on validate_final_brd invokes recovery loop automatically."""
-    sec1 = "3. In-Scope Business Modules & Feature Groups"
-    rework_res = FinalValidationResult(
-        outcome=FinalValidationOutcome.NEEDS_REWORK,
-        findings=[FinalValidationFinding(category="Cross-Section Consistency", affected_sections=[sec1], issue="Issue")],
-    )
-    valid_res = FinalValidationResult(outcome=FinalValidationOutcome.VALID)
-
-    lead, sec_gen, _, _ = create_test_lead_agent([rework_res, valid_res])
-
-    # validate_final_brd with auto_recover=True
-    res = lead.validate_final_brd(auto_recover=True)
+    agent.state.set_assembled_brd("# Doc\n\nOriginal text fragment")
+    res = await agent.recover_final_validation_async()
 
     assert res.is_valid is True
-    assert len(sec_gen.calls) == 1
+    assert len(mock_rw.calls) == 1
+    assert len(mock_fv.calls) == 2
+    assert "Corrected replacement text" in agent.state.assembled_brd
 
 
-def test_resolve_affected_sections_variations() -> None:
-    """Test resolution of section names across various formats."""
-    template_sections = [
-        "1. Purpose & Scope of This Document",
-        "2. Business Context (Summary from Discovery)",
-        "3. In-Scope Business Modules & Feature Groups",
-        "8. Integrations & External System Dependencies",
-    ]
+@pytest.mark.asyncio
+async def test_run_workflow_async_integrates_rewriter_and_open_questions():
+    """12. Full workflow test: run_workflow_async executes Phase 7 -> Rewriter -> Phase 7 Pass 2."""
+    agent = BRDLeadAgent(model=MockChatModel())
+    ctx = AgentContext(project_id="test-proj")
 
-    candidates = [
-        "Purpose & Scope of This Document",  # Number stripped
-        "Section 3",  # Section N format
-        "Integrations",  # Substring
-        "2. Business Context (Summary from Discovery)",  # Exact match
-        "Nonexistent Section",  # Ignored
-    ]
+    # Mock all phases up to assembly
+    for sec in agent.sections:
+        agent.state.set_section_content(sec, f"# {sec}\nContent for {sec}")
+        agent.state.update_section_status(sec, BRDSectionStatus.COMPLETED)
 
-    resolved = resolve_affected_sections(candidates, template_sections)
-    assert resolved == [
-        "1. Purpose & Scope of This Document",
-        "2. Business Context (Summary from Discovery)",
-        "3. In-Scope Business Modules & Feature Groups",
-        "8. Integrations & External System Dependencies",
-    ]
+    finding = FinalValidationFinding(
+        finding_id="FV-888",
+        category=FinalValidationCategory.REQUIREMENT_CONSISTENCY,
+        severity=FinalValidationSeverity.ERROR,
+        issue="Unresolved spec gap",
+        location="Section 1",
+        open_question="Confirm SLA threshold (200ms vs 500ms)?",
+    )
+    pass1_res = FinalValidationResult(
+        outcome=FinalValidationOutcome.NEEDS_REWORK,
+        findings=[finding],
+    )
+    pass2_res = FinalValidationResult(
+        outcome=FinalValidationOutcome.NEEDS_REWORK,
+        findings=[finding],
+    )
+
+    with patch.object(agent, "decide_action_async", new_callable=AsyncMock) as mock_decide, \
+         patch.object(agent, "interpret_evaluation_async", new_callable=AsyncMock) as mock_eval, \
+         patch.object(agent, "assemble_brd_async", new_callable=AsyncMock) as mock_asm, \
+         patch.object(agent, "validate_final_brd_async", new_callable=AsyncMock) as mock_val, \
+         patch.object(agent, "rewrite_brd_async", new_callable=AsyncMock) as mock_rw:
+
+        from agents.brd.agent import ActionDecision, ActionType, GapResolutionAction, GapResolutionDecision
+        mock_decide.return_value = ActionDecision(action_type=ActionType.DIRECT_WORK, reasoning="Direct")
+        mock_eval.return_value = GapResolutionDecision(action=GapResolutionAction.PROCEED_TO_SECTION_GENERATION)
+        mock_asm.return_value = BRDAssemblyResult(
+            assembled_document="# 1. Overview\nContent for 1. Overview",
+            assembly_complete=True,
+        )
+        mock_val.side_effect = [pass1_res, pass2_res]
+        mock_rw.return_value = BRDRewriterResult(
+            summary="Could not resolve without user input",
+            edits=[],
+            unapplied_findings=["FV-888"],
+        )
+
+        resp = await agent.run_workflow_async(
+            objective="Build gateway",
+            context=ctx,
+        )
+
+        assert mock_rw.await_count == 1
+        assert mock_val.await_count == 2
+        # Document delivered with Open Questions
+        assert "## Open Questions / Clarifications" in resp.output_text
+        assert "Confirm SLA threshold" in resp.output_text
+        assert agent.state.final_validation_recovery_exhausted is True
+
+
+@pytest.mark.asyncio
+async def test_stream_workflow_async_emits_rewriter_events():
+    """13. stream_workflow_async yields progress events for BRD Rewriter and Pass 2."""
+    agent = BRDLeadAgent(model=MockChatModel())
+    ctx = AgentContext(project_id="test-proj")
+
+    for sec in agent.sections:
+        agent.state.set_section_content(sec, f"# {sec}\nContent for {sec}")
+        agent.state.update_section_status(sec, BRDSectionStatus.COMPLETED)
+
+    finding = FinalValidationFinding(
+        finding_id="FV-777",
+        issue="Inconsistency",
+        location="Section 1",
+        problematic_content="Old fragment",
+        required_correction="New fragment",
+    )
+    pass1 = FinalValidationResult(outcome=FinalValidationOutcome.NEEDS_REWORK, findings=[finding])
+    pass2 = FinalValidationResult(outcome=FinalValidationOutcome.VALID, findings=[])
+
+    with patch.object(agent, "decide_action_async", new_callable=AsyncMock) as mock_decide, \
+         patch.object(agent, "interpret_evaluation_async", new_callable=AsyncMock) as mock_eval, \
+         patch.object(agent, "assemble_brd_async", new_callable=AsyncMock) as mock_asm, \
+         patch.object(agent, "validate_final_brd_async", new_callable=AsyncMock) as mock_val, \
+         patch.object(agent, "rewrite_brd_async", new_callable=AsyncMock) as mock_rw:
+
+        from agents.brd.agent import ActionDecision, ActionType, GapResolutionAction, GapResolutionDecision
+        mock_decide.return_value = ActionDecision(action_type=ActionType.DIRECT_WORK)
+        mock_eval.return_value = GapResolutionDecision(action=GapResolutionAction.PROCEED_TO_SECTION_GENERATION)
+        mock_asm.return_value = BRDAssemblyResult(
+            assembled_document="# Title\n\nOld fragment",
+            assembly_complete=True,
+        )
+        mock_val.side_effect = [pass1, pass2]
+        mock_rw.return_value = BRDRewriterResult(
+            summary="Applied edit",
+            edits=[DocumentEdit(finding_id="FV-777", target_location="Section 1", original_fragment="Old fragment", corrected_fragment="New fragment")],
+        )
+
+        events: list[dict[str, Any]] = []
+        async for event in agent.stream_workflow_async(
+            objective="Build gateway",
+            context=ctx,
+        ):
+            events.append(event)
+
+        progress_phases = [e.get("phase") for e in events if e.get("type") == "progress"]
+        assert "7_FINAL_VALIDATION" in progress_phases
+        assert "8_BRD_REWRITER" in progress_phases
+        assert "9_COMPLETION" in progress_phases
