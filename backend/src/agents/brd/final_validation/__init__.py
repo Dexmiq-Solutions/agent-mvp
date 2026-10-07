@@ -8,6 +8,7 @@ from agents.brd.final_validation.agent import (
     FinalValidationOutcome,
     FinalValidationResult,
     FinalValidationSeverity,
+    FindingResolutionStatus,
     get_final_validation_system_instruction_path,
     load_final_validation_system_instruction,
 )
@@ -20,6 +21,7 @@ __all__ = [
     "FinalValidationOutcome",
     "FinalValidationResult",
     "FinalValidationSeverity",
+    "FindingResolutionStatus",
     "get_final_validation_system_instruction_path",
     "load_final_validation_system_instruction",
 ]

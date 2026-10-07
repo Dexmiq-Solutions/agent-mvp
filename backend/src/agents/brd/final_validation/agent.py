@@ -146,41 +146,98 @@ class FinalValidationSeverity(str, Enum):
         return cls.ERROR
 
 
+class FindingResolutionStatus(str, Enum):
+    """Indicates whether a final validation finding is resolvable from evidence or requires clarification."""
+
+    EVIDENCE_BACKED = "EVIDENCE_BACKED"
+    OPEN_QUESTION = "OPEN_QUESTION"
+
+    @classmethod
+    def from_string(cls, val: str | "FindingResolutionStatus") -> "FindingResolutionStatus":
+        """Convert string or enum to normalized FindingResolutionStatus."""
+        if isinstance(val, cls):
+            return val
+        if not isinstance(val, str):
+            return cls.EVIDENCE_BACKED
+        norm = val.strip().upper()
+        if "OPEN" in norm or "QUESTION" in norm or "CLARIF" in norm:
+            return cls.OPEN_QUESTION
+        return cls.EVIDENCE_BACKED
+
+
 @dataclass
 class FinalValidationFinding:
-    """Specific observation made during document-level validation.
+    """Specific observation and correction specification made during document-level validation.
 
     Attributes:
+        finding_id: Unique identifier for traceability (e.g. 'FV-001').
         category: The validation dimension (Cross-Section Consistency, Grounding, etc.).
         severity: ERROR (blocking) or WARNING (notable observation).
         issue: Concise description of the defect or inconsistency.
         explanation: Detailed rationale explaining why this violates document-level coherence.
+        location: Specific sections and subsections where the defect occurs.
         affected_sections: List of section names involved in this issue.
-        evidence: Optional direct excerpt or reference from the document or project context.
-        required_change: Actionable recommendation for what must be revised.
+        problematic_content: Verbatim quote of the conflicting or defective text from the assembled BRD.
+        evidence: Optional direct excerpt from project evidence establishing the factual basis.
+        required_correction: Actionable instruction specifying how the text must be modified.
+        intended_outcome: Expected business and technical state after correction.
+        resolution_status: EVIDENCE_BACKED or OPEN_QUESTION.
+        open_question: Specific stakeholder clarification question if resolution_status is OPEN_QUESTION.
+        required_change: Actionable recommendation (legacy alias for required_correction).
         metadata: Extensible metadata dictionary.
     """
 
-    category: FinalValidationCategory | str
+    finding_id: str = ""
+    category: FinalValidationCategory | str = FinalValidationCategory.CROSS_SECTION_CONSISTENCY
     severity: FinalValidationSeverity | str = FinalValidationSeverity.ERROR
     issue: str = ""
     explanation: str = ""
+    location: str = ""
     affected_sections: list[str] = field(default_factory=list)
+    problematic_content: str = ""
     evidence: Optional[str] = None
+    required_correction: str = ""
+    intended_outcome: str = ""
+    resolution_status: FindingResolutionStatus | str = FindingResolutionStatus.EVIDENCE_BACKED
+    open_question: Optional[str] = None
     required_change: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        """Synchronize required_correction and required_change for backward compatibility."""
+        if not self.required_correction and self.required_change:
+            self.required_correction = self.required_change
+        elif not self.required_change and self.required_correction:
+            self.required_change = self.required_correction
+
+        if isinstance(self.resolution_status, str):
+            self.resolution_status = FindingResolutionStatus.from_string(self.resolution_status)
+
+    @property
+    def is_open_question(self) -> bool:
+        """Return True if this finding requires stakeholder clarification."""
+        status_val = self.resolution_status.value if isinstance(self.resolution_status, FindingResolutionStatus) else str(self.resolution_status)
+        return status_val.strip().upper() == FindingResolutionStatus.OPEN_QUESTION.value
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize finding to dictionary."""
         cat_val = self.category.value if isinstance(self.category, FinalValidationCategory) else str(self.category)
         sev_val = self.severity.value if isinstance(self.severity, FinalValidationSeverity) else str(self.severity)
+        res_val = self.resolution_status.value if isinstance(self.resolution_status, FindingResolutionStatus) else str(self.resolution_status)
         return {
+            "finding_id": self.finding_id,
             "category": cat_val,
             "severity": sev_val,
             "issue": self.issue,
             "explanation": self.explanation,
+            "location": self.location,
             "affected_sections": list(self.affected_sections),
+            "problematic_content": self.problematic_content,
             "evidence": self.evidence,
+            "required_correction": self.required_correction,
+            "intended_outcome": self.intended_outcome,
+            "resolution_status": res_val,
+            "open_question": self.open_question,
             "required_change": self.required_change,
             "metadata": dict(self.metadata),
         }
@@ -200,14 +257,26 @@ class FinalValidationFinding:
         except ValueError:
             sev = raw_sev
 
+        raw_status = data.get("resolution_status", FindingResolutionStatus.EVIDENCE_BACKED.value)
+        status = FindingResolutionStatus.from_string(raw_status)
+
+        req_corr = str(data.get("required_correction", "") or data.get("required_change", ""))
+
         return cls(
+            finding_id=str(data.get("finding_id", "")),
             category=cat,
             severity=sev,
             issue=str(data.get("issue", "")),
             explanation=str(data.get("explanation", "")),
+            location=str(data.get("location", "")),
             affected_sections=list(data.get("affected_sections", [])),
+            problematic_content=str(data.get("problematic_content", "")),
             evidence=data.get("evidence"),
-            required_change=str(data.get("required_change", "")),
+            required_correction=req_corr,
+            intended_outcome=str(data.get("intended_outcome", "")),
+            resolution_status=status,
+            open_question=data.get("open_question"),
+            required_change=req_corr,
             metadata=dict(data.get("metadata", {})),
         )
 
@@ -291,6 +360,26 @@ class FinalValidationResult:
                 if s not in secs:
                     secs.append(s)
         return secs
+
+    @property
+    def actionable_findings(self) -> list[FinalValidationFinding]:
+        """Findings backed by evidence that can be executed by the Rewriter."""
+        return [
+            f for f in self.findings
+            if not f.is_open_question
+        ]
+
+    @property
+    def open_questions(self) -> list[str]:
+        """Extracted stakeholder clarification questions for unresolvable issues."""
+        questions: list[str] = []
+        for f in self.findings:
+            if f.open_question and f.open_question.strip():
+                questions.append(f.open_question.strip())
+            elif f.is_open_question:
+                q = f"Clarification needed on {f.location or f.issue}: {f.explanation}"
+                questions.append(q)
+        return questions
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize result to dictionary."""
@@ -394,8 +483,20 @@ def _build_final_validation_prompt(context: FinalValidationContext) -> str:
         "- Document mechanics (version, question IDs, current date) are deterministic and do not require RAG evidence.\n"
         "- Substantive business and technical requirements must still be strictly grounded.\n\n"
         "Determine the categorical outcome: VALID or NEEDS_REWORK (do NOT output numeric scores).\n"
-        "For each issue identified, output a finding with category, severity (ERROR or WARNING), issue, "
-        "explanation, affected_sections, evidence, and required_change.\n"
+        "For each issue identified, output a finding with:\n"
+        "- finding_id: (e.g. 'FV-001')\n"
+        "- category: (Template Compliance, Cross-Section Consistency, etc.)\n"
+        "- severity: (ERROR or WARNING)\n"
+        "- issue: concise defect title\n"
+        "- location: specific sections/subsections where it occurs\n"
+        "- affected_sections: list of affected section names\n"
+        "- problematic_content: exact verbatim quote from BRD causing the issue\n"
+        "- explanation: detailed rationale of why this is a conflict\n"
+        "- evidence: excerpt from project evidence supporting the correction (or null if missing)\n"
+        "- required_correction: exact instruction on how to modify the text\n"
+        "- intended_outcome: expected state after correction\n"
+        "- resolution_status: 'EVIDENCE_BACKED' or 'OPEN_QUESTION'\n"
+        "- open_question: stakeholder question if resolution_status is OPEN_QUESTION (or null)\n\n"
         "If outcome is NEEDS_REWORK, provide actionable rework_feedback.\n"
         "If outcome is VALID, rework_feedback must be null.\n"
         "Return ONLY a valid JSON object matching the output schema."
@@ -436,9 +537,11 @@ def _parse_final_validation_response(
                         elif isinstance(item, str):
                             findings.append(
                                 FinalValidationFinding(
+                                    finding_id=f"FV-{len(findings) + 1:03d}",
                                     category=FinalValidationCategory.CROSS_SECTION_CONSISTENCY,
                                     issue=item,
                                     explanation=item,
+                                    required_correction=item,
                                     required_change=item,
                                 )
                             )
@@ -446,7 +549,7 @@ def _parse_final_validation_response(
                 # Filter out benign administrative metadata TBD findings
                 substantive_findings: list[FinalValidationFinding] = []
                 for f in findings:
-                    issue_text = f"{f.issue or ''} {f.explanation or ''} {f.required_change or ''}"
+                    issue_text = f"{f.issue or ''} {f.explanation or ''} {f.required_correction or ''} {f.required_change or ''}"
                     if is_metadata_or_role_item(issue_text) and any(
                         kw in issue_text.lower() for kw in ["tbd", "unknown", "suggested", "placeholder", "missing tech lead", "prepared by", "reviewed by", "approved by"]
                     ):
@@ -474,7 +577,8 @@ def _parse_final_validation_response(
                     for f in findings:
                         cat_str = f.category if isinstance(f.category, str) else f.category.value
                         secs_str = f" [Sections: {', '.join(f.affected_sections)}]" if f.affected_sections else ""
-                        feedback_lines.append(f"- [{cat_str}]{secs_str} {f.issue}: {f.required_change}")
+                        corr_str = f.required_correction or f.required_change
+                        feedback_lines.append(f"- [{cat_str}]{secs_str} {f.issue}: {corr_str}")
                     rework_feedback = "\n".join(feedback_lines)
 
                 return FinalValidationResult(
@@ -517,10 +621,12 @@ def _parse_final_validation_response(
 
     # Safety invariant: If not definitively valid, treat conservatively as NEEDS_REWORK
     fallback_finding = FinalValidationFinding(
+        finding_id="FV-001",
         category=FinalValidationCategory.OVERALL_COHERENCE,
         severity=FinalValidationSeverity.ERROR,
         issue="Document-level quality concerns identified in model output",
         explanation=cleaned_text[:300] if len(cleaned_text) > 300 else cleaned_text,
+        required_correction="Address the validation observations and revise affected sections.",
         required_change="Address the validation observations and revise affected sections.",
     )
 
@@ -574,9 +680,9 @@ class BRDFinalValidationAgent:
         else:
             import dataclasses
             cfg = config or AgentConfig.from_settings()
-            # Validation responses are small JSONs; strictly bound max_tokens to prevent TPM exhaustion
-            if cfg.max_tokens is None or cfg.max_tokens > 800:
-                cfg = dataclasses.replace(cfg, max_tokens=800)
+            # Bound max_tokens to prevent TPM exhaustion while allowing detailed findings
+            if cfg.max_tokens is None or cfg.max_tokens < 4000:
+                cfg = dataclasses.replace(cfg, max_tokens=4000)
             self._model = create_agent_model(cfg)
 
         # Strict boundary: Sub-Agent has NO tools

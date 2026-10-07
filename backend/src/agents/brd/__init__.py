@@ -17,12 +17,19 @@ from agents.brd.final_validation import (
     FinalValidationOutcome,
     FinalValidationResult,
     FinalValidationSeverity,
+    FindingResolutionStatus,
 )
 from agents.brd.recovery import (
     FinalValidationRecoveryResult,
     MAX_FINAL_VALIDATION_RECOVERY_CYCLES,
     format_section_rework_guidance,
     resolve_affected_sections,
+)
+from agents.brd.rewriter import (
+    BRDRewriterAgent,
+    BRDRewriterContext,
+    BRDRewriterResult,
+    DocumentEdit,
 )
 from agents.brd.section_generation import (
     BRDSectionGenerationAgent,
@@ -50,9 +57,13 @@ __all__ = [
     "BRDAgentState",
     "BRDFinalValidationAgent",
     "BRDLeadAgent",
+    "BRDRewriterAgent",
+    "BRDRewriterContext",
+    "BRDRewriterResult",
     "BRDSectionGenerationAgent",
     "BRDSectionStatus",
     "BRDSectionValidationAgent",
+    "DocumentEdit",
     "FinalValidationCategory",
     "FinalValidationContext",
     "FinalValidationFinding",
@@ -60,6 +71,7 @@ __all__ = [
     "FinalValidationRecoveryResult",
     "FinalValidationResult",
     "FinalValidationSeverity",
+    "FindingResolutionStatus",
     "MAX_FINAL_VALIDATION_RECOVERY_CYCLES",
     "SectionGenerationContext",
     "SectionGenerationResult",

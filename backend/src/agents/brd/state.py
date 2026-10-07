@@ -84,6 +84,7 @@ def _match_section_name(name: str, available_sections: Sequence[str]) -> str:
 from agents.brd.progression import SectionProgressionResult
 from agents.brd.assembly import BRDAssemblyResult
 from agents.brd.final_validation.agent import FinalValidationResult
+from agents.brd.rewriter.agent import BRDRewriterResult
 
 
 @dataclass
@@ -130,6 +131,8 @@ class BRDAgentState:
     latest_assembly_result: Optional[BRDAssemblyResult] = None
     latest_final_validation_result: Optional[FinalValidationResult] = None
     final_validation_history: list[FinalValidationResult] = field(default_factory=list)
+    latest_rewriter_result: Optional[BRDRewriterResult] = None
+    open_questions: list[str] = field(default_factory=list)
     final_validation_recovery_cycles: int = 0
     final_validation_recovery_exhausted: bool = False
     waiting_for_user: bool = False
@@ -302,6 +305,22 @@ class BRDAgentState:
         self.latest_final_validation_result = None
         self.final_validation_recovery_cycles = 0
         self.final_validation_recovery_exhausted = False
+
+    def set_rewriter_result(self, result: Optional[BRDRewriterResult]) -> None:
+        """Store the latest BRDRewriterResult."""
+        self.latest_rewriter_result = result
+
+    def get_latest_rewriter_result(self) -> Optional[BRDRewriterResult]:
+        """Retrieve the latest BRDRewriterResult."""
+        return self.latest_rewriter_result
+
+    def set_open_questions(self, questions: Sequence[str]) -> None:
+        """Set the list of stakeholder open questions."""
+        self.open_questions = list(questions)
+
+    def get_open_questions(self) -> list[str]:
+        """Retrieve the list of stakeholder open questions."""
+        return list(self.open_questions)
 
     def get_remaining_sections(self, template_sections: Optional[Sequence[str]] = None) -> list[str]:
         """Return dynamically derived list of template sections not yet COMPLETED."""
@@ -546,6 +565,13 @@ class BRDAgentState:
         data["final_validation_history"] = [
             v.to_dict() if hasattr(v, "to_dict") else v for v in self.final_validation_history
         ]
+        if self.latest_rewriter_result is not None:
+            data["latest_rewriter_result"] = (
+                self.latest_rewriter_result.to_dict()
+                if hasattr(self.latest_rewriter_result, "to_dict")
+                else self.latest_rewriter_result
+            )
+        data["open_questions"] = list(self.open_questions)
         data["final_validation_recovery_cycles"] = self.final_validation_recovery_cycles
         data["final_validation_recovery_exhausted"] = self.final_validation_recovery_exhausted
         data["section_content"] = dict(self.section_content)
@@ -645,6 +671,13 @@ class BRDAgentState:
             FinalValidationResult.from_dict(v) if isinstance(v, dict) else v
             for v in fval_hist_raw
         ]
+        rewriter_res_raw = data.get("latest_rewriter_result")
+        latest_rewriter_result = (
+            BRDRewriterResult.from_dict(rewriter_res_raw)
+            if isinstance(rewriter_res_raw, dict)
+            else rewriter_res_raw
+        )
+        open_questions = list(data.get("open_questions", []))
         final_validation_recovery_cycles = int(data.get("final_validation_recovery_cycles", 0))
         final_validation_recovery_exhausted = bool(data.get("final_validation_recovery_exhausted", False))
         waiting_for_user = bool(data.get("waiting_for_user", False))
@@ -679,6 +712,8 @@ class BRDAgentState:
             latest_assembly_result=latest_assembly_result,
             latest_final_validation_result=latest_final_validation_result,
             final_validation_history=final_validation_history,
+            latest_rewriter_result=latest_rewriter_result,
+            open_questions=open_questions,
             final_validation_recovery_cycles=final_validation_recovery_cycles,
             final_validation_recovery_exhausted=final_validation_recovery_exhausted,
             waiting_for_user=waiting_for_user,

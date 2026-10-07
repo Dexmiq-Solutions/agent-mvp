@@ -5,6 +5,10 @@ Provides:
 - Structured FinalValidationRecoveryResult subclassing FinalValidationResult.
 - Candidate affected section resolution to authoritative template sections.
 - Tailored, actionable rework guidance synthesis from document-level findings.
+
+Note:
+In the BRD Rewriter architecture, Phase 8 document corrections are handled
+by the specialized BRDRewriterAgent via targeted DocumentEdit operations on assembled_brd.
 """
 
 from __future__ import annotations
