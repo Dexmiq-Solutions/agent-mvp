@@ -15,11 +15,15 @@ import { refreshTokens } from './authService.ts';
  *   3. Falls back to '/api' which Vite proxies to http://127.0.0.1:8000
  */
 export function getApiBaseUrl(): string {
-  const env =
-    typeof import.meta !== 'undefined' && 'env' in import.meta
-      ? (import.meta as { env?: Record<string, string> }).env
+  const envBase =
+    typeof import.meta !== 'undefined' && import.meta.env
+      ? import.meta.env.VITE_API_BASE_URL
       : undefined;
-  const rawUrl = env?.VITE_API_URL || env?.VITE_API_BASE_URL || '/api';
+  const envUrl =
+    typeof import.meta !== 'undefined' && import.meta.env
+      ? import.meta.env.VITE_API_URL
+      : undefined;
+  const rawUrl = envBase || envUrl || '/api';
   return rawUrl.replace(/\/+$/, '');
 }
 
@@ -39,7 +43,7 @@ const apiClient = axios.create({
 apiClient.interceptors.request.use(
   (config: InternalAxiosRequestConfig) => {
     const token = tokenService.getAccessToken();
-    if (token && !config.headers.Authorization) {
+    if (token && token !== 'undefined' && token !== 'null' && !config.headers.Authorization) {
       config.headers.Authorization = `Bearer ${token}`;
     }
     return config;
@@ -104,7 +108,9 @@ apiClient.interceptors.response.use(
           const tokens = await refreshTokens();
           // Update original request with new access token and retry
           originalRequest.headers = originalRequest.headers || {};
-          originalRequest.headers.Authorization = `Bearer ${tokens.access_token}`;
+          if (tokens?.access_token) {
+            originalRequest.headers.Authorization = `Bearer ${tokens.access_token}`;
+          }
           return apiClient(originalRequest);
         } catch (refreshErr) {
           return Promise.reject(new Error(extractErrorMessage(refreshErr)));

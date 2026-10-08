@@ -50,7 +50,7 @@ export async function sendMessageStream({
     'Content-Type': 'application/json',
     Accept: 'text/event-stream',
   };
-  if (token) {
+  if (token && token !== 'undefined' && token !== 'null') {
     headers.Authorization = `Bearer ${token}`;
   }
   

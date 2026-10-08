@@ -117,7 +117,7 @@ export async function streamMessage(
       'Content-Type': 'application/json',
       Accept: 'text/event-stream',
     };
-    if (token) {
+    if (token && token !== 'undefined' && token !== 'null') {
       h.Authorization = `Bearer ${token}`;
     }
     return h;

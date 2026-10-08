@@ -1,8 +1,15 @@
 import { tokenService } from '../services/tokenService.ts';
 import { refreshTokens } from '../services/authService.ts';
 
-const env = typeof import.meta !== 'undefined' && 'env' in import.meta ? (import.meta as { env?: Record<string, string> }).env : undefined;
-const API_BASE = (env?.VITE_API_URL || env?.VITE_API_BASE_URL || '').replace(/\/+$/, '');
+const envBase =
+  typeof import.meta !== 'undefined' && import.meta.env
+    ? import.meta.env.VITE_API_BASE_URL
+    : undefined;
+const envUrl =
+  typeof import.meta !== 'undefined' && import.meta.env
+    ? import.meta.env.VITE_API_URL
+    : undefined;
+const API_BASE = (envBase || envUrl || '').replace(/\/+$/, '');
 
 async function parseErrorDetail(response: Response): Promise<string> {
   let errorDetail = `Request failed with status ${response.status}`;
@@ -34,7 +41,7 @@ export async function apiRequest<T>(
   }
 
   const token = tokenService.getAccessToken();
-  if (token && !headers.has('Authorization')) {
+  if (token && token !== 'undefined' && token !== 'null' && !headers.has('Authorization')) {
     headers.set('Authorization', `Bearer ${token}`);
   }
 
@@ -52,7 +59,9 @@ export async function apiRequest<T>(
   if (response.status === 401 && !isAuthEndpoint) {
     try {
       const tokens = await refreshTokens();
-      headers.set('Authorization', `Bearer ${tokens.access_token}`);
+      if (tokens?.access_token) {
+        headers.set('Authorization', `Bearer ${tokens.access_token}`);
+      }
       response = await fetch(url, {
         ...options,
         headers,

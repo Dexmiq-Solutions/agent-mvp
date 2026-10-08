@@ -12,7 +12,11 @@ const REFRESH_TOKEN_KEY = 'agent_mvp_refresh_token';
 export const tokenService = {
   getAccessToken(): string | null {
     try {
-      return localStorage.getItem(ACCESS_TOKEN_KEY);
+      const token = localStorage.getItem(ACCESS_TOKEN_KEY);
+      if (!token || token === 'undefined' || token === 'null' || token.trim() === '') {
+        return null;
+      }
+      return token;
     } catch {
       return null;
     }
@@ -20,16 +24,28 @@ export const tokenService = {
 
   getRefreshToken(): string | null {
     try {
-      return localStorage.getItem(REFRESH_TOKEN_KEY);
+      const token = localStorage.getItem(REFRESH_TOKEN_KEY);
+      if (!token || token === 'undefined' || token === 'null' || token.trim() === '') {
+        return null;
+      }
+      return token;
     } catch {
       return null;
     }
   },
 
-  setTokens(accessToken: string, refreshToken: string): void {
+  setTokens(accessToken?: string | null, refreshToken?: string | null): void {
     try {
-      localStorage.setItem(ACCESS_TOKEN_KEY, accessToken);
-      localStorage.setItem(REFRESH_TOKEN_KEY, refreshToken);
+      if (accessToken && accessToken !== 'undefined' && accessToken !== 'null' && accessToken.trim() !== '') {
+        localStorage.setItem(ACCESS_TOKEN_KEY, accessToken);
+      } else {
+        localStorage.removeItem(ACCESS_TOKEN_KEY);
+      }
+      if (refreshToken && refreshToken !== 'undefined' && refreshToken !== 'null' && refreshToken.trim() !== '') {
+        localStorage.setItem(REFRESH_TOKEN_KEY, refreshToken);
+      } else {
+        localStorage.removeItem(REFRESH_TOKEN_KEY);
+      }
     } catch (e) {
       console.error('Failed to persist auth tokens:', e);
     }
