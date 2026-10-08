@@ -99,3 +99,27 @@ def test_get_settings_caching():
     settings_1 = get_settings()
     settings_2 = get_settings()
     assert settings_1 is settings_2
+
+
+def test_cors_origins_default_and_parsing(monkeypatch):
+    """Verify CORS_ORIGINS defaults and parses comma-separated, JSON, and list formats."""
+    # Default settings
+    settings = Settings(_env_file=None)
+    assert "http://localhost:5173" in settings.CORS_ORIGINS
+    assert "http://127.0.0.1:5173" in settings.CORS_ORIGINS
+
+    # Comma-separated string
+    monkeypatch.setenv("CORS_ORIGINS", "http://localhost:5173,https://my-app.onrender.com")
+    s2 = Settings(_env_file=None)
+    assert s2.CORS_ORIGINS == ["http://localhost:5173", "https://my-app.onrender.com"]
+
+    # JSON array string
+    monkeypatch.setenv("CORS_ORIGINS", '["https://render-frontend.onrender.com"]')
+    s3 = Settings(_env_file=None)
+    assert s3.CORS_ORIGINS == ["https://render-frontend.onrender.com"]
+
+    # Single string
+    monkeypatch.setenv("CORS_ORIGINS", "https://single.onrender.com")
+    s4 = Settings(_env_file=None)
+    assert s4.CORS_ORIGINS == ["https://single.onrender.com"]
+

@@ -2,7 +2,7 @@
 // Chat Service — CRUD operations for conversations and messages
 // =============================================================================
 
-import apiClient from './api.ts';
+import apiClient, { getApiBaseUrl } from './api.ts';
 import { tokenService } from './tokenService.ts';
 import { refreshTokens } from './authService.ts';
 import type {
@@ -109,9 +109,8 @@ export async function streamMessage(
   payload: SendMessagePayload,
   handlers: StreamHandlers
 ): Promise<void> {
-  const env = typeof import.meta !== 'undefined' && 'env' in import.meta ? (import.meta as { env?: Record<string, string> }).env : undefined;
-  const baseURL = env?.VITE_API_BASE_URL || '/api';
-  const url = `${baseURL.replace(/\/$/, '')}/projects/${projectId}/conversations/${conversationId}/messages?stream=true`;
+  const baseURL = getApiBaseUrl();
+  const url = `${baseURL}/projects/${projectId}/conversations/${conversationId}/messages?stream=true`;
   
   const getHeaders = (token: string | null) => {
     const h: Record<string, string> = {
