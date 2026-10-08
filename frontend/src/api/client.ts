@@ -2,7 +2,7 @@ import { tokenService } from '../services/tokenService.ts';
 import { refreshTokens } from '../services/authService.ts';
 
 const env = typeof import.meta !== 'undefined' && 'env' in import.meta ? (import.meta as { env?: Record<string, string> }).env : undefined;
-const API_BASE = (env?.VITE_API_BASE_URL || '').replace(/\/$/, '');
+const API_BASE = (env?.VITE_API_URL || env?.VITE_API_BASE_URL || '').replace(/\/+$/, '');
 
 async function parseErrorDetail(response: Response): Promise<string> {
   let errorDetail = `Request failed with status ${response.status}`;

@@ -96,15 +96,17 @@ def create_application() -> FastAPI:
 
     from fastapi.middleware.cors import CORSMiddleware
 
-    cors_origins = [origin.strip() for origin in settings.CORS_ORIGINS.split(",") if origin.strip()]
+    # Support environment-driven origins while keeping localhost development enabled
+    allowed_origins = list(dict.fromkeys(settings.CORS_ORIGINS))
 
     application.add_middleware(
         CORSMiddleware,
-        allow_origins=cors_origins,
+        allow_origins=allowed_origins,
+        allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
-        expose_headers=["Retry-After"],
+        expose_headers=["Retry-After", "Content-Disposition", "X-Accel-Buffering"],
     )
 
     # --------------------------------------------------------------------------

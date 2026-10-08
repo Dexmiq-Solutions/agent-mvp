@@ -3,7 +3,7 @@
 // =============================================================================
 
 import axios from 'axios';
-import apiClient from './api.ts';
+import apiClient, { getApiBaseUrl } from './api.ts';
 import { tokenService } from './tokenService.ts';
 import type {
   UserLoginRequest,
@@ -66,9 +66,7 @@ export async function refreshTokens(): Promise<TokenResponse> {
     return Promise.reject(new Error('No refresh token available.'));
   }
 
-  const env = typeof import.meta !== 'undefined' && 'env' in import.meta ? (import.meta as { env?: Record<string, string> }).env : undefined;
-  const baseURL = env?.VITE_API_BASE_URL || '/api';
-  const cleanBase = baseURL.replace(/\/$/, '');
+  const cleanBase = getApiBaseUrl();
 
   refreshPromise = (async () => {
     try {

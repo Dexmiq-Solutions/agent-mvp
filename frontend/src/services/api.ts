@@ -10,12 +10,23 @@ import { refreshTokens } from './authService.ts';
  * Pre-configured Axios instance pointing at the Dexmiq backend.
  *
  * Base URL resolution order:
- *   1. VITE_API_BASE_URL environment variable (set in .env or .env.local)
- *   2. Falls back to '/api' which Vite proxies to http://127.0.0.1:8000
+ *   1. VITE_API_URL environment variable (Render production standard)
+ *   2. VITE_API_BASE_URL environment variable (legacy project convention)
+ *   3. Falls back to '/api' which Vite proxies to http://127.0.0.1:8000
  */
-const env = typeof import.meta !== 'undefined' && 'env' in import.meta ? (import.meta as { env?: Record<string, string> }).env : undefined;
+export function getApiBaseUrl(): string {
+  const env =
+    typeof import.meta !== 'undefined' && 'env' in import.meta
+      ? (import.meta as { env?: Record<string, string> }).env
+      : undefined;
+  const rawUrl = env?.VITE_API_URL || env?.VITE_API_BASE_URL || '/api';
+  return rawUrl.replace(/\/+$/, '');
+}
+
+export const API_BASE_URL = getApiBaseUrl();
+
 const apiClient = axios.create({
-  baseURL: env?.VITE_API_BASE_URL || '/api',
+  baseURL: API_BASE_URL,
   headers: {
     'Content-Type': 'application/json',
   },
