@@ -123,3 +123,31 @@ def test_cors_origins_default_and_parsing(monkeypatch):
     s4 = Settings(_env_file=None)
     assert s4.CORS_ORIGINS == ["https://single.onrender.com"]
 
+
+def test_async_database_url_normalization(monkeypatch):
+    """Verify async_database_url normalizes schemes and translates sslmode parameter."""
+    # None when DATABASE_URL is not set
+    s0 = Settings(_env_file=None)
+    assert s0.async_database_url is None
+
+    # postgresql:// to postgresql+asyncpg://
+    monkeypatch.setenv("DATABASE_URL", "postgresql://user:pass@host:5432/db")
+    s1 = Settings(_env_file=None)
+    assert s1.async_database_url == "postgresql+asyncpg://user:pass@host:5432/db"
+
+    # postgres:// to postgresql+asyncpg://
+    monkeypatch.setenv("DATABASE_URL", "postgres://user:pass@host:5432/db")
+    s2 = Settings(_env_file=None)
+    assert s2.async_database_url == "postgresql+asyncpg://user:pass@host:5432/db"
+
+    # Preserves postgresql+asyncpg://
+    monkeypatch.setenv("DATABASE_URL", "postgresql+asyncpg://user:pass@host:5432/db")
+    s3 = Settings(_env_file=None)
+    assert s3.async_database_url == "postgresql+asyncpg://user:pass@host:5432/db"
+
+    # Translates sslmode=require to ssl=require for asyncpg
+    monkeypatch.setenv("DATABASE_URL", "postgresql://user:pass@host:5432/db?sslmode=require")
+    s4 = Settings(_env_file=None)
+    assert s4.async_database_url == "postgresql+asyncpg://user:pass@host:5432/db?ssl=require"
+
+

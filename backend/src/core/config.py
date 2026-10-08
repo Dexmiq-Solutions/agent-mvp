@@ -55,14 +55,17 @@ class Settings(BaseSettings):
         """Return the database URL formatted for asynchronous SQLAlchemy access with asyncpg.
         
         Normalizes standard 'postgresql://' or 'postgres://' connection schemes to 'postgresql+asyncpg://'.
+        Translates 'sslmode=' parameter to 'ssl=' for asyncpg compatibility.
         """
         if not self.DATABASE_URL:
             return None
         url = self.DATABASE_URL.strip()
         if url.startswith("postgres://"):
-            return "postgresql+asyncpg://" + url[len("postgres://"):]
-        if url.startswith("postgresql://"):
-            return "postgresql+asyncpg://" + url[len("postgresql://"):]
+            url = "postgresql+asyncpg://" + url[len("postgres://"):]
+        elif url.startswith("postgresql://"):
+            url = "postgresql+asyncpg://" + url[len("postgresql://"):]
+        if "sslmode=" in url:
+            url = url.replace("sslmode=", "ssl=")
         return url
 
 
