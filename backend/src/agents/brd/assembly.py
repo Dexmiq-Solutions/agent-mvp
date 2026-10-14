@@ -170,6 +170,49 @@ def format_section_for_assembly(
     return f"{prefix} {section_name}\n\n{cleaned}"
 
 
+def assemble_markdown_from_sections(
+    sections: Sequence[Any],
+    template_content: Optional[str] = None,
+) -> str:
+    """Deterministically derive complete Markdown from a sequence of structured section records.
+
+    Accepts BRDSectionModel instances, dictionaries with ('title'/'section_key', 'content'),
+    or (title, content) pairs. Preserves boundaries and formats headings using
+    format_section_for_assembly().
+
+    Args:
+        sections: Sequence of section objects or records.
+        template_content: Optional raw template Markdown for heading level resolution.
+
+    Returns:
+        str: Authoritative assembled Markdown document.
+    """
+    assembled_parts: list[str] = []
+    for sec in sections:
+        if hasattr(sec, "title") and hasattr(sec, "content"):
+            title = getattr(sec, "title", None) or getattr(sec, "section_key", "")
+            content = getattr(sec, "content", "") or ""
+        elif isinstance(sec, dict):
+            title = sec.get("title") or sec.get("section_key", "")
+            content = sec.get("content", "") or ""
+        elif isinstance(sec, (tuple, list)) and len(sec) >= 2:
+            title, content = str(sec[0]), str(sec[1])
+        else:
+            continue
+
+        clean_content = content.strip()
+        if clean_content:
+            formatted = format_section_for_assembly(
+                section_name=title,
+                content=clean_content,
+                template_content=template_content,
+            )
+            if formatted:
+                assembled_parts.append(formatted)
+
+    return "\n\n".join(assembled_parts).strip()
+
+
 def assemble_brd_document(
     state: BRDAgentState,
     template_sections: Optional[Sequence[str]] = None,

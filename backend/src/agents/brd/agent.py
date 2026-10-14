@@ -1683,6 +1683,72 @@ class BRDLeadAgent:
         self._state.set_progression_result(result)
         return result
 
+    def identify_targeted_sections(self, prompt: Optional[str]) -> list[str]:
+        """Identify specific BRD template sections targeted for revision or editing.
+
+        Detects explicit section numbering (e.g., 'section 3', 'sec 5') or
+        distinctive section title keywords when paired with revision/edit intent.
+
+        Args:
+            prompt: User conversational input prompt.
+
+        Returns:
+            List of matching canonical template section names in state/template order.
+        """
+        if not prompt or not prompt.strip():
+            return []
+
+        sections = list(self.sections or self._state.template_sections or extract_brd_sections(load_brd_template()))
+        if not sections:
+            return []
+
+        cleaned_prompt = prompt.strip()
+        targeted: list[str] = []
+
+        # 1. Check for explicit section numbering: e.g. "section 3", "sec. 5", "section 12"
+        sec_num_matches = re.findall(r"\b(?:section|sec\.?)\s*(\d{1,2})\b", cleaned_prompt, re.IGNORECASE)
+        for num_str in sec_num_matches:
+            num = int(num_str)
+            if 1 <= num <= len(sections):
+                matched = sections[num - 1]
+                if matched not in targeted:
+                    targeted.append(matched)
+
+        # 2. Check for section title / keyword matches with edit or section intent
+        edit_intent = bool(re.search(
+            r"\b(update|edit|change|revise|rewrite|modify|rework|add to|replace|fix|improve|regenerate|re-generate|adjust|redo|re-do|section)\b",
+            cleaned_prompt,
+            re.IGNORECASE,
+        ))
+
+        if edit_intent:
+            prompt_lower = cleaned_prompt.lower()
+            for sec in sections:
+                if sec in targeted:
+                    continue
+
+                # Strip leading numbering from template title (e.g. "3. Target Audience & Stakeholders" -> "target audience & stakeholders")
+                title_stripped = re.sub(r"^\d+[\.\)]\s*", "", sec).strip().lower()
+
+                # Check for direct phrase match
+                if title_stripped in prompt_lower:
+                    targeted.append(sec)
+                    continue
+
+                # Check for distinctive multi-word or single-word keywords
+                sub_phrases = [p.strip() for p in re.split(r"[&,]|(?:\band\b)", title_stripped) if len(p.strip()) >= 4]
+                for phrase in sub_phrases:
+                    # Avoid false positives for "scope" when user says "out of scope"
+                    if phrase == "scope" and "out of scope" in prompt_lower and "purpose" not in prompt_lower:
+                        continue
+                    if phrase == "functional requirements" and "non-functional" in prompt_lower:
+                        continue
+                    if re.search(r"\b" + re.escape(phrase) + r"\b", prompt_lower):
+                        targeted.append(sec)
+                        break
+
+        return targeted
+
     def decompose_objective(
         self,
         objective: str,
@@ -4793,6 +4859,24 @@ class BRDLeadAgent:
                 is_section_resume = True
             elif self._state.current_section and not self.is_section_processing_complete:
                 is_section_resume = True
+        elif input_prompt:
+            # Check for conversational section edit requests targeting previously completed or specific sections
+            targeted = self.identify_targeted_sections(input_prompt)
+            if targeted:
+                for sec in targeted:
+                    self._state.update_section_status(sec, BRDSectionStatus.NEEDS_REVISION)
+                    self._state.set_rework_feedback(sec, input_prompt)
+                self._state.set_current_section(targeted[0])
+                is_section_resume = True
+                log_trace_event(
+                    logger,
+                    agent_run_id=agent_run_id,
+                    actor=TraceActor.APPLICATION,
+                    event_name="SECTION_EDIT_REQUEST_TARGETED",
+                    targeted_sections=targeted,
+                )
+            elif self._state.current_section and not self.is_section_processing_complete:
+                is_section_resume = True
 
         if is_section_resume:
             log_trace_event(
@@ -5588,6 +5672,24 @@ class BRDLeadAgent:
                 is_section_resume = True
             elif self._state.current_section and not self.is_section_processing_complete:
                 is_section_resume = True
+        elif input_prompt:
+            # Check for conversational section edit requests targeting previously completed or specific sections
+            targeted = self.identify_targeted_sections(input_prompt)
+            if targeted:
+                for sec in targeted:
+                    self._state.update_section_status(sec, BRDSectionStatus.NEEDS_REVISION)
+                    self._state.set_rework_feedback(sec, input_prompt)
+                self._state.set_current_section(targeted[0])
+                is_section_resume = True
+                yield {
+                    "type": "progress",
+                    "phase": "5_SECTION_ITERATION",
+                    "actor": TraceActor.APPLICATION,
+                    "section": targeted[0],
+                    "message": f"Editing section: {targeted[0]} based on user request",
+                }
+            elif self._state.current_section and not self.is_section_processing_complete:
+                is_section_resume = True
 
         if is_section_resume:
             yield {
@@ -5595,7 +5697,7 @@ class BRDLeadAgent:
                 "phase": "5_SECTION_ITERATION",
                 "actor": TraceActor.APPLICATION,
                 "section": self._state.current_section,
-                "message": f"Resuming workflow at section: {self._state.current_section} with user clarification",
+                "message": f"Processing section: {self._state.current_section}",
             }
         else:
             if is_resuming:

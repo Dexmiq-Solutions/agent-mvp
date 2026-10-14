@@ -17,11 +17,12 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from agents.brd.assembly import format_section_for_assembly
+from agents.brd.assembly import assemble_markdown_from_sections, format_section_for_assembly
 from agents.brd.state import BRDAgentState, BRDSectionStatus, _match_section_name
 from agents.brd.template import extract_brd_sections, load_brd_template
 from exceptions.brd import (
     BRDNotFoundError,
+    BRDSectionNotFoundError,
     BRDVersionImmutableError,
     BRDVersionNotFoundError,
     InvalidBRDDataError,
@@ -268,21 +269,9 @@ class BRDService:
                 sec_model.status = status_val.value if isinstance(status_val, BRDSectionStatus) else str(status_val)
 
         # 2. Derive Markdown snapshot deterministically from structured sections
-        # PostgreSQL sections are the single source of truth
+        # PostgreSQL sections are the single source of truth (no state.assembled_brd fallback)
         sorted_sections = sorted(existing_sections.values(), key=lambda s: s.order_index)
-        assembled_parts: list[str] = []
-        for sec in sorted_sections:
-            clean_content = (sec.content or "").strip()
-            if clean_content:
-                formatted = format_section_for_assembly(sec.title, clean_content)
-                assembled_parts.append(formatted)
-
-        if assembled_parts:
-            derived_markdown = "\n\n".join(assembled_parts).strip()
-            working_version.assembled_markdown = derived_markdown
-        elif state.assembled_brd:
-            # Fallback if section content hasn't been parsed yet
-            working_version.assembled_markdown = state.assembled_brd
+        working_version.assembled_markdown = assemble_markdown_from_sections(sorted_sections)
 
         # 3. Update telemetry and touch timestamps
         metadata_dict = dict(working_version.version_metadata or {})
@@ -476,3 +465,140 @@ class BRDService:
                 project_id=project_id,
             )
         return version
+
+    async def get_canonical_brd_with_sections(
+        self,
+        project_id: str,
+    ) -> tuple[BRDModel, BRDVersionModel, list[BRDSectionModel]]:
+        """Retrieve canonical BRD, active working draft, and all structured sections ordered by order_index.
+
+        Initializes canonical BRD and 16 template sections idempotently if not present.
+        Shared across all agents and services.
+        """
+        brd, working_version = await self.get_or_create_canonical_brd(project_id)
+        sorted_sections = sorted(working_version.sections, key=lambda s: s.order_index)
+        return brd, working_version, sorted_sections
+
+    async def get_sections(
+        self,
+        project_id: str,
+        version_number: Optional[int] = None,
+    ) -> list[BRDSectionModel]:
+        """Retrieve all structured sections for a project ordered by order_index.
+
+        Args:
+            project_id: Owning project identifier.
+            version_number: Optional historical version number. If None, retrieves
+                sections from the active working draft.
+
+        Returns:
+            List of BRDSectionModel ordered by order_index.
+        """
+        if version_number is not None:
+            version = await self.get_version_snapshot(project_id, version_number)
+            return sorted(version.sections, key=lambda s: s.order_index)
+
+        _, _, sections = await self.get_canonical_brd_with_sections(project_id)
+        return sections
+
+    async def get_section(
+        self,
+        project_id: str,
+        section_key: str,
+        version_number: Optional[int] = None,
+    ) -> BRDSectionModel:
+        """Retrieve a specific section by section key or title.
+
+        Uses tolerant matching (_match_section_name) so callers can pass e.g.
+        "3. Target Audience" or "Target Audience" or "audience".
+
+        Args:
+            project_id: Owning project identifier.
+            section_key: Key, title, or substring identifier of the section.
+            version_number: Optional historical version number.
+
+        Returns:
+            BRDSectionModel matching the key.
+
+        Raises:
+            BRDSectionNotFoundError: If section cannot be found.
+        """
+        sections = await self.get_sections(project_id, version_number=version_number)
+        available_keys = [s.section_key for s in sections]
+        matched_key = _match_section_name(section_key, available_keys)
+
+        for sec in sections:
+            if sec.section_key == matched_key or sec.title == matched_key:
+                return sec
+
+        raise BRDSectionNotFoundError(
+            section_key=section_key,
+            project_id=project_id,
+            version_number=version_number,
+        )
+
+    async def update_section_content(
+        self,
+        project_id: str,
+        section_key: str,
+        content: str,
+        status: Optional[str] = None,
+        rework_feedback: Optional[str] = None,
+    ) -> BRDSectionModel:
+        """Update a specific section's content in the canonical working draft.
+
+        Enforces draft mutability, updates section content, deterministically
+        re-derives the working draft's assembled Markdown document, and flushes
+        the session. Accessible by any agent or backend service.
+
+        Args:
+            project_id: Owning project identifier.
+            section_key: Section key or title to update.
+            content: New content for the section.
+            status: Optional new status for the section.
+            rework_feedback: Optional rework feedback to record.
+
+        Returns:
+            Updated BRDSectionModel.
+
+        Raises:
+            BRDVersionImmutableError: If active version is not a draft.
+            BRDSectionNotFoundError: If target section is not in the draft.
+        """
+        brd, working_version = await self.get_or_create_canonical_brd(project_id)
+
+        if not working_version.is_current or working_version.status != BRDVersionStatus.DRAFT.value:
+            raise BRDVersionImmutableError(
+                version_id=working_version.id,
+                version_number=working_version.version_number,
+                message=f"Cannot edit BRD version '{working_version.id}': version is not an active draft.",
+            )
+
+        available_keys = [s.section_key for s in working_version.sections]
+        matched_key = _match_section_name(section_key, available_keys)
+
+        target_sec = next(
+            (s for s in working_version.sections if s.section_key == matched_key or s.title == matched_key),
+            None,
+        )
+        if target_sec is None:
+            raise BRDSectionNotFoundError(
+                section_key=section_key,
+                project_id=project_id,
+            )
+
+        target_sec.content = content or ""
+        target_sec.updated_at = datetime.now(timezone.utc)
+        if status is not None:
+            target_sec.status = status.value if isinstance(status, BRDSectionStatus) else str(status)
+        if rework_feedback is not None:
+            target_sec.rework_feedback = rework_feedback
+
+        # Deterministically re-derive assembled Markdown from all sections
+        sorted_sections = sorted(working_version.sections, key=lambda s: s.order_index)
+        working_version.assembled_markdown = assemble_markdown_from_sections(sorted_sections)
+        working_version.updated_at = datetime.now(timezone.utc)
+        brd.updated_at = datetime.now(timezone.utc)
+
+        await self._session.flush()
+        return target_sec

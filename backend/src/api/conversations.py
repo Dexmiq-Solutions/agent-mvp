@@ -355,16 +355,18 @@ async def create_message(
                     )
 
     # Hydrate canonical BRD document state from PostgreSQL
-    # If initial_workflow_state was restored from prior messages, or if the working draft already has persisted section content,
-    # ensure canonical PostgreSQL sections, statuses, and assembled markdown are hydrated.
+    # If initial_workflow_state was restored from prior messages, or if current working draft exists,
+    # ensure canonical PostgreSQL sections, template ordering, statuses, and assembled markdown are hydrated.
     has_persisted_draft_content = any(s.content for s in current_draft.sections) if (current_draft and current_draft.sections) else False
 
-    if initial_workflow_state is not None or has_persisted_draft_content:
+    if initial_workflow_state is not None or has_persisted_draft_content or (current_draft and current_draft.sections):
         if initial_workflow_state is None:
             initial_workflow_state = BRDAgentState()
 
         if current_draft and current_draft.sections:
-            for sec in current_draft.sections:
+            sorted_sections = sorted(current_draft.sections, key=lambda s: s.order_index)
+            initial_workflow_state.template_sections = [s.section_key for s in sorted_sections]
+            for sec in sorted_sections:
                 if sec.content:
                     initial_workflow_state.section_content[sec.section_key] = sec.content
                 if sec.status:
