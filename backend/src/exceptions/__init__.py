@@ -28,6 +28,13 @@ from exceptions.project import (
     ProjectError,
     ProjectNotFoundError,
 )
+from exceptions.brd import (
+    BRDError,
+    BRDNotFoundError,
+    BRDVersionImmutableError,
+    BRDVersionNotFoundError,
+    InvalidBRDDataError,
+)
 from exceptions.conversation import (
     ConversationError,
     ConversationMessageMismatchError,
@@ -309,6 +316,12 @@ __all__ = [
     "LLMRateLimitError",
     "LLMAuthenticationError",
     "LLMStreamError",
+    # BRD Exceptions
+    "BRDError",
+    "BRDNotFoundError",
+    "BRDVersionImmutableError",
+    "BRDVersionNotFoundError",
+    "InvalidBRDDataError",
     # Conversation & Message Exceptions
     "ConversationError",
     "ConversationNotFoundError",
