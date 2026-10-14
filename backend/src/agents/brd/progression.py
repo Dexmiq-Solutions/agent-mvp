@@ -265,55 +265,52 @@ def progress_to_next_section(
     )
 
     current_idx = sections.index(canonical_current)
+    remaining = get_remaining_sections(state, sections)
 
-    # Determine if next section exists in template order
-    if current_idx + 1 < len(sections):
-        next_sec = sections[current_idx + 1]
-        state.set_current_section(next_sec, auto_in_progress=True)
-        remaining = get_remaining_sections(state, sections)
-
-        # Lifecycle Event: Next section selected
-        logger.info(
-            "BRD progressing to next section: %s completed; progressing to %s (index: %d/%d, project_id: %s)",
-            canonical_current,
-            next_sec,
-            current_idx + 2,
-            len(sections),
-            resolved_project_id,
-        )
-
-        result = SectionProgressionResult(
-            current_section=next_sec,
-            completed_section=canonical_current,
-            next_section=next_sec,
-            has_remaining_sections=True,
-            section_processing_complete=False,
-            remaining_sections=remaining,
-        )
-    else:
-        # Final section completed: no remaining sections
+    if not remaining:
+        # All sections are completed
         state.set_current_section(None)
-        remaining = get_remaining_sections(state, sections)
-        complete = is_section_processing_complete(state, sections)
-
-        # Lifecycle Event: Section processing completed
         logger.info(
             "BRD section processing completed (final_section: %s, total_sections: %d, project_id: %s)",
             canonical_current,
             len(sections),
             resolved_project_id,
         )
-
-        result = SectionProgressionResult(
+        return SectionProgressionResult(
             current_section=None,
             completed_section=canonical_current,
             next_section=None,
-            has_remaining_sections=len(remaining) > 0,
-            section_processing_complete=complete,
-            remaining_sections=remaining,
+            has_remaining_sections=False,
+            section_processing_complete=True,
+            remaining_sections=[],
         )
 
-    return result
+    # Find the next uncompleted section (preferring sections after current_idx in template order)
+    next_sec = next(
+        (s for s in sections[current_idx + 1 :] if s in remaining),
+        remaining[0],
+    )
+    state.set_current_section(next_sec, auto_in_progress=True)
+    next_idx = sections.index(next_sec)
+
+    # Lifecycle Event: Next section selected
+    logger.info(
+        "BRD progressing to next section: %s completed; progressing to %s (index: %d/%d, project_id: %s)",
+        canonical_current,
+        next_sec,
+        next_idx + 1,
+        len(sections),
+        resolved_project_id,
+    )
+
+    return SectionProgressionResult(
+        current_section=next_sec,
+        completed_section=canonical_current,
+        next_section=next_sec,
+        has_remaining_sections=True,
+        section_processing_complete=False,
+        remaining_sections=remaining,
+    )
 
 
 def initialize_progression(

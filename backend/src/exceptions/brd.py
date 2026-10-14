@@ -63,6 +63,28 @@ class BRDVersionImmutableError(BRDError):
         self.version_number = version_number
 
 
+class BRDSectionNotFoundError(BRDError):
+    """Raised when a specific section cannot be found in a BRD version."""
+
+    def __init__(
+        self,
+        section_key: str,
+        project_id: Optional[str] = None,
+        version_number: Optional[int] = None,
+        message: Optional[str] = None,
+    ) -> None:
+        if message:
+            msg = message
+        elif project_id:
+            msg = f"Section '{section_key}' not found in BRD for project '{project_id}'."
+        else:
+            msg = f"Section '{section_key}' not found."
+        super().__init__(msg)
+        self.section_key = section_key
+        self.project_id = project_id
+        self.version_number = version_number
+
+
 class InvalidBRDDataError(BRDError):
     """Raised when BRD, version, or section input data fails validation."""
     pass
