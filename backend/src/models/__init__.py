@@ -1,4 +1,5 @@
 from models.base import Base
+from models.brd import BRDModel, BRDSectionModel, BRDVersionModel, BRDVersionStatus
 from models.chunk import ChunkModel
 from models.conversation import ConversationModel
 from models.document import DocumentModel, DocumentVersionModel, DocumentVersionStatus
@@ -9,6 +10,10 @@ from models.user import UserModel
 
 __all__ = [
     "Base",
+    "BRDModel",
+    "BRDSectionModel",
+    "BRDVersionModel",
+    "BRDVersionStatus",
     "ChunkModel",
     "ConversationModel",
     "DocumentModel",

@@ -11,9 +11,10 @@ from langchain_core.messages import AIMessage, HumanMessage
 
 from agents.brd.agent import BRDLeadAgent
 from agents.brd.context import AgentContext
-from agents.brd.state import BRDAgentState
+from agents.brd.state import BRDAgentState, BRDSectionStatus
 from api.dependencies import (
     get_brd_lead_agent,
+    get_brd_service,
     get_conversation_service,
     get_current_project,
     get_current_user,
@@ -30,6 +31,7 @@ from schemas.conversation import (
     MessageCreate,
     MessageResponse,
 )
+from services.brd_service import BRDService
 from services.conversation_service import ConversationService
 
 logger = get_logger(__name__)
@@ -183,12 +185,14 @@ async def _persist_assistant_turn(
     content: str,
     metadata: dict[str, Any],
     original_session: Optional[Any] = None,
+    final_state: Optional[BRDAgentState] = None,
 ) -> MessageModel:
-    """Persist final assistant turn using a fresh AsyncSession boundary to prevent connection degradation.
+    """Persist final assistant turn and update the working draft using a fresh AsyncSession boundary.
 
     Decouples final assistant message and workflow state persistence from any long-lived
     request session that was active during the multi-minute agent execution. A newly acquired
-    session checks out a fresh connection from the pool, benefiting from engine pool_pre_ping.
+    session checks out a fresh connection from the pool, atomically committing both the
+    canonical BRD working draft and the assistant message turn in a single transaction.
     """
     bind_engine = getattr(original_session, "bind", None)
     session_maker = (
@@ -197,6 +201,29 @@ async def _persist_assistant_turn(
         else get_async_session_maker()
     )
     async with session_maker() as persist_session:
+        draft = None
+        if final_state is not None:
+            brd_service = BRDService(session=persist_session)
+            draft = await brd_service.save_working_draft_from_state(
+                project_id=project_id,
+                state=final_state,
+            )
+
+        # Ensure message metadata does NOT act as a second source of truth for BRD document content
+        if "workflow_state" in metadata and isinstance(metadata["workflow_state"], dict):
+            ws = metadata["workflow_state"]
+            ws.pop("section_content", None)
+            ws.pop("assembled_brd", None)
+            if draft is not None:
+                ws["brd_id"] = draft.brd_id
+                ws["brd_version_id"] = draft.id
+                ws["version_number"] = draft.version_number
+                ws["version_label"] = draft.version_label
+                metadata["brd_id"] = draft.brd_id
+                metadata["brd_version_id"] = draft.id
+                metadata["version_number"] = draft.version_number
+                metadata["version_label"] = draft.version_label
+
         persist_service = ConversationService(session=persist_session)
         assistant_message = await persist_service.create_message(
             project_id=project_id,
@@ -222,6 +249,7 @@ async def create_message(
     current_user: UserModel = Depends(get_current_user),
     service: ConversationService = Depends(get_conversation_service),
     agent: BRDLeadAgent = Depends(get_brd_lead_agent),
+    brd_service: BRDService = Depends(get_brd_service),
 ) -> Any:
     """Send and persist a message turn within a conversation under project boundary isolation.
 
@@ -270,11 +298,14 @@ async def create_message(
         metadata=payload.metadata,
     )
 
-    # 3. Retrieve prior conversation message history before closing the pre-agent transaction
+    # 3. Retrieve prior conversation message history and ensure canonical BRD initialization
     existing_messages = await service.list_messages(
         project_id=project_id,
         conversation_id=conversation_id,
     )
+
+    # Initialize canonical BRD and active working draft within request transaction boundary
+    _, current_draft = await brd_service.get_or_create_canonical_brd(project_id)
 
     # 4. Enforce pre-agent database transaction boundary: commit all pre-agent work
     # immediately so that no active transaction or checked-out database connection
@@ -315,7 +346,6 @@ async def create_message(
             prior_messages.append(AIMessage(content=m.content))
             if m.meta and "workflow_state" in m.meta:
                 try:
-                    from agents.brd.state import BRDAgentState
                     initial_workflow_state = BRDAgentState.from_dict(m.meta["workflow_state"])
                 except Exception as exc:
                     logger.warning(
@@ -323,6 +353,36 @@ async def create_message(
                         m.id,
                         exc,
                     )
+
+    # Hydrate canonical BRD document state from PostgreSQL
+    # If initial_workflow_state was restored from prior messages, or if the working draft already has persisted section content,
+    # ensure canonical PostgreSQL sections, statuses, and assembled markdown are hydrated.
+    has_persisted_draft_content = any(s.content for s in current_draft.sections) if (current_draft and current_draft.sections) else False
+
+    if initial_workflow_state is not None or has_persisted_draft_content:
+        if initial_workflow_state is None:
+            initial_workflow_state = BRDAgentState()
+
+        if current_draft and current_draft.sections:
+            for sec in current_draft.sections:
+                if sec.content:
+                    initial_workflow_state.section_content[sec.section_key] = sec.content
+                if sec.status:
+                    try:
+                        initial_workflow_state.section_progress[sec.section_key] = BRDSectionStatus(sec.status)
+                    except (ValueError, TypeError):
+                        initial_workflow_state.section_progress[sec.section_key] = sec.status
+                if sec.rework_feedback:
+                    initial_workflow_state.rework_feedback[sec.section_key] = sec.rework_feedback
+
+        if current_draft and current_draft.assembled_markdown:
+            initial_workflow_state.assembled_brd = current_draft.assembled_markdown
+
+        if current_draft:
+            initial_workflow_state.metadata["brd_id"] = current_draft.brd_id
+            initial_workflow_state.metadata["brd_version_id"] = current_draft.id
+            initial_workflow_state.metadata["version_number"] = current_draft.version_number
+            initial_workflow_state.metadata["version_label"] = current_draft.version_label
 
     # 7. Branch on streaming mode: both modes execute the controlled BRD workflow
     if not effective_stream:
@@ -384,6 +444,7 @@ async def create_message(
                 ),
             },
             original_session=service._session,
+            final_state=final_state,
         )
 
         logger.info(
@@ -455,6 +516,7 @@ async def create_message(
                     ),
                 },
                 original_session=service._session,
+                final_state=final_state,
             )
 
             logger.info(

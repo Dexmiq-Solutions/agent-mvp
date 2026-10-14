@@ -189,6 +189,11 @@ def get_brd_lead_agent() -> "BRDLeadAgent":
     return BRDLeadAgent(tools=tools)
 
 
+def get_brd_service(
+    session: AsyncSession = Depends(get_db_session),
+) -> "BRDService":
+    """Dependency provider returning BRDService bound to current request session."""
+    from services.brd_service import BRDService
 
-
+    return BRDService(session=session)
 

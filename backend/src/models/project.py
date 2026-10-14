@@ -13,6 +13,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from db.base import Base
 
 if TYPE_CHECKING:
+    from models.brd import BRDModel
     from models.conversation import ConversationModel
     from models.document import DocumentModel
     from models.user import UserModel
@@ -72,6 +73,13 @@ class ProjectModel(Base):
     conversations: Mapped[list["ConversationModel"]] = relationship(
         "ConversationModel",
         back_populates="project",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+    brd: Mapped[Optional["BRDModel"]] = relationship(
+        "BRDModel",
+        back_populates="project",
+        uselist=False,
         cascade="all, delete-orphan",
         passive_deletes=True,
     )
