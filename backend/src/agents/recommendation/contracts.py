@@ -35,6 +35,7 @@ class AgentRequest(BaseModel):
     brd_id: str
     message: str
     user: UserContext
+    run_id: Optional[str] = None
 
 
 class ResolvedReference(BaseModel):

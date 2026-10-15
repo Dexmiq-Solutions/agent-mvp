@@ -262,4 +262,11 @@ def resolve_references(
     if updated_focus_entity:
         context.focus_entity = updated_focus_entity
 
+    logger.info(
+        "Reference Resolver: Identified %d references for message '%s' (focus_entity: %s)",
+        len(resolved),
+        message,
+        context.focus_entity,
+    )
+
     return context

@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 
+import uuid
 from agents.recommendation.config import RecommendationConfig
 from agents.recommendation.context_loader import load_context
 from agents.recommendation.contracts import (
@@ -21,7 +22,8 @@ from agents.recommendation.contracts import (
 )
 from agents.recommendation.reference_resolver import resolve_references
 from agents.recommendation.router.agent import IntentRouterAgent
-from observability.logging import get_logger
+from observability.llm_telemetry import get_current_telemetry_tracker, scoped_telemetry_context
+from observability.logging import get_logger, scoped_run_context
 from services.brd_service import BRDService
 from services.conversation_service import ConversationService
 from services.project_service import ProjectService
@@ -75,46 +77,108 @@ class RecommendationWorkflow:
         Returns:
             Phase1Result with status 'ready_for_phase_2', 'needs_user', or 'failed'.
         """
-        logger.info(
-            "Starting Recommendation Workflow Phase 1 (thread_id: %s, brd_id: %s)",
-            request.thread_id,
-            request.brd_id,
-        )
+        run_id = getattr(request, "run_id", None) or str(uuid.uuid4())
 
-        try:
-            # Step 1A: Load Context (Deterministic)
-            context, sections = await load_context(
-                request=request,
-                session=session,
-                conversation_service=conversation_service,
-                brd_service=brd_service,
-                project_service=project_service,
+        async with scoped_run_context(run_id=run_id, workflow_name="RecommendationWorkflow"):
+            logger.info(
+                "Starting Recommendation Workflow Phase 1 (run_id: %s, thread_id: %s, brd_id: %s)",
+                run_id,
+                request.thread_id,
+                request.brd_id,
             )
 
-            # Step 1B: Resolve References (Deterministic)
-            context = resolve_references(context=context, sections=sections)
+            try:
+                # Step 1A: Load Context (Deterministic)
+                logger.info(
+                    "Executing Step 1A: Load Context (thread_id: %s, brd_id: %s)",
+                    request.thread_id,
+                    request.brd_id,
+                )
+                context, sections = await load_context(
+                    request=request,
+                    session=session,
+                    conversation_service=conversation_service,
+                    brd_service=brd_service,
+                    project_service=project_service,
+                )
+                logger.info(
+                    "Step 1A completed: Loaded %d canonical sections, history_summary_length=%d, prior_decisions=%d, focus_entity=%s",
+                    len(sections),
+                    len(context.history_summary),
+                    len(context.decision_history),
+                    context.focus_entity,
+                )
 
-            # Step 1C: Intent Router Agent (LLM, No retrieval tools)
-            route_decision = await self._router.route(context=context)
+                # Step 1B: Resolve References (Deterministic)
+                logger.info(
+                    "Executing Step 1B: Resolve References against %d canonical sections",
+                    len(sections),
+                )
+                context = resolve_references(context=context, sections=sections)
+                resolved_summary = [
+                    f"'{r.raw_text}' -> section_id={r.section_id} (confidence={r.confidence})"
+                    for r in context.resolved_references
+                ]
+                logger.info(
+                    "Step 1B completed: Resolved %d references: %s",
+                    len(context.resolved_references),
+                    ", ".join(resolved_summary) if resolved_summary else "none",
+                )
 
-            # Step 1D: Missing/Unclear Check (Deterministic control logic)
-            return self.missing_unclear_check(
-                route=route_decision,
-                context=context,
-            )
+                # Step 1C: Intent Router Agent (LLM, No retrieval tools)
+                logger.info("Executing Step 1C: Intent Router Agent invocation")
+                with scoped_telemetry_context(
+                    component="IntentRouterAgent",
+                    phase="1C_INTENT_ROUTER",
+                    operation="route",
+                ):
+                    route_decision = await self._router.route(context=context)
 
-        except Exception as exc:
-            logger.error(
-                "Error during Recommendation Workflow Phase 1 execution: %s",
-                exc,
-                exc_info=True,
-            )
-            dummy_context = RequestContext(request=request)
-            return Phase1Result(
-                status="failed",
-                context=dummy_context,
-                error_message=str(exc),
-            )
+                logger.info(
+                    "Step 1C completed: Intent Router produced decision: profile='%s', high_stakes=%s, confidence='%s', missing_facts=%s, rationale='%s'",
+                    route_decision.profile,
+                    route_decision.high_stakes,
+                    route_decision.confidence,
+                    route_decision.missing_facts,
+                    route_decision.short_reason,
+                )
+
+                # Step 1D: Missing/Unclear Check (Deterministic control logic)
+                logger.info("Executing Step 1D: Missing/Unclear Check evaluation")
+                result = self.missing_unclear_check(
+                    route=route_decision,
+                    context=context,
+                )
+                logger.info(
+                    "Step 1D completed: Workflow result status='%s'%s",
+                    result.status,
+                    f", clarification_questions={result.clarification.questions}" if result.clarification else "",
+                )
+
+                tracker = get_current_telemetry_tracker()
+                if tracker:
+                    logger.info(tracker.format_log_summary())
+
+                logger.info(
+                    "Recommendation Workflow Phase 1 finished successfully (run_id: %s, status: %s)",
+                    run_id,
+                    result.status,
+                )
+                return result
+
+            except Exception as exc:
+                logger.error(
+                    "Error during Recommendation Workflow Phase 1 execution (run_id: %s): %s",
+                    run_id,
+                    exc,
+                    exc_info=True,
+                )
+                dummy_context = RequestContext(request=request)
+                return Phase1Result(
+                    status="failed",
+                    context=dummy_context,
+                    error_message=str(exc),
+                )
 
     def missing_unclear_check(
         self,

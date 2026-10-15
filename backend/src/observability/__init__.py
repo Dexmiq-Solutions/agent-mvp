@@ -1,4 +1,4 @@
-"""Observability package providing centralized logging, metrics, and diagnostics."""
+"""Observability package providing centralized logging, metrics, diagnostics, and LLM telemetry."""
 
 from observability.llm_telemetry import (
     LLMExecutionSummary,
@@ -17,21 +17,41 @@ from observability.llm_telemetry import (
 from observability.logging import (
     DATE_FORMAT,
     LOG_FORMAT,
+    RunFileLoggingHandler,
+    SanitizedFormatter,
     TraceActor,
+    close_run_log_file,
     format_trace_event,
+    get_current_run_id,
+    get_current_workflow_name,
+    get_log_dir,
     get_logger,
     log_trace_event,
+    reset_current_run_id,
+    sanitize_log_message,
+    scoped_run_context,
+    set_current_run_id,
     setup_logging,
 )
 
 __all__ = [
     "setup_logging",
     "get_logger",
+    "get_log_dir",
     "LOG_FORMAT",
     "DATE_FORMAT",
     "TraceActor",
     "format_trace_event",
     "log_trace_event",
+    "scoped_run_context",
+    "get_current_run_id",
+    "set_current_run_id",
+    "reset_current_run_id",
+    "get_current_workflow_name",
+    "close_run_log_file",
+    "sanitize_log_message",
+    "SanitizedFormatter",
+    "RunFileLoggingHandler",
     "LLMExecutionSummary",
     "LLMRequestRecord",
     "LLMTelemetryTracker",
@@ -45,5 +65,3 @@ __all__ = [
     "scoped_telemetry_context",
     "set_current_telemetry_tracker",
 ]
-
-

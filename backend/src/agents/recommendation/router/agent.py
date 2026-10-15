@@ -82,22 +82,55 @@ class IntentRouterAgent:
             HumanMessage(content=user_prompt),
         ]
 
+        try:
+            from observability.llm_telemetry import get_telemetry_callback_handler
+            cb = get_telemetry_callback_handler()
+            call_config = {"callbacks": [cb]} if cb else {}
+        except Exception:
+            call_config = {}
+
         # Bounded retry: attempt up to 2 times
         for attempt in range(1, 3):
             try:
+                logger.info(
+                    "Intent Router invoking model (attempt %d/2, model: %s)",
+                    attempt,
+                    self._config.router_model,
+                )
                 if self._structured_model is not None:
-                    decision = self._structured_model.invoke(messages)
+                    decision = self._structured_model.invoke(messages, config=call_config)
                     if isinstance(decision, RouteDecision):
+                        logger.info(
+                            "Intent Router received RouteDecision: profile='%s', high_stakes=%s, confidence='%s', rationale='%s'",
+                            decision.profile,
+                            decision.high_stakes,
+                            decision.confidence,
+                            decision.short_reason,
+                        )
                         return self._post_process_decision(decision, context)
                     if isinstance(decision, dict):
                         parsed = RouteDecision.model_validate(decision)
+                        logger.info(
+                            "Intent Router validated RouteDecision from dict: profile='%s', high_stakes=%s, confidence='%s', rationale='%s'",
+                            parsed.profile,
+                            parsed.high_stakes,
+                            parsed.confidence,
+                            parsed.short_reason,
+                        )
                         return self._post_process_decision(parsed, context)
 
                 # Fallback to direct model invocation if structured binding not supported
-                raw_response = self._model.invoke(messages)
+                raw_response = self._model.invoke(messages, config=call_config)
                 content = raw_response.content if hasattr(raw_response, "content") else str(raw_response)
                 parsed = self._extract_route_decision(content)
                 if parsed is not None:
+                    logger.info(
+                        "Intent Router extracted RouteDecision from raw content: profile='%s', high_stakes=%s, confidence='%s', rationale='%s'",
+                        parsed.profile,
+                        parsed.high_stakes,
+                        parsed.confidence,
+                        parsed.short_reason,
+                    )
                     return self._post_process_decision(parsed, context)
 
             except Exception as exc:

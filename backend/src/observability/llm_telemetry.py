@@ -193,6 +193,10 @@ class LLMRequestRecord:
     error_type: Optional[str] = None
     error_message: Optional[str] = None
     rate_limit_info: Optional[dict[str, Any]] = None
+    provider: str = ""
+    input_prompt: Optional[str] = None
+    output_text: Optional[str] = None
+    rationale: Optional[str] = None
 
     def __post_init__(self) -> None:
         if self.phase and self.workflow_phase == "Unknown":
@@ -210,6 +214,7 @@ class LLMRequestRecord:
             "operation": self.operation,
             "section": self.section,
             "model": self.model,
+            "provider": self.provider,
             "start_time": self.start_time,
             "end_time": self.end_time,
             "duration_seconds": round(self.duration_seconds, 3),
@@ -224,6 +229,9 @@ class LLMRequestRecord:
             "tokens_available": self.tokens_available,
             "error_type": self.error_type,
             "error_message": self.error_message,
+            "input_prompt": self.input_prompt,
+            "output_text": self.output_text,
+            "rationale": self.rationale,
         }
 
 
@@ -479,12 +487,82 @@ class LLMTelemetryTracker:
 # LangChain Callback Handler
 # ---------------------------------------------------------------------------
 
+def _format_chat_messages(messages: Any) -> str:
+    """Convert LangChain message objects or prompt structures to readable string."""
+    if not messages:
+        return ""
+    if isinstance(messages, str):
+        return messages
+    lines: list[str] = []
+    if isinstance(messages, list):
+        for item in messages:
+            if isinstance(item, list):
+                for sub in item:
+                    role = getattr(sub, "type", sub.__class__.__name__)
+                    content = getattr(sub, "content", str(sub))
+                    lines.append(f"[{role}]: {content}")
+            elif hasattr(item, "content"):
+                role = getattr(item, "type", item.__class__.__name__)
+                lines.append(f"[{role}]: {item.content}")
+            else:
+                lines.append(str(item))
+    return "\n".join(lines)
+
+
 class TelemetryCallbackHandler(BaseCallbackHandler):
-    """LangChain callback handler automatically capturing LLM calls, durations, and token usage."""
+    """LangChain callback handler automatically capturing LLM calls, inputs, outputs, durations, and token usage."""
 
     def __init__(self) -> None:
         super().__init__()
         self._runs: dict[str, dict[str, Any]] = {}
+
+    def on_chat_model_start(
+        self,
+        serialized: dict[str, Any],
+        messages: list[list[Any]],
+        *,
+        run_id: Any,
+        tags: Optional[list[str]] = None,
+        metadata: Optional[dict[str, Any]] = None,
+        **kwargs: Any,
+    ) -> None:
+        """Record start of ChatModel invocation with structured input messages."""
+        rid_str = str(run_id)
+        current_ctx = get_current_telemetry_context()
+
+        # Extract model and provider
+        model_name = "unknown"
+        provider = "openai"
+        if serialized:
+            kwargs_dict = serialized.get("kwargs", {})
+            model_name = kwargs_dict.get("model_name") or kwargs_dict.get("model") or model_name
+            id_path = serialized.get("id", [])
+            if id_path and len(id_path) >= 2:
+                provider = id_path[-2]
+        if metadata and "model" in metadata:
+            model_name = metadata["model"]
+
+        # Format input messages
+        input_text = _format_chat_messages(messages)
+
+        self._runs[rid_str] = {
+            "start_time": time.perf_counter(),
+            "model": model_name,
+            "provider": provider,
+            "input": input_text,
+            "context": current_ctx,
+        }
+
+        logger.info(
+            "LLM request started [component=%s, phase=%s, section=%s, op=%s, provider=%s, model=%s]:\n--- LLM INPUT ---\n%s\n-----------------",
+            current_ctx.get("component", "unknown"),
+            current_ctx.get("phase", "unknown"),
+            current_ctx.get("section", "none"),
+            current_ctx.get("operation", "unknown"),
+            provider,
+            model_name,
+            input_text,
+        )
 
     def on_llm_start(
         self,
@@ -498,21 +576,44 @@ class TelemetryCallbackHandler(BaseCallbackHandler):
     ) -> None:
         """Record start of LLM invocation."""
         rid_str = str(run_id)
+        if rid_str in self._runs:
+            # Already captured by on_chat_model_start
+            return
+
         current_ctx = get_current_telemetry_context()
 
-        # Extract model name
+        # Extract model and provider
         model_name = "unknown"
+        provider = "openai"
         if serialized:
             kwargs_dict = serialized.get("kwargs", {})
             model_name = kwargs_dict.get("model_name") or kwargs_dict.get("model") or model_name
+            id_path = serialized.get("id", [])
+            if id_path and len(id_path) >= 2:
+                provider = id_path[-2]
         if metadata and "model" in metadata:
             model_name = metadata["model"]
+
+        input_text = "\n---\n".join(prompts) if prompts else ""
 
         self._runs[rid_str] = {
             "start_time": time.perf_counter(),
             "model": model_name,
+            "provider": provider,
+            "input": input_text,
             "context": current_ctx,
         }
+
+        logger.info(
+            "LLM request started [component=%s, phase=%s, section=%s, op=%s, provider=%s, model=%s]:\n--- LLM INPUT ---\n%s\n-----------------",
+            current_ctx.get("component", "unknown"),
+            current_ctx.get("phase", "unknown"),
+            current_ctx.get("section", "none"),
+            current_ctx.get("operation", "unknown"),
+            provider,
+            model_name,
+            input_text,
+        )
 
     def on_llm_end(
         self,
@@ -521,11 +622,13 @@ class TelemetryCallbackHandler(BaseCallbackHandler):
         run_id: Any,
         **kwargs: Any,
     ) -> None:
-        """Record completion of LLM invocation and extract provider token usage."""
+        """Record completion of LLM invocation and extract provider token usage and output."""
         rid_str = str(run_id)
         run_info = self._runs.pop(rid_str, None)
         start_time = run_info["start_time"] if run_info else time.perf_counter()
         model_name = run_info["model"] if run_info else "unknown"
+        provider = run_info.get("provider", "openai") if run_info else "openai"
+        input_text = run_info.get("input") if run_info else None
         ctx = run_info["context"] if run_info else get_current_telemetry_context()
 
         end_time = time.perf_counter()
@@ -548,39 +651,69 @@ class TelemetryCallbackHandler(BaseCallbackHandler):
             if not model_name or model_name == "unknown":
                 model_name = response.llm_output.get("model_name", model_name)
 
-        if not tokens_avail and response and response.generations:
+        output_parts: list[str] = []
+        rationale: Optional[str] = None
+
+        if response and response.generations:
             for gen_list in response.generations:
                 for gen in gen_list:
                     msg = getattr(gen, "message", None)
+                    content = getattr(msg, "content", None) if msg else getattr(gen, "text", "")
+                    if content:
+                        output_parts.append(str(content))
                     if msg:
-                        usage_meta = getattr(msg, "usage_metadata", None)
-                        if isinstance(usage_meta, dict):
-                            in_tokens = usage_meta.get("input_tokens")
-                            out_tokens = usage_meta.get("output_tokens")
-                            total_tokens = usage_meta.get("total_tokens")
-                            if total_tokens is not None:
-                                tokens_avail = True
-                                break
-                        resp_meta = getattr(msg, "response_metadata", {})
-                        if isinstance(resp_meta, dict):
-                            token_usage = resp_meta.get("token_usage")
-                            if isinstance(token_usage, dict):
-                                in_tokens = token_usage.get("prompt_tokens")
-                                out_tokens = token_usage.get("completion_tokens")
-                                total_tokens = token_usage.get("total_tokens")
+                        add_kwargs = getattr(msg, "additional_kwargs", {}) or {}
+                        if "tool_calls" in add_kwargs:
+                            output_parts.append(f"[tool_calls: {json.dumps(add_kwargs['tool_calls'])}]")
+
+                        if not tokens_avail:
+                            usage_meta = getattr(msg, "usage_metadata", None)
+                            if isinstance(usage_meta, dict):
+                                in_tokens = usage_meta.get("input_tokens")
+                                out_tokens = usage_meta.get("output_tokens")
+                                total_tokens = usage_meta.get("total_tokens")
                                 if total_tokens is not None:
                                     tokens_avail = True
-                                    break
-                if tokens_avail:
-                    break
+                            resp_meta = getattr(msg, "response_metadata", {})
+                            if isinstance(resp_meta, dict) and not tokens_avail:
+                                token_usage = resp_meta.get("token_usage")
+                                if isinstance(token_usage, dict):
+                                    in_tokens = token_usage.get("prompt_tokens")
+                                    out_tokens = token_usage.get("completion_tokens")
+                                    total_tokens = token_usage.get("total_tokens")
+                                    if total_tokens is not None:
+                                        tokens_avail = True
+
+                    # Inspect for rationale in structured JSON output
+                    if isinstance(content, str):
+                        clean_content = content.strip()
+                        if clean_content.startswith("{") and clean_content.endswith("}"):
+                            try:
+                                parsed = json.loads(clean_content)
+                                if isinstance(parsed, dict):
+                                    rationale = (
+                                        parsed.get("short_reason")
+                                        or parsed.get("rationale")
+                                        or parsed.get("reason")
+                                    )
+                            except Exception:
+                                pass
+
+        output_text = "\n".join(output_parts) if output_parts else None
+
+        tracker = get_current_telemetry_tracker()
+        from observability.logging import get_current_run_id
+        effective_run_id = (tracker.run_id if tracker else None) or get_current_run_id() or ""
 
         record = LLMRequestRecord(
             request_id=rid_str,
+            run_id=effective_run_id,
             component=ctx.get("component", "unknown"),
             workflow_phase=ctx.get("phase", "unknown"),
             operation=ctx.get("operation", "unknown"),
             section=ctx.get("section"),
             model=model_name,
+            provider=provider,
             start_time=start_time,
             end_time=end_time,
             duration_seconds=duration,
@@ -593,23 +726,29 @@ class TelemetryCallbackHandler(BaseCallbackHandler):
             output_tokens=out_tokens,
             total_tokens=total_tokens,
             tokens_available=tokens_avail,
+            input_prompt=input_text,
+            output_text=output_text,
+            rationale=rationale,
         )
 
-        tracker = get_current_telemetry_tracker()
         if tracker:
             tracker.record_request(record)
 
+        rationale_desc = f", rationale='{rationale}'" if rationale else ""
         logger.info(
-            "LLM request completed [component=%s, phase=%s, section=%s, op=%s, model=%s]: duration=%.2fs, tokens=%s (in=%s, out=%s)",
+            "LLM request completed [component=%s, phase=%s, section=%s, op=%s, provider=%s, model=%s]: duration=%.2fs, tokens=%s (in=%s, out=%s)%s\n--- LLM OUTPUT ---\n%s\n------------------",
             record.component,
             record.workflow_phase,
             record.section or "none",
             record.operation,
+            record.provider,
             record.model,
             duration,
             record.total_tokens if tokens_avail else "unavailable",
             record.input_tokens if tokens_avail else "n/a",
             record.output_tokens if tokens_avail else "n/a",
+            rationale_desc,
+            output_text or "(empty response)",
         )
 
     def on_llm_error(
@@ -624,6 +763,8 @@ class TelemetryCallbackHandler(BaseCallbackHandler):
         run_info = self._runs.pop(rid_str, None)
         start_time = run_info["start_time"] if run_info else time.perf_counter()
         model_name = run_info["model"] if run_info else "unknown"
+        provider = run_info.get("provider", "openai") if run_info else "openai"
+        input_text = run_info.get("input") if run_info else None
         ctx = run_info["context"] if run_info else get_current_telemetry_context()
 
         end_time = time.perf_counter()
@@ -631,13 +772,19 @@ class TelemetryCallbackHandler(BaseCallbackHandler):
 
         rl_info = extract_rate_limit_info(error) if isinstance(error, Exception) else RateLimitInfo()
 
+        tracker = get_current_telemetry_tracker()
+        from observability.logging import get_current_run_id
+        effective_run_id = (tracker.run_id if tracker else None) or get_current_run_id() or ""
+
         record = LLMRequestRecord(
             request_id=rid_str,
+            run_id=effective_run_id,
             component=ctx.get("component", "unknown"),
             workflow_phase=ctx.get("phase", "unknown"),
             operation=ctx.get("operation", "unknown"),
             section=ctx.get("section"),
             model=model_name,
+            provider=provider,
             start_time=start_time,
             end_time=end_time,
             duration_seconds=duration,
@@ -649,9 +796,9 @@ class TelemetryCallbackHandler(BaseCallbackHandler):
             error_type=rl_info.error_type or error.__class__.__name__,
             error_message=rl_info.error_message or str(error),
             rate_limit_info=rl_info.to_dict() if rl_info.is_rate_limit else None,
+            input_prompt=input_text,
         )
 
-        tracker = get_current_telemetry_tracker()
         if tracker:
             tracker.record_request(record)
 
@@ -667,11 +814,12 @@ class TelemetryCallbackHandler(BaseCallbackHandler):
                 else "reset headers unavailable"
             )
             logger.warning(
-                "OpenAI rate limit (HTTP 429) encountered [component=%s, phase=%s, section=%s, op=%s, model=%s]: duration=%.2fs, %s, %s",
+                "OpenAI rate limit (HTTP 429) encountered [component=%s, phase=%s, section=%s, op=%s, provider=%s, model=%s]: duration=%.2fs, %s, %s",
                 record.component,
                 record.workflow_phase,
                 record.section or "none",
                 record.operation,
+                record.provider,
                 record.model,
                 duration,
                 retry_msg,
@@ -679,11 +827,12 @@ class TelemetryCallbackHandler(BaseCallbackHandler):
             )
         else:
             logger.error(
-                "LLM request failed [component=%s, phase=%s, section=%s, op=%s, model=%s]: duration=%.2fs, error_type=%s, error=%s",
+                "LLM request failed [component=%s, phase=%s, section=%s, op=%s, provider=%s, model=%s]: duration=%.2fs, error_type=%s, error=%s",
                 record.component,
                 record.workflow_phase,
                 record.section or "none",
                 record.operation,
+                record.provider,
                 record.model,
                 duration,
                 record.error_type,

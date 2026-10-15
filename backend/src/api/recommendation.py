@@ -77,6 +77,14 @@ async def execute_recommendation(
     """
     start_time = time.perf_counter()
 
+    run_id = str(uuid.uuid4())
+    logger.info(
+        "Recommendation API request received (project_id: %s, conversation_id: %s, run_id: %s)",
+        project_id,
+        conversation_id,
+        run_id,
+    )
+
     # 1. Enforce Project Isolation & Conversation Validation
     await service.get_conversation(
         project_id=project_id,
@@ -89,7 +97,7 @@ async def execute_recommendation(
         conversation_id=conversation_id,
         content=payload.content,
         role="user",
-        metadata=payload.metadata,
+        metadata={**(payload.metadata or {}), "agent_run_id": run_id},
     )
 
     # 3. Construct Inbound AgentRequest
@@ -102,6 +110,7 @@ async def execute_recommendation(
             tenant_id=current_user.id,
             permissions=["project:read", "brd:read"],
         ),
+        run_id=run_id,
     )
 
     # 4. Execute Phase 1 Workflow
@@ -113,6 +122,12 @@ async def execute_recommendation(
     )
 
     duration = round(time.perf_counter() - start_time, 3)
+    logger.info(
+        "Recommendation API request processed (run_id: %s, duration: %.2fs, status: %s)",
+        run_id,
+        duration,
+        phase1_result.status,
+    )
 
     if phase1_result.status == "failed":
         logger.error(

@@ -5583,6 +5583,8 @@ class BRDLeadAgent:
 
         self._telemetry_tracker = LLMTelemetryTracker(run_id=agent_run_id)
         telemetry_token = set_current_telemetry_tracker(self._telemetry_tracker)
+        from observability.logging import close_run_log_file, reset_current_run_id, set_current_run_id
+        run_token = set_current_run_id(agent_run_id)
 
         input_prompt = request.input_text if isinstance(request, AgentRunRequest) else (str(request) if request is not None else None)
         self._ingest_user_conversation_evidence(input_prompt=input_prompt, prior_messages=prior_messages)
@@ -5617,6 +5619,9 @@ class BRDLeadAgent:
                 "type": "content",
                 "content": "Error: Project knowledge retrieval (RAG) is unavailable. Grounded BRD generation cannot proceed without access to project documentation.",
             }
+            reset_current_run_id(run_token)
+            reset_current_telemetry_tracker(telemetry_token)
+            close_run_log_file(agent_run_id)
             return
 
         is_section_resume = False
@@ -6044,6 +6049,10 @@ class BRDLeadAgent:
                 "type": "execution_summary",
                 "execution_summary": summary.to_dict(),
             }
+
+        reset_current_run_id(run_token)
+        reset_current_telemetry_tracker(telemetry_token)
+        close_run_log_file(agent_run_id)
 
 
 def create_brd_lead_agent(

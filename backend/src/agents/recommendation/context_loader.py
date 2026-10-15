@@ -85,11 +85,22 @@ async def load_context(
     brd_version_label = (
         current_draft.version_label if current_draft and current_draft.version_label else "0.1"
     )
+    logger.info(
+        "Context Loader: Retrieved canonical BRD version '%s' with %d sections for project '%s'",
+        brd_version_label,
+        len(sorted_sections),
+        project_id,
+    )
 
     # 3. Retrieve Conversation Message History
     existing_messages = await conversation_service.list_messages(
         project_id=project_id,
         conversation_id=request.thread_id,
+    )
+    logger.info(
+        "Context Loader: Retrieved %d prior conversation messages for thread '%s'",
+        len(existing_messages),
+        request.thread_id,
     )
 
     # 4. Extract Prior State from Message Metadata
@@ -140,6 +151,11 @@ async def load_context(
     # If the immediately preceding turn was awaiting clarification, the user's current message
     # is the clarification answer.
     if pending_clarification is not None:
+        logger.info(
+            "Context Loader: Preceding turn awaited clarification (%s). Merging user answer for thread '%s'.",
+            pending_clarification.missing_facts,
+            request.thread_id,
+        )
         user_provided_facts["clarification_answer"] = request.message
         for fact_name in pending_clarification.missing_facts:
             user_provided_facts[fact_name] = request.message
