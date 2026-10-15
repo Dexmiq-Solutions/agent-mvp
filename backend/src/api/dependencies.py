@@ -197,3 +197,10 @@ def get_brd_service(
 
     return BRDService(session=session)
 
+
+def get_recommendation_workflow() -> "RecommendationWorkflow":
+    """Dependency provider returning a configured RecommendationWorkflow instance."""
+    from agents.recommendation.workflow import RecommendationWorkflow
+
+    return RecommendationWorkflow()
+

@@ -5,6 +5,7 @@ from fastapi import APIRouter
 from api.auth import router as auth_router
 from api.conversations import router as conversations_router
 from api.projects import router as projects_router
+from api.recommendation import router as recommendation_router
 from api.retrieval import router as retrieval_router
 from api.sources import router as sources_router
 
@@ -14,6 +15,7 @@ api_router.include_router(projects_router)
 api_router.include_router(sources_router)
 api_router.include_router(conversations_router)
 api_router.include_router(retrieval_router)
+api_router.include_router(recommendation_router)
 
 __all__ = [
     "api_router",
@@ -22,6 +24,7 @@ __all__ = [
     "sources_router",
     "conversations_router",
     "retrieval_router",
+    "recommendation_router",
 ]
 
 
