@@ -556,6 +556,16 @@ class BRDLeadAgent:
 
         self._config = config or AgentConfig.from_settings()
         self._model = model or create_agent_model(self._config)
+        try:
+            from observability.llm_telemetry import get_telemetry_callback_handler
+            cb = get_telemetry_callback_handler()
+            if hasattr(self._model, "callbacks"):
+                if self._model.callbacks is None:
+                    self._model.callbacks = [cb]
+                elif isinstance(self._model.callbacks, list) and cb not in self._model.callbacks:
+                    self._model.callbacks.append(cb)
+        except Exception:
+            pass
 
         if tools is not None:
             self._tools = list(tools)
@@ -4770,6 +4780,14 @@ class BRDLeadAgent:
 
         self._telemetry_tracker = LLMTelemetryTracker(run_id=agent_run_id)
         telemetry_token = set_current_telemetry_tracker(self._telemetry_tracker)
+        from observability.logging import close_run_log_file, reset_current_run_id, set_current_run_id
+        run_token = set_current_run_id(agent_run_id)
+
+        def _finish_response(resp: AgentRunResponse) -> AgentRunResponse:
+            reset_current_run_id(run_token)
+            reset_current_telemetry_tracker(telemetry_token)
+            close_run_log_file(agent_run_id)
+            return resp
 
         input_prompt = request.input_text if isinstance(request, AgentRunRequest) else (str(request) if request is not None else None)
         self._ingest_user_conversation_evidence(input_prompt=input_prompt, prior_messages=prior_messages)
@@ -4796,12 +4814,14 @@ class BRDLeadAgent:
             logger.error(
                 "BRD workflow aborted: RAG capability is unavailable. Grounded BRD generation requires project knowledge retrieval."
             )
-            return AgentRunResponse(
-                output_text="Error: Project knowledge retrieval (RAG) is unavailable. Grounded BRD generation cannot proceed without access to project documentation.",
-                context=effective_ctx,
-                state=self._state,
-                success=False,
-                error="RAG capability unavailable for grounded BRD generation",
+            return _finish_response(
+                AgentRunResponse(
+                    output_text="Error: Project knowledge retrieval (RAG) is unavailable. Grounded BRD generation cannot proceed without access to project documentation.",
+                    context=effective_ctx,
+                    state=self._state,
+                    success=False,
+                    error="RAG capability unavailable for grounded BRD generation",
+                )
             )
 
         is_section_resume = False
@@ -5040,11 +5060,13 @@ class BRDLeadAgent:
                     question=question,
                 )
                 self._state.set_waiting_for_user(question)
-                return AgentRunResponse(
-                    output_text=question,
-                    context=effective_ctx,
-                    state=self._state,
-                    success=True,
+                return _finish_response(
+                    AgentRunResponse(
+                        output_text=question,
+                        context=effective_ctx,
+                        state=self._state,
+                        success=True,
+                    )
                 )
 
         # Phase 5: Section Iteration Loop (Sequential Processing across Template Sections)
@@ -5279,11 +5301,13 @@ class BRDLeadAgent:
                             section=cur_sec,
                             question=clarification_q,
                         )
-                        return AgentRunResponse(
-                            output_text=clarification_q,
-                            context=effective_ctx,
-                            state=self._state,
-                            success=True,
+                        return _finish_response(
+                            AgentRunResponse(
+                                output_text=clarification_q,
+                                context=effective_ctx,
+                                state=self._state,
+                                success=True,
+                            )
                         )
 
                 # For GENERATION_QUALITY, TEMPLATE_CONFIGURATION, or exhausted clarification:
@@ -5295,13 +5319,15 @@ class BRDLeadAgent:
                 self._state.metadata["failure_diagnostics"] = diagnostics
                 self._state.update_section_status(cur_sec, BRDSectionStatus.NEEDS_REVISION)
 
-                return AgentRunResponse(
-                    output_text=diag_text,
-                    success=False,
-                    error=f"Section rework exhausted for '{cur_sec}' due to {diagnostics['failure_category']}",
-                    context=effective_ctx,
-                    state=self._state,
-                    diagnostics=diagnostics,
+                return _finish_response(
+                    AgentRunResponse(
+                        output_text=diag_text,
+                        success=False,
+                        error=f"Section rework exhausted for '{cur_sec}' due to {diagnostics['failure_category']}",
+                        context=effective_ctx,
+                        state=self._state,
+                        diagnostics=diagnostics,
+                    )
                 )
 
         # Phase 6: Document Assembly Gate
@@ -5321,11 +5347,13 @@ class BRDLeadAgent:
                 reason="sections_incomplete",
                 remaining_sections=len(self.get_remaining_sections()),
             )
-            return AgentRunResponse(
-                output_text="BRD workflow paused: not all template sections could be completed.",
-                success=False,
-                context=effective_ctx,
-                state=self._state,
+            return _finish_response(
+                AgentRunResponse(
+                    output_text="BRD workflow paused: not all template sections could be completed.",
+                    success=False,
+                    context=effective_ctx,
+                    state=self._state,
+                )
             )
 
         assembly_res = await self.assemble_brd_async(context=effective_ctx)
@@ -5463,12 +5491,14 @@ class BRDLeadAgent:
             self._state.metadata["llm_execution_summary"] = self._telemetry_tracker.get_summary().to_dict()
             logger.info(self._telemetry_tracker.format_log_summary())
 
-        return AgentRunResponse(
-            output_text=final_output,
-            context=effective_ctx,
-            model=getattr(self.model, "model_name", str(self.model)),
-            success=True,
-            state=self._state,
+        return _finish_response(
+            AgentRunResponse(
+                output_text=final_output,
+                context=effective_ctx,
+                model=getattr(self.model, "model_name", str(self.model)),
+                success=True,
+                state=self._state,
+            )
         )
 
     def run_workflow(
@@ -5586,6 +5616,11 @@ class BRDLeadAgent:
         from observability.logging import close_run_log_file, reset_current_run_id, set_current_run_id
         run_token = set_current_run_id(agent_run_id)
 
+        def _cleanup_stream() -> None:
+            reset_current_run_id(run_token)
+            reset_current_telemetry_tracker(telemetry_token)
+            close_run_log_file(agent_run_id)
+
         input_prompt = request.input_text if isinstance(request, AgentRunRequest) else (str(request) if request is not None else None)
         self._ingest_user_conversation_evidence(input_prompt=input_prompt, prior_messages=prior_messages)
 
@@ -5619,9 +5654,7 @@ class BRDLeadAgent:
                 "type": "content",
                 "content": "Error: Project knowledge retrieval (RAG) is unavailable. Grounded BRD generation cannot proceed without access to project documentation.",
             }
-            reset_current_run_id(run_token)
-            reset_current_telemetry_tracker(telemetry_token)
-            close_run_log_file(agent_run_id)
+            _cleanup_stream()
             return
 
         is_section_resume = False
@@ -5781,6 +5814,7 @@ class BRDLeadAgent:
                     "type": "content",
                     "content": question,
                 }
+                _cleanup_stream()
                 return
 
         # Phase 5: Section Iteration Loop
@@ -5920,6 +5954,7 @@ class BRDLeadAgent:
                             "message": f"Clarification requested for section '{cur_sec}': {clarification_q}",
                         }
                         yield {"type": "content", "content": clarification_q}
+                        _cleanup_stream()
                         return
 
                 diagnostics, diag_text = self._format_section_failure_diagnostic(
@@ -5938,6 +5973,7 @@ class BRDLeadAgent:
                     "message": f"Section progression halted for '{cur_sec}': {diagnostics['failure_category']}",
                 }
                 yield {"type": "content", "content": diag_text}
+                _cleanup_stream()
                 return
 
         yield {
@@ -6050,9 +6086,7 @@ class BRDLeadAgent:
                 "execution_summary": summary.to_dict(),
             }
 
-        reset_current_run_id(run_token)
-        reset_current_telemetry_tracker(telemetry_token)
-        close_run_log_file(agent_run_id)
+        _cleanup_stream()
 
 
 def create_brd_lead_agent(
