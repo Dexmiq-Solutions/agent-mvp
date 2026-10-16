@@ -1,20 +1,24 @@
 """Application service for Conversation and Message lifecycle management."""
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from observability.logging import get_logger
 from exceptions.conversation import (
     ConversationNotFoundError,
+    ExecutionLeaseConflictError,
     InvalidConversationDataError,
     InvalidMessageDataError,
     InvalidMessageRoleError,
     MessageNotFoundError,
     ProjectConversationMismatchError,
+    StaleExecutionFencedError,
+    WorkflowMismatchError,
+    WorkflowSwitchBlockedError,
 )
 from models.conversation import ConversationModel
 from models.message import MessageModel
@@ -23,6 +27,24 @@ from services.project_service import ProjectService
 logger = get_logger(__name__)
 
 ALLOWED_MESSAGE_ROLES = ("user", "assistant")
+
+
+def _get_db_clock_expr(session: AsyncSession) -> Any:
+    """Return dialect-aware database real-time clock expression.
+
+    Uses PostgreSQL `clock_timestamp()` which reflects real-time progression during a
+    transaction (unlike `now()` which remains fixed at transaction start time).
+    Falls back to `func.now()` for SQLite.
+    """
+    try:
+        bind = getattr(session, "bind", None)
+        if bind is None and hasattr(session, "get_bind"):
+            bind = session.get_bind()
+        if bind is not None and getattr(bind.dialect, "name", "") == "postgresql":
+            return func.clock_timestamp()
+    except Exception:
+        pass
+    return func.now()
 
 
 class ConversationService:
@@ -46,12 +68,14 @@ class ConversationService:
         self,
         project_id: str,
         title: Optional[str] = None,
+        active_workflow: Optional[str] = "brd",
     ) -> ConversationModel:
         """Create and persist a new conversation within a project boundary.
 
         Args:
             project_id: Owning project identifier.
             title: Optional display title for the conversation.
+            active_workflow: Initial active workflow ('brd' or 'recommendation'). Defaults to 'brd'.
 
         Returns:
             Newly created and flushed ConversationModel.
@@ -71,18 +95,24 @@ class ConversationService:
             else:
                 clean_title = stripped
 
+        cleaned_workflow = (active_workflow or "brd").strip().lower()
+        if cleaned_workflow not in ("brd", "recommendation"):
+            cleaned_workflow = "brd"
+
         conversation = ConversationModel(
             project_id=project_id,
             title=clean_title,
+            active_workflow=cleaned_workflow,
         )
         self._session.add(conversation)
         await self._session.flush()
 
         logger.info(
-            "Created conversation id: %s for project id: %s (title: '%s')",
+            "Created conversation id: %s for project id: %s (title: '%s', workflow: '%s')",
             conversation.id,
             project_id,
             conversation.title,
+            conversation.active_workflow,
         )
         return conversation
 
@@ -191,6 +221,7 @@ class ConversationService:
         project_id: str,
         conversation_id: str,
         title: Optional[str] = None,
+        active_workflow: Optional[str] = None,
     ) -> ConversationModel:
         """Update mutable fields of a conversation under project boundary validation.
 
@@ -198,6 +229,7 @@ class ConversationService:
             project_id: Owning project identifier.
             conversation_id: Conversation identifier.
             title: Optional updated title string.
+            active_workflow: Optional target workflow ('brd' or 'recommendation').
 
         Returns:
             Updated ConversationModel instance.
@@ -205,12 +237,20 @@ class ConversationService:
         Raises:
             ConversationNotFoundError: If conversation not found.
             ProjectConversationMismatchError: If conversation belongs to another project.
-            InvalidConversationDataError: If title is empty or invalid.
+            InvalidConversationDataError: If title or workflow is empty or invalid.
+            WorkflowSwitchBlockedError: If switching workflow while execution is running.
         """
-        conversation = await self.get_conversation(
-            project_id=project_id,
-            conversation_id=conversation_id,
-        )
+        if active_workflow is not None:
+            conversation = await self.switch_workflow(
+                project_id=project_id,
+                conversation_id=conversation_id,
+                target_workflow=active_workflow,
+            )
+        else:
+            conversation = await self.get_conversation(
+                project_id=project_id,
+                conversation_id=conversation_id,
+            )
 
         if title is not None:
             stripped = title.strip()
@@ -222,10 +262,11 @@ class ConversationService:
         await self._session.flush()
 
         logger.info(
-            "Updated conversation id: %s in project id: %s (new title: '%s')",
+            "Updated conversation id: %s in project id: %s (title: '%s', workflow: '%s')",
             conversation_id,
             project_id,
             conversation.title,
+            conversation.active_workflow,
         )
         return conversation
 
@@ -472,3 +513,358 @@ class ConversationService:
         recent = list(result.scalars().all())
         recent.reverse()
         return recent
+
+    async def switch_workflow(
+        self,
+        project_id: str,
+        conversation_id: str,
+        target_workflow: str,
+    ) -> ConversationModel:
+        """Switch the active workflow for a conversation under pessimistic row lock.
+
+        Args:
+            project_id: Owning project tenant identifier.
+            conversation_id: Target conversation identifier.
+            target_workflow: Desired active workflow ('brd' or 'recommendation').
+
+        Returns:
+            Updated ConversationModel instance.
+
+        Raises:
+            ConversationNotFoundError: If conversation does not exist.
+            ProjectConversationMismatchError: If conversation belongs to another project.
+            InvalidConversationDataError: If target_workflow is invalid.
+            WorkflowSwitchBlockedError: If an execution run is currently in progress.
+        """
+        cleaned_workflow = (target_workflow or "").strip().lower()
+        if cleaned_workflow not in ("brd", "recommendation"):
+            raise InvalidConversationDataError(
+                f"Invalid workflow '{target_workflow}'. Allowed workflows are 'brd' and 'recommendation'."
+            )
+
+        stmt = (
+            select(ConversationModel)
+            .where(
+                ConversationModel.id == conversation_id,
+                ConversationModel.project_id == project_id,
+            )
+            .with_for_update()
+        )
+        res = await self._session.execute(stmt)
+        conversation = res.scalar_one_or_none()
+        if conversation is None:
+            existing = await self._session.get(ConversationModel, conversation_id)
+            if existing is not None:
+                raise ProjectConversationMismatchError(
+                    conversation_id=conversation_id,
+                    expected_project_id=project_id,
+                    actual_project_id=existing.project_id,
+                )
+            raise ConversationNotFoundError(
+                conversation_id=conversation_id,
+                project_id=project_id,
+            )
+
+        now_utc = datetime.now(timezone.utc)
+        expires_at = conversation.lease_expires_at
+        if expires_at is not None and expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        if (
+            conversation.execution_status == "running"
+            and expires_at is not None
+            and expires_at > now_utc
+        ):
+            raise WorkflowSwitchBlockedError(
+                conversation_id=conversation_id,
+                active_run_id=conversation.active_run_id,
+            )
+
+        conversation.active_workflow = cleaned_workflow
+        conversation.execution_status = "idle"
+        conversation.active_run_id = None
+        conversation.lease_expires_at = None
+        conversation.updated_at = now_utc
+        await self._session.flush()
+
+        logger.info(
+            "Switched active workflow for conversation '%s' (project '%s') to '%s'",
+            conversation_id,
+            project_id,
+            cleaned_workflow,
+        )
+        return conversation
+
+    async def acquire_execution_lease(
+        self,
+        project_id: str,
+        conversation_id: str,
+        run_id: str,
+        expected_workflow: str,
+        ttl_seconds: int = 45,
+    ) -> ConversationModel:
+        """Atomically validate active workflow and acquire run-ownership execution lease under row lock.
+
+        Args:
+            project_id: Owning project identifier.
+            conversation_id: Target conversation identifier.
+            run_id: Unique execution run identifier.
+            expected_workflow: Expected active workflow ('brd' or 'recommendation').
+            ttl_seconds: Lease duration in seconds. Defaults to 45s.
+
+        Returns:
+            Locked and updated ConversationModel instance with held lease.
+
+        Raises:
+            ConversationNotFoundError: If conversation does not exist.
+            ProjectConversationMismatchError: If conversation belongs to another project.
+            WorkflowMismatchError: If conversation active_workflow does not match expected_workflow.
+            ExecutionLeaseConflictError: If another run currently holds a valid execution lease.
+        """
+        stmt = (
+            select(ConversationModel)
+            .where(
+                ConversationModel.id == conversation_id,
+                ConversationModel.project_id == project_id,
+            )
+            .with_for_update()
+        )
+        res = await self._session.execute(stmt)
+        conversation = res.scalar_one_or_none()
+        if conversation is None:
+            existing = await self._session.get(ConversationModel, conversation_id)
+            if existing is not None:
+                raise ProjectConversationMismatchError(
+                    conversation_id=conversation_id,
+                    expected_project_id=project_id,
+                    actual_project_id=existing.project_id,
+                )
+            raise ConversationNotFoundError(
+                conversation_id=conversation_id,
+                project_id=project_id,
+            )
+
+        # 1. Enforce workflow alignment
+        if conversation.active_workflow != expected_workflow:
+            raise WorkflowMismatchError(
+                conversation_id=conversation_id,
+                expected_workflow=expected_workflow,
+                actual_workflow=conversation.active_workflow,
+            )
+
+        # 2. Check lease availability (active non-expired lease by another run)
+        now_utc = datetime.now(timezone.utc)
+        expires_at = conversation.lease_expires_at
+        if expires_at is not None and expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        if (
+            conversation.execution_status == "running"
+            and expires_at is not None
+            and expires_at > now_utc
+            and conversation.active_run_id != run_id
+        ):
+            raise ExecutionLeaseConflictError(
+                conversation_id=conversation_id,
+                active_run_id=conversation.active_run_id,
+            )
+
+        # 3. Grant/renew lease to this run
+        conversation.execution_status = "running"
+        conversation.active_run_id = run_id
+        conversation.lease_expires_at = now_utc + timedelta(seconds=ttl_seconds)
+        conversation.updated_at = now_utc
+        await self._session.flush()
+
+        logger.info(
+            "Acquired execution lease for run '%s' on conversation '%s' (workflow: '%s', expires in %ds)",
+            run_id,
+            conversation_id,
+            expected_workflow,
+            ttl_seconds,
+        )
+        return conversation
+
+    async def heartbeat_execution_lease(
+        self,
+        conversation_id: str,
+        run_id: str,
+        ttl_seconds: int = 45,
+    ) -> bool:
+        """Extend lease expiry for an active run. Fails closed and cannot revive an expired lease.
+
+        Uses real-time DB clock check to ensure heartbeats cannot revive a lease that already
+        expired or was overtaken by another run.
+
+        Args:
+            conversation_id: Target conversation identifier.
+            run_id: Run identifier expected to own the lease.
+            ttl_seconds: Extension duration from current time.
+
+        Returns:
+            True if lease was renewed, False if expired or ownership lost.
+        """
+        clock_expr = _get_db_clock_expr(self._session)
+        now_utc = datetime.now(timezone.utc)
+        new_expiry = now_utc + timedelta(seconds=ttl_seconds)
+
+        stmt = (
+            update(ConversationModel)
+            .where(
+                ConversationModel.id == conversation_id,
+                ConversationModel.active_run_id == run_id,
+                ConversationModel.execution_status == "running",
+                ConversationModel.lease_expires_at >= clock_expr,
+            )
+            .values(
+                lease_expires_at=new_expiry,
+                updated_at=now_utc,
+            )
+        )
+        res = await self._session.execute(stmt)
+        await self._session.commit()
+        renewed = bool(res.rowcount and res.rowcount > 0)
+        if renewed:
+            logger.debug(
+                "Heartbeat renewed execution lease for run '%s' on conversation '%s' (+%ds)",
+                run_id,
+                conversation_id,
+                ttl_seconds,
+            )
+        else:
+            logger.warning(
+                "Heartbeat failed for run '%s' on conversation '%s': lease expired or superseded",
+                run_id,
+                conversation_id,
+            )
+        return renewed
+
+    async def verify_and_renew_lease(
+        self,
+        conversation_id: str,
+        expected_run_id: str,
+        ttl_seconds: int = 45,
+    ) -> ConversationModel:
+        """Verify run ownership and renew lease under row lock before executing consequential writes.
+
+        Args:
+            conversation_id: Target conversation identifier.
+            expected_run_id: Run identifier expected to hold the lease.
+            ttl_seconds: Lease duration to renew.
+
+        Returns:
+            Locked ConversationModel instance with renewed lease.
+
+        Raises:
+            StaleExecutionFencedError: If lease expired or owned by another run.
+        """
+        clock_expr = _get_db_clock_expr(self._session)
+        stmt = (
+            select(ConversationModel)
+            .where(
+                ConversationModel.id == conversation_id,
+                ConversationModel.active_run_id == expected_run_id,
+                ConversationModel.execution_status == "running",
+                ConversationModel.lease_expires_at >= clock_expr,
+            )
+            .with_for_update()
+        )
+        res = await self._session.execute(stmt)
+        conversation = res.scalar_one_or_none()
+        if conversation is None:
+            raise StaleExecutionFencedError(
+                run_id=expected_run_id,
+                conversation_id=conversation_id,
+                message=(
+                    f"Lease verification failed: Run '{expected_run_id}' has expired or lost ownership "
+                    f"of conversation '{conversation_id}'."
+                ),
+            )
+
+        now_utc = datetime.now(timezone.utc)
+        conversation.lease_expires_at = now_utc + timedelta(seconds=ttl_seconds)
+        conversation.updated_at = now_utc
+        await self._session.flush()
+        return conversation
+
+    async def pre_commit_fencing_assertion(
+        self,
+        conversation_id: str,
+        expected_run_id: str,
+    ) -> None:
+        """Final pre-commit boundary assertion ensuring lease has not expired during persistence.
+
+        Mandatory Technical Correction:
+        Uses actual database time (e.g. PostgreSQL `clock_timestamp()` rather than `now()`),
+        because `now()` reflects the transaction start time and cannot detect expiry during
+        long-running persistence transactions.
+
+        Args:
+            conversation_id: Target conversation identifier.
+            expected_run_id: Run identifier expected to hold valid lease.
+
+        Raises:
+            StaleExecutionFencedError: If lease expired or active_run_id changed.
+        """
+        clock_expr = _get_db_clock_expr(self._session)
+        stmt = (
+            select(ConversationModel.id)
+            .where(
+                ConversationModel.id == conversation_id,
+                ConversationModel.active_run_id == expected_run_id,
+                ConversationModel.execution_status == "running",
+                ConversationModel.lease_expires_at >= clock_expr,
+            )
+        )
+        res = await self._session.execute(stmt)
+        if res.scalar_one_or_none() is None:
+            raise StaleExecutionFencedError(
+                run_id=expected_run_id,
+                conversation_id=conversation_id,
+                message=(
+                    f"Pre-commit fencing assertion failed: Run '{expected_run_id}' expired or lost ownership "
+                    f"before commit on conversation '{conversation_id}'."
+                ),
+            )
+
+    async def release_execution_lease(
+        self,
+        conversation_id: str,
+        run_id: str,
+    ) -> bool:
+        """Safely release execution lease via Compare-And-Swap (CAS) only if run_id matches.
+
+        Args:
+            conversation_id: Target conversation identifier.
+            run_id: Run identifier releasing the lease.
+
+        Returns:
+            True if released by this run, False if already released or superseded.
+        """
+        stmt = (
+            update(ConversationModel)
+            .where(
+                ConversationModel.id == conversation_id,
+                ConversationModel.active_run_id == run_id,
+            )
+            .values(
+                execution_status="idle",
+                active_run_id=None,
+                lease_expires_at=None,
+                updated_at=datetime.now(timezone.utc),
+            )
+        )
+        res = await self._session.execute(stmt)
+        await self._session.commit()
+        released = bool(res.rowcount and res.rowcount > 0)
+        if released:
+            logger.info(
+                "Released execution lease for run '%s' on conversation '%s'",
+                run_id,
+                conversation_id,
+            )
+        else:
+            logger.debug(
+                "Lease for run '%s' on conversation '%s' already released or superseded",
+                run_id,
+                conversation_id,
+            )
+        return released

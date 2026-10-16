@@ -110,7 +110,16 @@ async def test_env():
             finally:
                 await session.close()
 
+    from api.dependencies import get_current_user
+    from models.user import UserModel
+
+    test_user = UserModel(id="test-lifecycle-user", email="lifecycle@example.com", hashed_password="dummy_hash")
+    async with session_factory() as session:
+        session.add(test_user)
+        await session.commit()
+
     app.dependency_overrides[get_db_session] = tracking_get_db_session
+    app.dependency_overrides[get_current_user] = lambda: test_user
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:

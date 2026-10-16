@@ -107,3 +107,77 @@ class InvalidMessageRoleError(ConversationError):
         )
         self.role = role
         self.allowed_roles = tuple(allowed_roles)
+
+
+class ExecutionLeaseConflictError(ConversationError):
+    """Raised when an agent execution cannot acquire the conversation lease because another run is active."""
+
+    def __init__(
+        self,
+        conversation_id: str,
+        active_run_id: Optional[str] = None,
+        message: Optional[str] = None,
+    ) -> None:
+        msg = (
+            message
+            or f"Conversation '{conversation_id}' currently has an active execution lease held by run '{active_run_id}'."
+        )
+        super().__init__(msg)
+        self.conversation_id = conversation_id
+        self.active_run_id = active_run_id
+
+
+class StaleExecutionFencedError(ConversationError):
+    """Raised when a stale, expired, or superseded execution run attempts to persist state or renew its lease."""
+
+    def __init__(
+        self,
+        run_id: str,
+        conversation_id: Optional[str] = None,
+        message: Optional[str] = None,
+    ) -> None:
+        msg = (
+            message
+            or f"Execution run '{run_id}' is stale, expired, or has lost its lease on conversation '{conversation_id}'."
+        )
+        super().__init__(msg)
+        self.run_id = run_id
+        self.conversation_id = conversation_id
+
+
+class WorkflowMismatchError(ConversationError):
+    """Raised when an operation targets a workflow incompatible with the conversation's active workflow."""
+
+    def __init__(
+        self,
+        conversation_id: str,
+        expected_workflow: str,
+        actual_workflow: str,
+        message: Optional[str] = None,
+    ) -> None:
+        msg = (
+            message
+            or f"Workflow mismatch for conversation '{conversation_id}': active workflow is '{actual_workflow}', but received request for '{expected_workflow}'."
+        )
+        super().__init__(msg)
+        self.conversation_id = conversation_id
+        self.expected_workflow = expected_workflow
+        self.actual_workflow = actual_workflow
+
+
+class WorkflowSwitchBlockedError(ConversationError):
+    """Raised when attempting to switch the active workflow while a run is currently executing."""
+
+    def __init__(
+        self,
+        conversation_id: str,
+        active_run_id: Optional[str] = None,
+        message: Optional[str] = None,
+    ) -> None:
+        msg = (
+            message
+            or f"Cannot switch workflow for conversation '{conversation_id}': active execution '{active_run_id}' is in progress."
+        )
+        super().__init__(msg)
+        self.conversation_id = conversation_id
+        self.active_run_id = active_run_id

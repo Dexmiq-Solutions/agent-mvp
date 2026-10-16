@@ -84,11 +84,16 @@ export interface Message {
   created_at: string;                   // ISO-8601
 }
 
+export type ActiveWorkflow = 'brd' | 'recommendation';
+export type ExecutionStatus = 'idle' | 'running';
+
 /** A conversation thread scoped to a project. */
 export interface Conversation {
   id: string;                           // UUID
   project_id: string;                   // UUID
   title: string;
+  active_workflow?: ActiveWorkflow;
+  execution_status?: ExecutionStatus;
   created_at: string;                   // ISO-8601
   updated_at: string;                   // ISO-8601
   messages_count: number;
@@ -171,11 +176,32 @@ export function getMessageWorkflowStatus(message?: Message): string {
 /** Payload for creating a new conversation. */
 export interface CreateConversationPayload {
   title?: string;
+  active_workflow?: ActiveWorkflow;
 }
 
-/** Payload for updating a conversation (e.g. rename). */
+/** Payload for updating a conversation (e.g. rename or workflow switch). */
 export interface UpdateConversationPayload {
-  title: string;
+  title?: string;
+  active_workflow?: ActiveWorkflow;
+}
+
+export interface RecommendationRouteDecision {
+  profile: string;
+  high_stakes: boolean;
+  high_stakes_reasons: string[];
+  missing_facts: string[];
+  confidence: string;
+  short_reason: string;
+}
+
+export interface RecommendationResponse {
+  status: 'ready_for_phase_2' | 'needs_user';
+  response_markdown: string;
+  route_decision: RecommendationRouteDecision;
+  user_message_id: string;
+  assistant_message_id: string;
+  conversation_id: string;
+  clarification_prompt?: string | null;
 }
 
 /** Payload for sending a message in a conversation. */

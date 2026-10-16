@@ -128,14 +128,14 @@ async def test_list_conversations_project_isolation():
 
         list_a = await conv_service.list_conversations(project_id=proj_a.id)
         assert len(list_a) == 2
-        a_ids = {c.id for c in list_a}
+        a_ids = {c.id for c, _ in list_a}
         assert c_a1.id in a_ids
         assert c_a2.id in a_ids
         assert c_b1.id not in a_ids
 
         list_b = await conv_service.list_conversations(project_id=proj_b.id)
         assert len(list_b) == 1
-        assert list_b[0].id == c_b1.id
+        assert list_b[0][0].id == c_b1.id
 
 
 @pytest.mark.anyio

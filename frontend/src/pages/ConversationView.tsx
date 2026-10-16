@@ -22,12 +22,27 @@ import {
   Edit2,
   Bot,
   Copy,
+  FileText,
+  Sparkles,
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { Components } from 'react-markdown';
-import { getConversation, streamMessage, updateConversation, deleteConversation } from '../services/chatService';
-import type { Conversation, ChatStatus, UIMessage, AgentActivityItem, WorkflowProgressEvent } from '../types';
+import {
+  getConversation,
+  streamMessage,
+  sendRecommendationMessage,
+  updateConversation,
+  deleteConversation,
+} from '../services/chatService';
+import type {
+  Conversation,
+  ChatStatus,
+  UIMessage,
+  AgentActivityItem,
+  WorkflowProgressEvent,
+  ActiveWorkflow,
+} from '../types';
 import { TelemetryView } from '../components/chat/TelemetryView';
 import { AgentActivityView } from '../components/chat/AgentActivityView';
 
@@ -327,13 +342,21 @@ function MessageTurn({
   const isUser = msg.role === 'user';
 
   if (isUser) {
+    const isRecommendation = msg.metadata?.workflow === 'recommendation';
     return (
       <div className="flex w-full justify-end slide-up">
         <div style={{ maxWidth: 'min(85%, 720px)', marginLeft: '3rem' }}>
+          {isRecommendation && (
+            <div className="flex justify-end mb-1">
+              <span className="text-[10.5px] text-emerald-400/80 font-mono tracking-wide">
+                Recommendation Request
+              </span>
+            </div>
+          )}
           <div
             style={{
               background: '#1c1c1e',
-              border: '1px solid #2c2c2e',
+              border: isRecommendation ? '1px solid rgba(16,185,129,0.3)' : '1px solid #2c2c2e',
               borderRadius: '18px',
               borderTopRightRadius: '4px',
               padding: '10px 16px',
@@ -434,28 +457,56 @@ function MessageTurn({
   }
 
   // Normal assistant turn
+  const isRecommendation = msg.metadata?.workflow === 'recommendation';
+  const isStreamingThis = isStreamingThisMessage;
+
   return (
     <div className="flex w-full justify-start slide-up">
       <div
         className="w-8 h-8 rounded-lg flex items-center justify-center mr-3 mt-0.5 flex-shrink-0"
-        style={{ background: 'rgba(99,102,241,0.1)', border: '1px solid rgba(99,102,241,0.2)' }}
+        style={{
+          background: isRecommendation ? 'rgba(16,185,129,0.1)' : 'rgba(99,102,241,0.1)',
+          border: isRecommendation ? '1px solid rgba(16,185,129,0.25)' : '1px solid rgba(99,102,241,0.2)',
+        }}
       >
-        <Bot size={15} style={{ color: '#818cf8' }} />
+        {isRecommendation ? (
+          <Sparkles size={15} style={{ color: '#34d399' }} />
+        ) : (
+          <Bot size={15} style={{ color: '#818cf8' }} />
+        )}
       </div>
       <div style={{ maxWidth: 'min(85%, 780px)', width: '100%', marginRight: '0.5rem', minWidth: 0 }}>
+        {/* Agent Turn Header Badge */}
+        <div className="flex items-center gap-2 mb-2">
+          {isRecommendation ? (
+            <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] font-medium bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+              <Sparkles size={11} /> Recommendation Agent
+            </span>
+          ) : (
+            <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] font-medium bg-indigo-500/10 text-indigo-400 border border-indigo-500/20">
+              <FileText size={11} /> BRD Agent
+            </span>
+          )}
+          {Boolean(isRecommendation && msg.metadata?.route_decision) && (
+            <span className="text-[11px] text-zinc-400 font-mono">
+              Profile: {String((msg.metadata?.route_decision as any)?.profile || '')}
+            </span>
+          )}
+        </div>
+
         {/* Agent Activity View: Live while running, Collapsed summary when completed */}
-        {(isStreamingThisMessage || activityItems.length > 0) && (
+        {(isStreamingThis || activityItems.length > 0) && (
           <div className="mb-3.5">
             <AgentActivityView
-              isLive={isStreamingThisMessage}
-              currentProgress={isStreamingThisMessage ? activeProgress : null}
+              isLive={isStreamingThis}
+              currentProgress={isStreamingThis ? activeProgress : null}
               activityLog={activityItems}
-              defaultExpanded={isStreamingThisMessage}
+              defaultExpanded={isStreamingThis}
             />
           </div>
         )}
 
-        {/* BRD Markdown Response Content */}
+        {/* Markdown Response Content */}
         {msg.content ? (
           <div
             className="chat-prose overflow-x-auto max-w-full"
@@ -465,15 +516,19 @@ function MessageTurn({
               {msg.content}
             </ReactMarkdown>
           </div>
-        ) : isStreamingThisMessage ? (
+        ) : isStreamingThis ? (
           <div className="flex items-center gap-2 text-zinc-400 text-xs italic py-1">
-            <span className="w-1.5 h-1.5 rounded-full bg-indigo-400 animate-ping" />
-            <span>Executing BRD workflow...</span>
+            <span
+              className={`w-1.5 h-1.5 rounded-full animate-ping ${
+                isRecommendation ? 'bg-emerald-400' : 'bg-indigo-400'
+              }`}
+            />
+            <span>{isRecommendation ? 'Executing Recommendation workflow...' : 'Executing BRD workflow...'}</span>
           </div>
         ) : null}
 
         {/* Telemetry — only for non-error, non-optimistic assistant messages */}
-        {!msg._optimistic && !isStreamingThisMessage && msg.metadata && Object.keys(msg.metadata).length > 0 && (
+        {!msg._optimistic && !isStreamingThis && msg.metadata && Object.keys(msg.metadata).length > 0 && (
           <TelemetryView metadata={msg.metadata} />
         )}
       </div>
@@ -539,6 +594,31 @@ export const ConversationView: React.FC = () => {
   const [savingTitle, setSavingTitle] = useState(false);
   const [pendingDelete, setPendingDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
+
+  // ── Workflow switching state
+  const [switchingWorkflow, setSwitchingWorkflow] = useState(false);
+  const [workflowError, setWorkflowError] = useState<string | null>(null);
+
+  const handleSwitchWorkflow = async (targetWorkflow: ActiveWorkflow) => {
+    if (!projectId || !conversationId || !conversation) return;
+    if ((conversation.active_workflow || 'brd') === targetWorkflow) return;
+    if (generationActive) {
+      setWorkflowError('Cannot switch workflow while an execution is in progress.');
+      return;
+    }
+    try {
+      setSwitchingWorkflow(true);
+      setWorkflowError(null);
+      const updated = await updateConversation(projectId, conversationId, { active_workflow: targetWorkflow });
+      setConversation(updated);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setWorkflowError(msg);
+      setTimeout(() => setWorkflowError(null), 6000);
+    } finally {
+      setSwitchingWorkflow(false);
+    }
+  };
 
   // ── Scroll refs
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -670,6 +750,80 @@ export const ConversationView: React.FC = () => {
     // Store in case we need to retry
     retryTextRef.current = trimmed;
 
+    const activeWf = conversation?.active_workflow || 'brd';
+
+    if (activeWf === 'recommendation') {
+      try {
+        const resp = await sendRecommendationMessage(
+          projectId,
+          conversationId,
+          { content: trimmed }
+        );
+
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === assistantId
+              ? {
+                  id: resp.assistant_message_id,
+                  conversation_id: conversationId,
+                  role: 'assistant',
+                  content: resp.response_markdown,
+                  created_at: new Date().toISOString(),
+                  metadata: {
+                    workflow: 'recommendation',
+                    status: resp.status,
+                    route_decision: resp.route_decision,
+                    clarification_prompt: resp.clarification_prompt,
+                  },
+                  _optimistic: false,
+                }
+              : m.id === tempId
+              ? {
+                  ...m,
+                  id: resp.user_message_id,
+                  metadata: { workflow: 'recommendation' },
+                  _optimistic: false,
+                }
+              : m
+          )
+        );
+        setChatStatus('idle');
+        setActiveAssistantId(null);
+        retryTextRef.current = null;
+        abortControllerRef.current = null;
+      } catch (err: unknown) {
+        if (controller.signal.aborted) {
+          return;
+        }
+
+        const errText = classifyError(err);
+        if (errText === '404_NOT_FOUND') {
+          setLoadState('not_found');
+          return;
+        }
+
+        const errorMsg: UIMessage = {
+          id: `err-${crypto.randomUUID()}`,
+          conversation_id: conversationId,
+          role: 'assistant',
+          content: trimmed,
+          created_at: new Date().toISOString(),
+          metadata: { workflow: 'recommendation', error: true },
+          _error: true,
+          _errorText: errText,
+        };
+
+        setMessages((prev) => [
+          ...prev.filter((m) => m.id !== assistantId),
+          errorMsg,
+        ]);
+        setChatStatus('error');
+        setActiveAssistantId(null);
+        abortControllerRef.current = null;
+      }
+      return;
+    }
+
     try {
       await streamMessage(
         projectId,
@@ -790,7 +944,7 @@ export const ConversationView: React.FC = () => {
       setActiveAssistantId(null);
       abortControllerRef.current = null;
     }
-  }, [projectId, conversationId, generationActive]);
+  }, [projectId, conversationId, generationActive, conversation?.active_workflow]);
 
   // ── Retry: re-run generation without adding a new user bubble
 
@@ -830,6 +984,73 @@ export const ConversationView: React.FC = () => {
     setActiveActivityLog([]);
     activeLogRef.current = [];
     retryTextRef.current = originalText;
+
+    const activeWf = conversation?.active_workflow || 'brd';
+
+    if (activeWf === 'recommendation') {
+      try {
+        const resp = await sendRecommendationMessage(
+          projectId,
+          conversationId,
+          { content: originalText }
+        );
+
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === assistantId
+              ? {
+                  id: resp.assistant_message_id,
+                  conversation_id: conversationId,
+                  role: 'assistant',
+                  content: resp.response_markdown,
+                  created_at: new Date().toISOString(),
+                  metadata: {
+                    workflow: 'recommendation',
+                    status: resp.status,
+                    route_decision: resp.route_decision,
+                    clarification_prompt: resp.clarification_prompt,
+                  },
+                  _optimistic: false,
+                }
+              : m
+          )
+        );
+        setChatStatus('idle');
+        setActiveAssistantId(null);
+        retryTextRef.current = null;
+        abortControllerRef.current = null;
+      } catch (err: unknown) {
+        if (controller.signal.aborted) {
+          return;
+        }
+
+        const errText = classifyError(err);
+        if (errText === '404_NOT_FOUND') {
+          setLoadState('not_found');
+          return;
+        }
+
+        const errorMsg: UIMessage = {
+          id: `err-${crypto.randomUUID()}`,
+          conversation_id: conversationId,
+          role: 'assistant',
+          content: originalText,
+          created_at: new Date().toISOString(),
+          metadata: { workflow: 'recommendation', error: true },
+          _error: true,
+          _errorText: errText,
+        };
+
+        setMessages((prev) => [
+          ...prev.filter((m) => m.id !== assistantId),
+          errorMsg,
+        ]);
+        setChatStatus('error');
+        setActiveAssistantId(null);
+        abortControllerRef.current = null;
+      }
+      return;
+    }
 
     try {
       await streamMessage(
@@ -944,7 +1165,7 @@ export const ConversationView: React.FC = () => {
       setActiveAssistantId(null);
       abortControllerRef.current = null;
     }
-  }, [projectId, conversationId, generationActive]);
+  }, [projectId, conversationId, generationActive, conversation?.active_workflow]);
 
   // ── Keyboard handler
 
@@ -1002,7 +1223,9 @@ export const ConversationView: React.FC = () => {
 
   const composerPlaceholder = generationActive
     ? 'Waiting for AI to respond…'
-    : 'Message AI assistant…';
+    : (conversation?.active_workflow === 'recommendation'
+        ? 'Ask Recommendation Agent for advice or next steps…'
+        : 'Message BRD Agent…');
 
   // ── Render guards
 
@@ -1076,6 +1299,38 @@ export const ConversationView: React.FC = () => {
           </div>
         )}
 
+        {/* Workflow Switcher Tabs */}
+        <div className="flex items-center bg-[#141414] border border-[#262626] rounded-lg p-0.5 mx-2">
+          <button
+            type="button"
+            disabled={generationActive || switchingWorkflow}
+            onClick={() => handleSwitchWorkflow('brd')}
+            className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[12px] font-medium transition-all ${
+              (conversation.active_workflow || 'brd') === 'brd'
+                ? 'bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 shadow-sm'
+                : 'text-[#8E8E93] hover:text-white hover:bg-white/5 border border-transparent'
+            } ${generationActive ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
+            title={generationActive ? 'Workflow switching disabled during active execution' : 'Switch to BRD Workflow'}
+          >
+            <FileText size={12} />
+            <span>BRD Agent</span>
+          </button>
+          <button
+            type="button"
+            disabled={generationActive || switchingWorkflow}
+            onClick={() => handleSwitchWorkflow('recommendation')}
+            className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[12px] font-medium transition-all ${
+              conversation.active_workflow === 'recommendation'
+                ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 shadow-sm'
+                : 'text-[#8E8E93] hover:text-white hover:bg-white/5 border border-transparent'
+            } ${generationActive ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
+            title={generationActive ? 'Workflow switching disabled during active execution' : 'Switch to Recommendation Workflow'}
+          >
+            <Sparkles size={12} />
+            <span>Recommendation</span>
+          </button>
+        </div>
+
         <button
           onClick={() => setPendingDelete(true)}
           className="w-7 h-7 flex items-center justify-center rounded-md text-[#8E8E93] hover:text-red-400 hover:bg-red-500/10 hover:border-red-500/20 border border-transparent transition-all ml-auto"
@@ -1084,6 +1339,19 @@ export const ConversationView: React.FC = () => {
           <Trash2 size={14} strokeWidth={2} />
         </button>
       </header>
+
+      {/* Workflow Error Banner */}
+      {workflowError && (
+        <div className="bg-red-500/15 border-b border-red-500/30 px-5 py-2 text-xs text-red-300 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <AlertCircle size={14} />
+            <span>{workflowError}</span>
+          </div>
+          <button onClick={() => setWorkflowError(null)} className="text-red-400 hover:text-white">
+            <X size={13} />
+          </button>
+        </div>
+      )}
 
       {/* ─ Messages Area ───────────────────────────────────────────────────── */}
       <div

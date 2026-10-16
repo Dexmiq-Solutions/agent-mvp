@@ -1,5 +1,6 @@
 import asyncio
 from collections.abc import AsyncIterator
+import hashlib
 import json
 import time
 from typing import Any, Optional, Union
@@ -59,11 +60,14 @@ async def create_conversation(
     conversation = await service.create_conversation(
         project_id=project_id,
         title=payload.title,
+        active_workflow=payload.active_workflow,
     )
     return ConversationResponse(
         id=conversation.id,
         project_id=conversation.project_id,
         title=conversation.title,
+        active_workflow=conversation.active_workflow,
+        execution_status=conversation.execution_status,
         created_at=conversation.created_at,
         updated_at=conversation.updated_at,
         messages_count=0,
@@ -93,6 +97,8 @@ async def list_conversations(
             id=c.id,
             project_id=c.project_id,
             title=c.title,
+            active_workflow=c.active_workflow,
+            execution_status=c.execution_status,
             created_at=c.created_at,
             updated_at=c.updated_at,
             messages_count=msg_count,
@@ -125,6 +131,8 @@ async def get_conversation(
         id=conversation.id,
         project_id=conversation.project_id,
         title=conversation.title,
+        active_workflow=conversation.active_workflow,
+        execution_status=conversation.execution_status,
         created_at=conversation.created_at,
         updated_at=conversation.updated_at,
         messages_count=len(messages),
@@ -136,7 +144,7 @@ async def get_conversation(
     "/{conversation_id}",
     status_code=status.HTTP_200_OK,
     response_model=ConversationResponse,
-    summary="Update conversation title",
+    summary="Update conversation title or switch active workflow",
 )
 async def update_conversation(
     project_id: str,
@@ -149,12 +157,15 @@ async def update_conversation(
         project_id=project_id,
         conversation_id=conversation_id,
         title=payload.title,
+        active_workflow=payload.active_workflow,
     )
     count = await service.get_messages_count(project_id, conversation_id)
     return ConversationResponse(
         id=conversation.id,
         project_id=conversation.project_id,
         title=conversation.title,
+        active_workflow=conversation.active_workflow,
+        execution_status=conversation.execution_status,
         created_at=conversation.created_at,
         updated_at=conversation.updated_at,
         messages_count=count,
@@ -184,6 +195,7 @@ async def _persist_assistant_turn(
     conversation_id: str,
     content: str,
     metadata: dict[str, Any],
+    run_id: str,
     original_session: Optional[Any] = None,
     final_state: Optional[BRDAgentState] = None,
 ) -> MessageModel:
@@ -192,7 +204,8 @@ async def _persist_assistant_turn(
     Decouples final assistant message and workflow state persistence from any long-lived
     request session that was active during the multi-minute agent execution. A newly acquired
     session checks out a fresh connection from the pool, atomically committing both the
-    canonical BRD working draft and the assistant message turn in a single transaction.
+    canonical BRD working draft and the assistant message turn in a single transaction under
+    run-ownership verification and pre-commit real-time clock fencing.
     """
     bind_engine = getattr(original_session, "bind", None)
     session_maker = (
@@ -201,6 +214,14 @@ async def _persist_assistant_turn(
         else get_async_session_maker()
     )
     async with session_maker() as persist_session:
+        persist_service = ConversationService(session=persist_session)
+        # 1. Row-lock verification and lease renewal before any consequential writes
+        await persist_service.verify_and_renew_lease(
+            conversation_id=conversation_id,
+            expected_run_id=run_id,
+            ttl_seconds=45,
+        )
+
         draft = None
         if final_state is not None:
             brd_service = BRDService(session=persist_session)
@@ -208,6 +229,9 @@ async def _persist_assistant_turn(
                 project_id=project_id,
                 state=final_state,
             )
+
+        metadata["workflow"] = "brd"
+        metadata["agent_run_id"] = run_id
 
         # Ensure message metadata does NOT act as a second source of truth for BRD document content
         if "workflow_state" in metadata and isinstance(metadata["workflow_state"], dict):
@@ -224,7 +248,6 @@ async def _persist_assistant_turn(
                 metadata["version_number"] = draft.version_number
                 metadata["version_label"] = draft.version_label
 
-        persist_service = ConversationService(session=persist_session)
         assistant_message = await persist_service.create_message(
             project_id=project_id,
             conversation_id=conversation_id,
@@ -232,6 +255,13 @@ async def _persist_assistant_turn(
             role="assistant",
             metadata=metadata,
         )
+
+        # 2. Final pre-commit fencing assertion using actual database real-time clock
+        await persist_service.pre_commit_fencing_assertion(
+            conversation_id=conversation_id,
+            expected_run_id=run_id,
+        )
+
         await persist_session.commit()
         return assistant_message
 
@@ -289,13 +319,28 @@ async def create_message(
         )
         return MessageResponse.from_model(message)
 
+    agent_run_id = str(uuid.uuid4())
+
+    # Atomically validate workflow alignment and acquire run-ownership execution lease
+    await service.acquire_execution_lease(
+        project_id=project_id,
+        conversation_id=conversation_id,
+        run_id=agent_run_id,
+        expected_workflow="brd",
+        ttl_seconds=45,
+    )
+
     # Persist the user message first using existing message infrastructure
     user_message = await service.create_message(
         project_id=project_id,
         conversation_id=conversation_id,
         content=payload.content,
         role="user",
-        metadata=payload.metadata,
+        metadata={
+            **(payload.metadata or {}),
+            "workflow": "brd",
+            "agent_run_id": agent_run_id,
+        },
     )
 
     # 3. Retrieve prior conversation message history and ensure canonical BRD initialization
@@ -312,8 +357,43 @@ async def create_message(
     # is held by the request session during long-running agent execution.
     await service._session.commit()
 
+    # Setup background heartbeat for the active execution run
+    stop_heartbeat = asyncio.Event()
+
+    async def _heartbeat_worker() -> None:
+        bind_engine = getattr(service._session, "bind", None)
+        session_maker = (
+            get_async_session_maker(engine=bind_engine)
+            if bind_engine is not None
+            else get_async_session_maker()
+        )
+        while not stop_heartbeat.is_set():
+            try:
+                await asyncio.wait_for(stop_heartbeat.wait(), timeout=15.0)
+                break
+            except asyncio.TimeoutError:
+                pass
+            try:
+                async with session_maker() as hb_session:
+                    hb_service = ConversationService(session=hb_session)
+                    renewed = await hb_service.heartbeat_execution_lease(
+                        conversation_id=conversation_id,
+                        run_id=agent_run_id,
+                        ttl_seconds=45,
+                    )
+                    if not renewed:
+                        logger.warning(
+                            "Heartbeat rejected: Lease expired or superseded for BRD run '%s' on conversation '%s'",
+                            agent_run_id,
+                            conversation_id,
+                        )
+                        break
+            except Exception as exc:
+                logger.warning("Heartbeat exception for BRD run '%s': %s", agent_run_id, exc)
+
+    heartbeat_task = asyncio.create_task(_heartbeat_worker())
+
     # 5. Create agent execution context preserving application-controlled project_id, conversation_id, and project context
-    agent_run_id = str(uuid.uuid4())
     context_metadata: dict[str, Any] = {
         "user_message_id": user_message.id,
         "conversation_id": conversation_id,
@@ -343,23 +423,32 @@ async def create_message(
         if m.role == "user":
             prior_messages.append(HumanMessage(content=m.content))
         elif m.role == "assistant":
-            prior_messages.append(AIMessage(content=m.content))
-            if m.meta and "workflow_state" in m.meta:
-                try:
-                    initial_workflow_state = BRDAgentState.from_dict(m.meta["workflow_state"])
-                except Exception as exc:
-                    logger.warning(
-                        "Failed to reconstruct workflow state from message id %s: %s",
-                        m.id,
-                        exc,
-                    )
+            m_workflow = (m.meta or {}).get("workflow")
+            if m_workflow == "recommendation":
+                prior_messages.append(AIMessage(content=f"[Recommendation Agent]: {m.content}"))
+            else:
+                prior_messages.append(AIMessage(content=m.content))
+                if m.meta and "workflow_state" in m.meta and m_workflow != "recommendation":
+                    try:
+                        initial_workflow_state = BRDAgentState.from_dict(m.meta["workflow_state"])
+                    except Exception as exc:
+                        logger.warning(
+                            "Failed to reconstruct workflow state from message id %s: %s",
+                            m.id,
+                            exc,
+                        )
 
     # Hydrate canonical BRD document state from PostgreSQL
-    # If initial_workflow_state was restored from prior messages, or if current working draft exists,
-    # ensure canonical PostgreSQL sections, template ordering, statuses, and assembled markdown are hydrated.
-    has_persisted_draft_content = any(s.content for s in current_draft.sections) if (current_draft and current_draft.sections) else False
+    def _compute_section_hash(text: Optional[str]) -> str:
+        return hashlib.sha256((text or "").strip().encode("utf-8")).hexdigest()
 
-    if initial_workflow_state is not None or has_persisted_draft_content or (current_draft and current_draft.sections):
+    has_persisted_draft_content = (
+        any(s.content for s in current_draft.sections)
+        if (current_draft and current_draft.sections)
+        else False
+    )
+
+    if initial_workflow_state is not None or has_persisted_draft_content:
         if initial_workflow_state is None:
             initial_workflow_state = BRDAgentState()
 
@@ -376,6 +465,11 @@ async def create_message(
                         initial_workflow_state.section_progress[sec.section_key] = sec.status
                 if sec.rework_feedback:
                     initial_workflow_state.rework_feedback[sec.section_key] = sec.rework_feedback
+
+            # Track section content hashes to preserve unaffected progress and reconcile changes
+            initial_workflow_state.metadata["section_hashes"] = {
+                sec.section_key: _compute_section_hash(sec.content) for sec in sorted_sections
+            }
 
         if current_draft and current_draft.assembled_markdown:
             initial_workflow_state.assembled_brd = current_draft.assembled_markdown
@@ -399,67 +493,79 @@ async def create_message(
             run_kwargs["initial_state"] = initial_workflow_state
 
         try:
-            response = await agent.run_workflow_async(**run_kwargs)
-        except Exception as exc:
-            logger.error(
-                "Error during agent non-streaming response (project_id: %s, conversation_id: %s, agent_run_id: %s): %s",
+            try:
+                response = await agent.run_workflow_async(**run_kwargs)
+            except Exception as exc:
+                logger.error(
+                    "Error during agent non-streaming response (project_id: %s, conversation_id: %s, agent_run_id: %s): %s",
+                    project_id,
+                    conversation_id,
+                    agent_run_id,
+                    exc,
+                    exc_info=True,
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=f"Agent execution failed: {str(exc)}",
+                )
+
+            final_state = getattr(response, "state", None) or getattr(agent, "state", None)
+            persisted_state_dict = (
+                final_state.to_dict()
+                if final_state is not None and hasattr(final_state, "to_dict")
+                else None
+            )
+
+            final_text = (
+                response.output_text.strip()
+                if response and response.output_text and response.output_text.strip()
+                else "*(No response generated)*"
+            )
+
+            # Persist final assistant response and durable workflow state snapshot using a fresh session
+            assistant_message = await _persist_assistant_turn(
+                project_id=project_id,
+                conversation_id=conversation_id,
+                content=final_text,
+                metadata={
+                    "user_message_id": user_message.id,
+                    "agent_run_id": agent_run_id,
+                    "conversation_id": conversation_id,
+                    "project_id": project_id,
+                    "duration_seconds": round(time.perf_counter() - start_time, 3),
+                    "workflow_state": persisted_state_dict,
+                    "llm_execution_summary": (
+                        getattr(agent, "telemetry_tracker", None).get_summary().to_dict()
+                        if getattr(agent, "telemetry_tracker", None)
+                        else (final_state.metadata.get("llm_execution_summary") if final_state else None)
+                    ),
+                },
+                run_id=agent_run_id,
+                original_session=service._session,
+                final_state=final_state,
+            )
+
+            logger.info(
+                "Assistant response persisted (non-streaming, project_id: %s, conversation_id: %s, user_msg_id: %s, asst_msg_id: %s, agent_run_id: %s, duration: %.2fs)",
                 project_id,
                 conversation_id,
+                user_message.id,
+                assistant_message.id,
                 agent_run_id,
-                exc,
-                exc_info=True,
-            )
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Agent execution failed: {str(exc)}",
+                time.perf_counter() - start_time,
             )
 
-        final_state = getattr(response, "state", None) or getattr(agent, "state", None)
-        persisted_state_dict = (
-            final_state.to_dict()
-            if final_state is not None and hasattr(final_state, "to_dict")
-            else None
-        )
-
-        final_text = (
-            response.output_text.strip()
-            if response and response.output_text and response.output_text.strip()
-            else "*(No response generated)*"
-        )
-
-        # Persist final assistant response and durable workflow state snapshot using a fresh session
-        assistant_message = await _persist_assistant_turn(
-            project_id=project_id,
-            conversation_id=conversation_id,
-            content=final_text,
-            metadata={
-                "user_message_id": user_message.id,
-                "agent_run_id": agent_run_id,
-                "conversation_id": conversation_id,
-                "project_id": project_id,
-                "duration_seconds": round(time.perf_counter() - start_time, 3),
-                "workflow_state": persisted_state_dict,
-                "llm_execution_summary": (
-                    getattr(agent, "telemetry_tracker", None).get_summary().to_dict()
-                    if getattr(agent, "telemetry_tracker", None)
-                    else (final_state.metadata.get("llm_execution_summary") if final_state else None)
-                ),
-            },
-            original_session=service._session,
-            final_state=final_state,
-        )
-
-        logger.info(
-            "Assistant response persisted (non-streaming, project_id: %s, conversation_id: %s, user_msg_id: %s, asst_msg_id: %s, agent_run_id: %s, duration: %.2fs)",
-            project_id,
-            conversation_id,
-            user_message.id,
-            assistant_message.id,
-            agent_run_id,
-            time.perf_counter() - start_time,
-        )
-
-        return MessageResponse.from_model(assistant_message)
+            return MessageResponse.from_model(assistant_message)
+        finally:
+            stop_heartbeat.set()
+            await heartbeat_task
+            try:
+                await service.release_execution_lease(
+                    conversation_id=conversation_id,
+                    run_id=agent_run_id,
+                )
+            except Exception as exc:
+                logger.warning("Failed to release lease for run '%s': %s", agent_run_id, exc)
 
     # 8. Stream agent response back to frontend and collect assistant output
     async def event_generator() -> AsyncIterator[str]:
@@ -517,6 +623,7 @@ async def create_message(
                         else (final_state.metadata.get("llm_execution_summary") if final_state else None)
                     ),
                 },
+                run_id=agent_run_id,
                 original_session=service._session,
                 final_state=final_state,
             )
@@ -567,6 +674,28 @@ async def create_message(
                 "error": f"Agent execution failed: {str(exc)}",
             })
             yield f"event: error\ndata: {error_data}\n\n"
+        finally:
+            stop_heartbeat.set()
+            await heartbeat_task
+            bind_engine = getattr(service._session, "bind", None)
+            rel_maker = (
+                get_async_session_maker(engine=bind_engine)
+                if bind_engine is not None
+                else get_async_session_maker()
+            )
+            try:
+                async with rel_maker() as rel_session:
+                    rel_service = ConversationService(session=rel_session)
+                    await rel_service.release_execution_lease(
+                        conversation_id=conversation_id,
+                        run_id=agent_run_id,
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "Failed to release lease in streaming finally for run '%s': %s",
+                    agent_run_id,
+                    exc,
+                )
 
     return StreamingResponse(
         event_generator(),

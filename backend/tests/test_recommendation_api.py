@@ -73,7 +73,10 @@ async def test_recommendation_api_ready_for_phase_2(api_client: AsyncClient):
     project_id = proj_resp.json()["id"]
 
     # 2. Create conversation
-    conv_resp = await api_client.post(f"/projects/{project_id}/conversations", json={"title": "Advisory Thread"})
+    conv_resp = await api_client.post(
+        f"/projects/{project_id}/conversations",
+        json={"title": "Advisory Thread", "active_workflow": "recommendation"},
+    )
     assert conv_resp.status_code == 201
     conversation_id = conv_resp.json()["id"]
 
@@ -120,7 +123,10 @@ async def test_recommendation_api_needs_user_clarification(api_client: AsyncClie
     proj_resp = await api_client.post("/projects", json={"name": "Clarification Test Project"})
     project_id = proj_resp.json()["id"]
 
-    conv_resp = await api_client.post(f"/projects/{project_id}/conversations", json={"title": "Delay Thread"})
+    conv_resp = await api_client.post(
+        f"/projects/{project_id}/conversations",
+        json={"title": "Delay Thread", "active_workflow": "recommendation"},
+    )
     conversation_id = conv_resp.json()["id"]
 
     mock_router = MagicMock(spec=IntentRouterAgent)

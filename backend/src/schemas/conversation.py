@@ -75,6 +75,10 @@ class ConversationBase(BaseModel):
         max_length=255,
         description="Conversation display title",
     )
+    active_workflow: Optional[str] = Field(
+        default="brd",
+        description="Active workflow ('brd' or 'recommendation')",
+    )
 
     @field_validator("title")
     @classmethod
@@ -87,19 +91,34 @@ class ConversationBase(BaseModel):
             return stripped
         return "New Conversation"
 
+    @field_validator("active_workflow")
+    @classmethod
+    def validate_active_workflow(cls, v: Optional[str]) -> str:
+        """Validate active workflow."""
+        if v is not None:
+            cleaned = v.strip().lower()
+            if cleaned not in {"brd", "recommendation"}:
+                raise ValueError("active_workflow must be either 'brd' or 'recommendation'.")
+            return cleaned
+        return "brd"
+
 
 class ConversationCreate(ConversationBase):
     """Schema for creating a new conversation."""
 
 
 class ConversationUpdate(BaseModel):
-    """Schema for updating an existing conversation's title."""
+    """Schema for updating an existing conversation's title or active workflow."""
 
     title: Optional[str] = Field(
         None,
         min_length=1,
         max_length=255,
         description="Updated conversation display title",
+    )
+    active_workflow: Optional[str] = Field(
+        None,
+        description="Switch active workflow ('brd' or 'recommendation')",
     )
 
     @field_validator("title")
@@ -113,12 +132,25 @@ class ConversationUpdate(BaseModel):
             return stripped
         return v
 
+    @field_validator("active_workflow")
+    @classmethod
+    def validate_active_workflow(cls, v: Optional[str]) -> Optional[str]:
+        """Ensure active workflow is valid if provided."""
+        if v is not None:
+            cleaned = v.strip().lower()
+            if cleaned not in {"brd", "recommendation"}:
+                raise ValueError("active_workflow must be either 'brd' or 'recommendation'.")
+            return cleaned
+        return v
+
 
 class ConversationResponse(ConversationBase):
     """Schema for conversation response."""
 
     id: str = Field(..., description="Unique conversation identifier")
     project_id: str = Field(..., description="Owning project identifier")
+    active_workflow: str = Field(default="brd", description="Active workflow ('brd' or 'recommendation')")
+    execution_status: str = Field(default="idle", description="Execution status ('idle' or 'running')")
     created_at: Optional[datetime] = Field(None, description="Creation timestamp with timezone")
     updated_at: Optional[datetime] = Field(None, description="Last update timestamp with timezone")
     messages_count: Optional[int] = Field(default=None, description="Total count of messages in conversation")

@@ -117,35 +117,45 @@ async def load_context(
         content = msg.content or ""
         meta = msg.meta if hasattr(msg, "meta") else (getattr(msg, "message_metadata", None) or {})
 
+        workflow = meta.get("workflow")
+        is_brd = (workflow == "brd") or ("workflow_state" in meta)
+        can_extract_recommendation_state = (workflow == "recommendation") or (workflow is None and not is_brd)
+
         if role == "user":
             history_lines.append(f"User: {content}")
         elif role == "assistant":
-            history_lines.append(f"Assistant: {content}")
+            if workflow == "recommendation":
+                history_lines.append(f"Recommendation Agent: {content}")
+            elif is_brd:
+                history_lines.append(f"BRD Agent: {content}")
+            else:
+                history_lines.append(f"Assistant: {content}")
 
-            # Check for clarification request stored in metadata
-            if "pending_clarification" in meta and meta["pending_clarification"]:
-                try:
-                    pending_clarification = ClarificationRequest.model_validate(
-                        meta["pending_clarification"]
-                    )
-                except Exception as exc:
-                    logger.debug("Could not parse pending_clarification from message: %s", exc)
+            if can_extract_recommendation_state:
+                # Check for clarification request stored in metadata
+                if "pending_clarification" in meta and meta["pending_clarification"]:
+                    try:
+                        pending_clarification = ClarificationRequest.model_validate(
+                            meta["pending_clarification"]
+                        )
+                    except Exception as exc:
+                        logger.debug("Could not parse pending_clarification from message: %s", exc)
 
-            # Check for last recommendation
-            if "recommendation" in meta and meta["recommendation"]:
-                last_recommendation = meta["recommendation"]
-            elif "last_recommendation" in meta and meta["last_recommendation"]:
-                last_recommendation = meta["last_recommendation"]
+                # Check for last recommendation
+                if "recommendation" in meta and meta["recommendation"]:
+                    last_recommendation = meta["recommendation"]
+                elif "last_recommendation" in meta and meta["last_recommendation"]:
+                    last_recommendation = meta["last_recommendation"]
 
-            # Check for focus entity
-            if "focus_entity" in meta and meta["focus_entity"]:
-                focus_entity = meta["focus_entity"]
+                # Check for focus entity
+                if "focus_entity" in meta and meta["focus_entity"]:
+                    focus_entity = meta["focus_entity"]
 
-            # Check for decision records
-            if "decision_record" in meta and meta["decision_record"]:
-                decision_history.append(meta["decision_record"])
-            if "decision_history" in meta and isinstance(meta["decision_history"], list):
-                decision_history.extend(meta["decision_history"])
+                # Check for decision records
+                if "decision_record" in meta and meta["decision_record"]:
+                    decision_history.append(meta["decision_record"])
+                if "decision_history" in meta and isinstance(meta["decision_history"], list):
+                    decision_history.extend(meta["decision_history"])
 
     # 5. Clarification Continuity: Merge Answer on Next Turn
     # If the immediately preceding turn was awaiting clarification, the user's current message

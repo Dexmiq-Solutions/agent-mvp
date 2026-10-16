@@ -13,6 +13,7 @@ import type {
   SendMessagePayload,
   PaginatedResponse,
   WorkflowProgressEvent,
+  RecommendationResponse,
 } from '../types/index.ts';
 
 function base(projectId: string) {
@@ -91,6 +92,27 @@ export async function sendMessage(
     // Long timeout for AI generation
     timeout: 120_000,
   });
+  return data;
+}
+
+/**
+ * Send a message to the Recommendation Agent endpoint.
+ *
+ * Invokes the Phase 1 Recommendation Workflow, returning the routing decision,
+ * generated response markdown, and persisted message IDs.
+ */
+export async function sendRecommendationMessage(
+  projectId: string,
+  conversationId: string,
+  payload: SendMessagePayload,
+): Promise<RecommendationResponse> {
+  const { data } = await apiClient.post<RecommendationResponse>(
+    `${base(projectId)}/${conversationId}/recommendations`,
+    payload,
+    {
+      timeout: 120_000,
+    }
+  );
   return data;
 }
 

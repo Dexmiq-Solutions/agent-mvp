@@ -40,6 +40,27 @@ class ConversationModel(Base):
         default="New Conversation",
     )
 
+    # Workflow Selection and Execution Lease
+    active_workflow: Mapped[str] = mapped_column(
+        String(50),
+        nullable=False,
+        default="brd",
+    )
+    execution_status: Mapped[str] = mapped_column(
+        String(50),
+        nullable=False,
+        default="idle",
+    )
+    active_run_id: Mapped[Optional[str]] = mapped_column(
+        String(255),
+        nullable=True,
+    )
+    lease_expires_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+        index=True,
+    )
+
     # Timestamps
     created_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True),
@@ -76,6 +97,10 @@ class ConversationModel(Base):
             "id": self.id,
             "project_id": self.project_id,
             "title": self.title,
+            "active_workflow": self.active_workflow,
+            "execution_status": self.execution_status,
+            "active_run_id": self.active_run_id,
+            "lease_expires_at": self.lease_expires_at.isoformat() if self.lease_expires_at else None,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }
